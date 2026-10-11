@@ -53,9 +53,9 @@ DScheevos uses 2 MB at `0x02D80000`–`0x02F80000` (the DSi's extra RAM, cached 
 
 | Range | Use |
 |---|---|
-| `0x02D80000` + 256 KB | module image: header, code, data, bss (~114 KB + 10 KB today) |
-| `0x02DC0000` + 384 KB | session file: boot block and server replies |
-| `0x02E20000` – `0x02F7D000` | heap: rcheevos game data, address tables, 60 snapshot slots (~430 KB at 4096 addresses) |
+| `0x02D80000` + 512 KB | module image: header, code (rcheevos, lwIP, mbedTLS), data, bss (~274 KB + 90 KB today) |
+| `0x02E00000` + 256 KB | session file: boot block, server replies, optional extra CA |
+| `0x02E40000` – `0x02F7D000` | heap: rcheevos game data, address tables, snapshot ring, TLS (~1.2 MB) |
 | `0x02F7D000` + 4 KB | IRQ stack (`header->vblank`) |
 | `0x02F7E000` + 8 KB | idle and init stack (`header->halt`, `header->init`) |
 
@@ -63,7 +63,31 @@ It runs through the cached `0x02xxxxxx` mirror; uncached access would make rchee
 
 ## Unlocks during play
 
-rc_client raises an unlock inside `do_frame` and hands DScheevos a request to send. DScheevos queues it; the network layer sends it from idle time, never inside an interrupt. (Sending during play is still being built: see open question 1.)
+rc_client raises an unlock inside `do_frame` and hands DScheevos a request. The module sends it over the Wi-Fi connection the launcher made, in idle time, never inside an interrupt.
+
+```
+launcher (BlocksDS DSWiFi, DSi Wi-Fi chip, WPA2)
+  └─ associated; ARM7 freezes DSWiFi without telling the chip (no disconnect)
+       └─ nds-bootloader → nds-bootstrap → game: the chip stays associated
+
+game
+  ARM7 VBlank (CE7): SDIO shim moves raw HTC frames between the chip's
+                     mailbox and a ring in module RAM (dscm_shim.h)
+  ARM9 idle (module): Ethernet ↔ HTC/WMI framing (net/link.c), lwIP
+                     (NO_SYS), HTTPS with mbedTLS (net/https.c): POSTs
+                     the queued requests, replies go back to rcheevos
+```
+
+- **The ARM7 shim is a dumb pipe:** it polls the chip once per VBlank, moves at most one frame each way, and does no protocol work. It costs at most about 6 scanlines when it moves a frame, under 1 when idle. Errors back it off for a second; after 5 failures in a row it stops.
+- **No Wi-Fi keys leave the chip:** the chip keeps the pairwise and group keys it got at association. The session file carries only the MAC address, IP address, gateway and DNS server.
+- **GPIO_WIFI:** stock nds-bootstrap switches every DS game to the DS-mode Wi-Fi (GPIO_WIFI bit 8), which on DWM-W024 boards turns off the DSi chip. With DScheevos it stays on the DSi chip. CE7 switches to DS-mode Wi-Fi only while the game is using it (POWCNT2 bit 1 and the DS Wi-Fi's clock on), and sending pauses meanwhile.
+- **TLS:** mbedTLS with the launcher's config and root CAs. One keep-alive connection; reconnects resume the TLS session, so only the first handshake does the key exchange. That first handshake measured 5.5 s of wall time in melonDS with Kirby running. The handshake advances one step per idle pass, so achievement evaluation keeps up in between.
+- **Measured in melonDS** (Kirby Super Star Ultra, HTTPS to the mock server):
+  - four unlocks and a rich-presence ping reached the server during play
+  - all 3585 frames evaluated, none dropped
+  - the in-game menu shows "Online" and the unlocks sent
+
+Not covered by melonDS, and so untested until real hardware: WPA2 (melonDS only offers an open access point), group key rekeying, and real SDIO timing. With WPA2 the access point rekeys the group key from time to time, and the console must answer that itself. The module doesn't do that yet, so a long session on a WPA2 network may lose the connection at the first rekey.
 
 ## What the player sees
 
@@ -79,7 +103,7 @@ rc_client raises an unlock inside `do_frame` and hands DScheevos a request to se
 
 ## Open questions
 
-1. **Wi-Fi during play.** Sending unlocks live needs Wi-Fi while the game owns the ARM7. Being worked on: keep the DSi's own Wi-Fi chip associated from the launcher, have a small ARM7 shim in nds-bootstrap move frames, and run TCP/IP and TLS in the module's idle time. Games that use local wireless themselves need a separate answer.
+1. **WPA2 group rekeys and reconnecting.** The chip handles traffic with the keys it got at association. A group rekey needs the console to answer, and so does reconnecting after the access point drops us. Doing that in the module means the 4-way handshake there, with the network key read from the console's own Wi-Fi settings. Until then a session can lose the network at the first rekey (often hourly), and unlocks wait.
 2. **Not enough idle time.** Snapshots queue for up to 1024 frames (17 s), so busy stretches are fine as long as the game idles enough on average. A game that never does would fall behind for good. The answer then is cheaper evaluation (faster read path, cheaper memory layout) or marking the game unsupported.
 3. **Games that never call `OS_Halt`.** Some games busy-wait; they give no idle time at all. Need to find how common this is. DScheevos turns itself off when it finds no `OS_Halt` (the bootstrap log says "DScheevos off: no OS_Halt"). Kirby Super Star Ultra and Pokémon Platinum both have one.
 4. **DSi-enhanced games in DSi mode** use all 16 MB, leaving no free RAM. They run with achievements only in DS mode.

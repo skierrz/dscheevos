@@ -6,7 +6,9 @@
 #include "rc_consoles.h"
 #include "rc_hash.h"
 
+#include <dswifi9.h>
 #include <nds.h>
+#include <netinet/in.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -192,7 +194,10 @@ int session_write(const dsc_settings_t* settings, const char* rom_path, const ch
   dscm_boot_t boot;
   uint32_t offset = (sizeof(boot) + 3) & ~3u;
   static const char pad[4];
+  static char ca_pem[8192];
+  size_t ca_len = 0;
   FILE* f;
+  FILE* ca;
   int i;
 
   memset(&boot, 0, sizeof(boot));
@@ -210,6 +215,33 @@ int session_write(const dsc_settings_t* settings, const char* rom_path, const ch
     boot.preload_length[i] = (uint32_t)g_reply_len[i];
     offset += ((uint32_t)g_reply_len[i] + 3) & ~3u;
   }
+
+  /* The game keeps using this Wi-Fi connection: pass its settings (no keys;
+   * the chip keeps those itself). */
+  {
+    struct in_addr gateway, netmask, dns1, dns2;
+    struct in_addr ip = Wifi_GetIPInfo(&gateway, &netmask, &dns1, &dns2);
+    if (settings->live && ip.s_addr && Wifi_GetData(WIFIGETDATA_MACADDRESS, 6, boot.mac) >= 0) {
+      boot.net_valid = 1;
+      boot.ip = ip.s_addr;
+      boot.netmask = netmask.s_addr;
+      boot.gateway = gateway.s_addr;
+      boot.dns = dns1.s_addr;
+    }
+  }
+  /* extra trusted CA for a self-hosted or test server */
+  ca = fopen(DSC_DIR "ca.pem", "rb");
+  if (ca) {
+    ca_len = fread(ca_pem, 1, sizeof(ca_pem), ca);
+    fclose(ca);
+    if (ca_len > 0 && ca_len < sizeof(ca_pem)) {
+      boot.ca_offset = offset;
+      boot.ca_length = (uint32_t)ca_len;
+      offset += ((uint32_t)ca_len + 3) & ~3u;
+    } else {
+      ca_len = 0;
+    }
+  }
   boot.file_size = offset;
   if (offset > DSCM_SESSION_MAX)
     return 0;
@@ -222,6 +254,10 @@ int session_write(const dsc_settings_t* settings, const char* rom_path, const ch
   for (i = 0; i < DSCM_PRELOAD_COUNT; i++) {
     fwrite(g_reply[i], 1, g_reply_len[i], f);
     fwrite(pad, 1, ((g_reply_len[i] + 3) & ~3u) - g_reply_len[i], f);
+  }
+  if (ca_len) {
+    fwrite(ca_pem, 1, ca_len, f);
+    fwrite(pad, 1, ((ca_len + 3) & ~3u) - ca_len, f);
   }
   i = ferror(f);
   fclose(f);

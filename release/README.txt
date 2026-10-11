@@ -43,8 +43,8 @@ Playing
 - When you unlock an achievement, the Wi-Fi light blinks three times.
 - In-game menu (L + DOWN + SELECT) > "Achievements..." shows the game,
   hardcore or softcore, your progress and this session's unlocks.
-- Settings: hold SELECT while a game starts. You can turn achievements
-  off, switch hardcore on or off, or log out.
+- Settings: press A on the game in TWiLight Menu++, then hold SELECT.
+  You can turn achievements off, switch hardcore on or off, or log out.
 
 Hardcore (on by default) follows RetroAchievements' rules. While a
 hardcore session runs, nds-bootstrap's cheats, RAM viewer, RAM dump and
@@ -53,13 +53,19 @@ the slow-motion refresh rates are off.
 
 What works and what doesn't yet
 -------------------------------
-- DS games in DS mode, started from the SD card. DSi-enhanced games run
-  in DS mode only; DSi-mode games and flashcards aren't supported.
+- DS games in DS mode, started from the SD card. DSi-enhanced games get
+  achievements only when set to run in DS mode (TWiLight Menu++ game
+  settings). Flashcards aren't supported.
 - Achievements are checked every frame while you play.
-- Unlocks are NOT sent to RetroAchievements during play yet: they show
-  in the in-game menu as "Waiting to send". That part is in progress.
-  Don't use this build for real unlocks until a release says unlocks
-  are sent.
+- Unlocks are sent to RetroAchievements during play, over the same
+  Wi-Fi connection the session started on. The in-game menu shows
+  "Online", how many were sent and how many are waiting.
+- While a game uses its own wireless (Download Play, multiplayer),
+  sending pauses and resumes afterwards. Unlocks still waiting when you
+  turn the console off are lost, because nothing is written to the SD
+  card during play.
+- This build hasn't been tested on a real DSi yet. Treat it as a test
+  build until it has.
 - The game must give the console a little idle time each frame. In
   heavy scenes evaluation can fall behind and catch up later. The
   in-game menu shows "Frames skipped" if it ever had to skip one.

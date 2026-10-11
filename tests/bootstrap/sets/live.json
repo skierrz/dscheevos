@@ -1,0 +1,81 @@
+{
+ "Success": true,
+ "GameId": 14763,
+ "Title": "Kirby Super Star Ultra",
+ "ConsoleId": 18,
+ "ImageIconUrl": "",
+ "RichPresenceGameId": 14763,
+ "RichPresencePatch": "",
+ "Sets": [
+  {
+   "AchievementSetId": 1,
+   "GameId": 14763,
+   "Title": null,
+   "Type": "core",
+   "ImageIconUrl": "",
+   "Achievements": [
+    {
+     "ID": 9911,
+     "Title": "Live: 300 frames",
+     "Description": "",
+     "Flags": 3,
+     "Points": 1,
+     "MemAddr": "1=1.300.",
+     "Author": "t",
+     "BadgeName": "0",
+     "Created": 1,
+     "Modified": 1
+    },
+    {
+     "ID": 9912,
+     "Title": "Live: 900 frames",
+     "Description": "",
+     "Flags": 3,
+     "Points": 2,
+     "MemAddr": "1=1.900.",
+     "Author": "t",
+     "BadgeName": "0",
+     "Created": 1,
+     "Modified": 1
+    },
+    {
+     "ID": 9913,
+     "Title": "Live: 1500 frames",
+     "Description": "",
+     "Flags": 3,
+     "Points": 3,
+     "MemAddr": "1=1.1500.",
+     "Author": "t",
+     "BadgeName": "0",
+     "Created": 1,
+     "Modified": 1
+    },
+    {
+     "ID": 9914,
+     "Title": "Live: 2400 frames",
+     "Description": "",
+     "Flags": 3,
+     "Points": 4,
+     "MemAddr": "1=1.2400.",
+     "Author": "t",
+     "BadgeName": "0",
+     "Created": 1,
+     "Modified": 1
+    },
+    {
+     "ID": 9919,
+     "Title": "Never",
+     "Description": "",
+     "Flags": 3,
+     "Points": 1,
+     "MemAddr": "0=1",
+     "Author": "t",
+     "BadgeName": "0",
+     "Created": 1,
+     "Modified": 1
+    }
+   ],
+   "Leaderboards": []
+  }
+ ]
+}

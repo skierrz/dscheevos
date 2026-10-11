@@ -24,7 +24,8 @@
  *   header->reset()   from nds-bootstrap's game reset (in-game menu, soft
  *                     reset), IRQs off: achievement state resets in idle.
  * The ARM7 also reads header->notify_count (kept in RAM, past the ARM9's
- * cache) to signal unlocks with the Wi-Fi LED.
+ * cache) to signal unlocks with the Wi-Fi LED, and header->net_ring, the
+ * frame ring its SDIO shim fills and drains (dscm_shim.h).
  */
 #ifndef DSCHEEVOS_MODULE_H
 #define DSCHEEVOS_MODULE_H
@@ -33,9 +34,9 @@
 
 #define DSCM_BASE        0x02D80000u
 #define DSCM_SIZE        0x00200000u
-#define DSCM_IMAGE_MAX   0x00040000u
+#define DSCM_IMAGE_MAX   0x00080000u   /* code incl. TCP/IP and TLS, data, bss */
 #define DSCM_SESSION     (DSCM_BASE + DSCM_IMAGE_MAX)
-#define DSCM_SESSION_MAX 0x00060000u
+#define DSCM_SESSION_MAX 0x00040000u
 #define DSCM_HEAP        (DSCM_SESSION + DSCM_SESSION_MAX)
 #define DSCM_STACK_SIZE  0x00002000u
 #define DSCM_STACK_TOP   (DSCM_BASE + DSCM_SIZE)
@@ -44,7 +45,7 @@
 #define DSCM_HEAP_END    (DSCM_IRQ_STACK_TOP - DSCM_IRQ_STACK_SIZE)
 
 #define DSCM_MAGIC   0x56435344u  /* "DSCV" */
-#define DSCM_VERSION 3u
+#define DSCM_VERSION 4u
 #define DSCM_SESSION_MAGIC 0x53435344u  /* "DSCS" */
 
 /* IPC sync value the ARM7 VBlank handler sends to request a snapshot. */
@@ -63,7 +64,7 @@ enum {
 #define DSCM_NET_SLOTS      4
 #define DSCM_NET_URL_MAX    192
 #define DSCM_NET_POST_MAX   768
-#define DSCM_NET_REPLY_MAX  1024
+#define DSCM_NET_REPLY_MAX  4096
 enum { DSCM_NET_FREE = 0, DSCM_NET_REQUEST, DSCM_NET_IN_FLIGHT, DSCM_NET_REPLIED };
 
 typedef struct dscm_net_slot_t {
@@ -103,7 +104,22 @@ typedef struct dscm_status_t {
   volatile uint32_t achievements_unlocked;
   volatile uint32_t points;
   volatile uint32_t points_unlocked;
+  /* network, for the in-game menu */
+  volatile uint32_t net_state;        /* DSCM_NET_STATE_* */
+  volatile uint32_t net_detail;       /* last error code, 0 if none */
+  volatile uint32_t unlocks_sent;     /* award requests the server answered */
+  volatile uint32_t tls_handshake_ms; /* last HTTPS handshake, wall time (diagnostics) */
 } dscm_status_t;
+
+enum {
+  DSCM_NET_STATE_NONE = 0,            /* no network in this session */
+  DSCM_NET_STATE_CONNECTING,
+  DSCM_NET_STATE_ONLINE,
+  DSCM_NET_STATE_SENDING,
+  DSCM_NET_STATE_PAUSED,              /* the game is using its own wireless */
+  DSCM_NET_STATE_OFFLINE,             /* the access point dropped us */
+  DSCM_NET_STATE_ERROR,               /* last connection attempt failed */
+};
 
 enum {
   DSCM_ERROR_NONE = 0,
@@ -131,6 +147,12 @@ typedef struct dscm_boot_t {
   uint32_t unix_time;                 /* RTC time at boot, for unlock timestamps */
   uint32_t preload_offset[DSCM_PRELOAD_COUNT];  /* from the start of this struct */
   uint32_t preload_length[DSCM_PRELOAD_COUNT];
+  /* the launcher's Wi-Fi connection, which the game keeps using (no secrets) */
+  uint8_t mac[6];
+  uint8_t net_valid;                  /* 0: no network during play */
+  uint8_t reserved2;
+  uint32_t ip, netmask, gateway, dns; /* network byte order */
+  uint32_t ca_offset, ca_length;      /* extra trusted CA (PEM), from the start of this struct */
 } dscm_boot_t;
 
 typedef struct dscm_header_t {
@@ -147,7 +169,8 @@ typedef struct dscm_header_t {
   void (*reset)(void);                /* 0x28 */
   uint32_t reserved[5];
   volatile uint32_t notify_count;     /* 0x40: unlocks so far; own cache line, cleaned to RAM */
-  uint32_t reserved2[7];
+  void* net_ring;                     /* 0x44: dscm_shim.h ring, 0 if none; same line */
+  uint32_t reserved2[6];
 } dscm_header_t;
 
 #define DSCM_HEADER ((dscm_header_t*)DSCM_BASE)

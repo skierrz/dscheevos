@@ -8,12 +8,17 @@ import re
 import struct
 import sys
 
+def hdr_version(ram):
+    return struct.unpack_from('<I', ram, 0xD80004)[0]
+
+
 ap = argparse.ArgumentParser()
 ap.add_argument('ram')
 ap.add_argument('map')
 ap.add_argument('--expect', type=int, action='append', default=[], help='achievement ID that must have unlocked')
 ap.add_argument('--never', type=int, action='append', default=[], help='achievement ID that must not unlock')
 ap.add_argument('--max-dropped', type=int, default=0)
+ap.add_argument('--expect-sent', type=int, help='unlocks the server must have answered during play')
 args = ap.parse_args()
 ram = open(args.ram, 'rb').read()
 mp = open(args.map).read()
@@ -31,6 +36,11 @@ for i in range(min(f[7], 8)):
 p = o + 32 + 8 * 60
 pending, err = struct.unpack_from('<2I', ram, p)
 print('pending', pending, 'error', err, 'title', ram[p + 8:p + 56].split(b'\0')[0].decode())
+if len(ram) >= p + 84 and hdr_version(ram) >= 4:
+    ach, ach_un, pts, pts_un, nstate, ndetail, sent, hs_ms = struct.unpack_from('<8I', ram, p + 56)
+    states = ['none', 'connecting', 'online', 'sending', 'paused', 'offline', 'error']
+    print(f'progress {ach_un}/{ach} achievements, {pts_un}/{pts} pts; network {states[nstate] if nstate < len(states) else nstate}'
+          f' (detail {ndetail:#x}), unlocks sent {sent}, last TLS handshake {hs_ms} ms')
 hdr = struct.unpack_from('<10I', ram, 0xD80000)
 print('header magic %08x version %d vblank_count %d' % (hdr[0], hdr[1], hdr[9]))
 
@@ -44,6 +54,10 @@ if err:
 if f[4] > args.max_dropped:
     fails.append(f'{f[4]} frames dropped')
 fails += [f'{i} did not unlock' for i in args.expect if i not in unlocked]
+if args.expect_sent is not None:
+    sent_now = struct.unpack_from('<I', ram, p + 80)[0] if hdr_version(ram) >= 4 else 0
+    if sent_now < args.expect_sent:
+        fails.append(f'{sent_now} unlocks sent, expected {args.expect_sent}')
 fails += [f'{i} unlocked' for i in args.never if i in unlocked]
 print('RESULT ' + ('FAIL: ' + '; '.join(fails) if fails else 'PASS'))
 sys.exit(1 if fails else 0)

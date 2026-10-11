@@ -52,6 +52,8 @@
 #define MBEDTLS_SSL_PROTO_TLS1_2
 #define MBEDTLS_SSL_SERVER_NAME_INDICATION
 #define MBEDTLS_SSL_EXTENDED_MASTER_SECRET
+#define MBEDTLS_SSL_SESSION_TICKETS        /* resumption: reconnects skip the key exchange */
+#define MBEDTLS_HAVE_ASM                   /* ARM multiply-accumulate in bignum code */
 #define MBEDTLS_KEY_EXCHANGE_ECDHE_ECDSA_ENABLED
 #define MBEDTLS_KEY_EXCHANGE_ECDHE_RSA_ENABLED
 #define MBEDTLS_SSL_IN_CONTENT_LEN 16384

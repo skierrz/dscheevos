@@ -15,3 +15,6 @@
 	path = external/nds-bootstrap
 	url = https://github.com/skierrz/nds-bootstrap
 	branch = dscheevos
+[submodule "external/lwip"]
+	path = external/lwip
+	url = https://github.com/lwip-tcpip/lwip

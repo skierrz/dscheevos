@@ -28,14 +28,31 @@ static const char* basename_of(const char* path)
   return s ? s + 1 : path;
 }
 
+/* With achievements, the game keeps the Wi-Fi connection to send unlocks:
+ * the ARM7 stops DSWiFi without telling the chip, which stays associated. */
+static void hand_over_wifi(void)
+{
+  int i;
+  fifoSendValue32(FIFO_USER_01, 0x46524545u);           /* "FREE" */
+  for (i = 0; i < 60; i++) {
+    if (fifoCheckValue32(FIFO_USER_01) && fifoGetValue32(FIFO_USER_01) == 0x444F4E45u)   /* "DONE" */
+      return;
+    swiWaitForVBlank();
+  }
+}
+
 /* Hands over to nds-bootstrap; only returns on failure. */
 static void boot_game(int with_achievements)
 {
+  int keep_wifi = with_achievements && settings.live;
   const char* argv[1] = { BOOTSTRAP_PATH };
   if (!with_achievements)
     remove(DSC_DIR "session.bin");
   ui_status(with_achievements ? "Starting with achievements..." : "Starting without achievements...");
-  Wifi_DisableWifi();
+  if (keep_wifi)
+    hand_over_wifi();
+  else
+    Wifi_DisableWifi();
   int err = chainload(BOOTSTRAP_PATH, 1, argv);
   ui_status("\x1b[31;1mCouldn't start nds-bootstrap (%d)\x1b[39;0m", err);
   ui_status("%s", err == CHAINLOAD_ERR_LOADER ? CHAINLOAD_LOADER_PATH : BOOTSTRAP_PATH);
@@ -91,15 +108,17 @@ static void settings_menu(void)
     ui_bottom("\n Settings\n\n");
     ui_bottom(" \x1b[32;1mA\x1b[39;0m  Achievements: %s\n", settings.enabled ? "on" : "off");
     ui_bottom(" \x1b[32;1mX\x1b[39;0m  Hardcore: %s\n", settings.hardcore ? "on" : "off");
+    ui_bottom(" \x1b[32;1mR\x1b[39;0m  Send unlocks during play: %s\n", settings.live ? "on" : "off");
     ui_bottom(" \x1b[32;1mY\x1b[39;0m  Log out%s%s\n", settings.username[0] ? " " : "", settings.username);
     ui_bottom("\n \x1b[31;1mB\x1b[39;0m  Done\n");
     do {
       swiWaitForVBlank();
       scanKeys();
       k = keysDown();
-    } while (!(k & (KEY_A | KEY_B | KEY_X | KEY_Y)));
+    } while (!(k & (KEY_A | KEY_B | KEY_X | KEY_Y | KEY_R)));
     if (k & KEY_A) settings.enabled = !settings.enabled;
     if (k & KEY_X) settings.hardcore = !settings.hardcore;
+    if (k & KEY_R) settings.live = !settings.live;
     if (k & KEY_Y) { settings.token[0] = '\0'; settings.username[0] = '\0'; }
     if (k & KEY_B) { settings_save(&settings); return; }
   }
@@ -133,7 +152,7 @@ int main(int argc, char** argv)
   if (!settings.enabled)
     boot_game(0);
   if (game_is_dsi_mode(dsi_mode)) {
-    ui_wait("DSi-mode games don't support\n achievements yet.", 120);
+    ui_wait("Achievements need DS mode. In\n TWiLight's game settings, set\n \"Run in\" to DS mode.", 240);
     boot_game(0);
   }
 

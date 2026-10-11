@@ -23,6 +23,7 @@ printf '%s\n' "$version" > "$sd/_nds/dscheevos/version.txt"
 lic=$sd/_nds/dscheevos/licenses
 cp "$repo/external/rcheevos/LICENSE" "$lic/rcheevos.txt"
 cp "$repo/external/mbedtls/LICENSE" "$lic/mbedtls.txt"
+cp "$repo/external/lwip/COPYING" "$lic/lwip.txt"
 # nds-bootloader states GPL v2 or later in its source headers and ships no license file
 { echo "devkitPro nds-bootloader: GNU General Public License, version 2 or (at your option) any later version."; echo; cat /usr/share/common-licenses/GPL-2; } > "$lic/nds-bootloader.txt"
 cp "$repo/external/nds-bootstrap/LICENSE" "$lic/nds-bootstrap.txt"
@@ -32,6 +33,7 @@ DScheevos $version is built from:
   https://github.com/skierrz/nds-bootstrap (dscheevos branch, $(git -C "$repo/external/nds-bootstrap" rev-parse --short HEAD))
   https://github.com/devkitPro/nds-bootloader ($(git -C "$repo/external/nds-bootloader" rev-parse --short HEAD))
   https://github.com/RetroAchievements/rcheevos ($(git -C "$repo/external/rcheevos" rev-parse --short HEAD))
+  https://github.com/lwip-tcpip/lwip ($(git -C "$repo/external/lwip" describe --tags 2>/dev/null || git -C "$repo/external/lwip" rev-parse --short HEAD))
   https://github.com/Mbed-TLS/mbedtls ($(git -C "$repo/external/mbedtls" describe --tags 2>/dev/null || git -C "$repo/external/mbedtls" rev-parse --short HEAD))
 The launcher is built with BlocksDS (libnds, DSWiFi with lwIP), the module and
 nds-bootstrap with devkitARM; their licenses ship with those toolkits.

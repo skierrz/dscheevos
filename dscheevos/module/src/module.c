@@ -4,6 +4,8 @@
  */
 #include "dscheevos_module.h"
 #include "dscheevos.h"
+#include "net/net.h"
+#include "util/rc_version.h"
 
 #include <string.h>
 
@@ -50,6 +52,11 @@ static uint32_t millis(void)
 {
   return (uint32_t)(((uint64_t)g_frames * 1000u) / 60u);
 }
+uint32_t dscm_millis(void) { return millis(); }
+
+static int g_net_started;
+extern void dscm_publish_net_ring(void* ring);
+extern void https_add_ca(const char* pem, uint32_t len);
 
 static const char* request_kind(const char* post)
 {
@@ -113,6 +120,8 @@ static void poll_network(void)
     dscm_net_slot_t* s = &dscm_g_net[i];
     if (s->state == DSCM_NET_REPLIED) {
       uint32_t len = s->reply_length < DSCM_NET_REPLY_MAX ? s->reply_length : DSCM_NET_REPLY_MAX;
+      if (s->http_status == 200 && !strncmp(s->post, "r=awardachievement&", 19))
+        dscm_g_status.unlocks_sent++;
       dsc_http_done(g_net_handle[i], s->http_status, s->reply, len);
       g_net_handle[i] = NULL;
       dscm_g_status.pending_requests--;
@@ -219,6 +228,29 @@ int module_init(const dscm_boot_t* boot)
   dscm_g_status.active = dsc_is_active();
   if (dscm_g_status.active)
     update_progress();
+
+  /* Keep using the launcher's Wi-Fi connection during play. */
+  if (dscm_g_status.active && g_boot.net_valid) {
+    static char user_agent[80];
+    net_config_t nc;
+    void* ring;
+    memset(&nc, 0, sizeof(nc));
+    memcpy(nc.mac, g_boot.mac, 6);
+    nc.ip = g_boot.ip;
+    nc.netmask = g_boot.netmask;
+    nc.gateway = g_boot.gateway;
+    nc.dns = g_boot.dns;
+    nc.host = g_boot.host;
+    strcpy(user_agent, "DScheevos/0.1.0 (Nintendo DSi) rcheevos/" RCHEEVOS_VERSION_STRING);
+    nc.user_agent = user_agent;
+    entropy_stir(&g_boot.unix_time, sizeof(g_boot.unix_time));
+    ring = net_init(&nc);
+    if (g_boot.ca_length && g_boot.ca_offset <= g_boot.file_size && g_boot.ca_length <= g_boot.file_size - g_boot.ca_offset)
+      https_add_ca(g_session + g_boot.ca_offset, g_boot.ca_length);
+    dscm_publish_net_ring(ring);
+    dscm_g_status.net_state = DSCM_NET_STATE_CONNECTING;
+    g_net_started = 1;
+  }
   g_initialized = 1;
   return dscm_g_status.active ? 0 : -1;
 }
@@ -282,18 +314,29 @@ void module_idle(void)
   poll_network();
   if (g_progress_stale)
     update_progress();
-  dsc_get_stats(&s);
-  if (s.frames_snapshotted == s.frames_evaluated + s.frames_dropped + s.frames_discarded)
-    return; /* nothing waiting */
-
-  start = REG_VCOUNT;
-  dsc_idle();
-  end = REG_VCOUNT;
-  used = (end + LINES_PER_FRAME - start) % LINES_PER_FRAME;
-  dscm_g_status.eval_lines = (dscm_g_status.eval_lines * 7 + used * 16) / 8;
 
   dsc_get_stats(&s);
-  dscm_g_status.frames_evaluated = s.frames_evaluated;
+  if (s.frames_snapshotted != s.frames_evaluated + s.frames_dropped + s.frames_discarded) {
+    start = REG_VCOUNT;
+    dsc_idle();
+    end = REG_VCOUNT;
+    used = (end + LINES_PER_FRAME - start) % LINES_PER_FRAME;
+    dscm_g_status.eval_lines = (dscm_g_status.eval_lines * 7 + used * 16) / 8;
+    dsc_get_stats(&s);
+    dscm_g_status.frames_evaluated = s.frames_evaluated;
+  }
+  else {
+    dsc_idle();   /* rcheevos' own timers: retries, pings */
+  }
+
+  /* Then the network: achievements come first. */
+  if (g_net_started) {
+    net_service(millis());
+    dscm_g_status.net_state = net_state();
+    dscm_g_status.net_detail = net_detail();
+    dscm_g_status.tls_handshake_ms = net_handshake_ms();
+    poll_network();
+  }
 }
 
 void module_shutdown(void)

@@ -7,7 +7,7 @@
 	.align 2
 dscm_header:
 	.word 0x56435344            @ DSCM_MAGIC "DSCV"
-	.word 3                     @ DSCM_VERSION
+	.word 4                     @ DSCM_VERSION
 	.word __image_size
 	.word init_entry
 	.word vblank_entry
@@ -22,7 +22,10 @@ dscm_vblank_count:
 	.global dscm_notify_count
 dscm_notify_count:
 	.word 0                     @ 0x40: unlock count for the ARM7 (own cache line)
-	.space 28
+	.global dscm_net_ring
+dscm_net_ring:
+	.word 0                     @ 0x44: network ring for the ARM7 SDIO shim
+	.space 24
 
 	.section .text.entries, "ax"
 	.arm
@@ -120,6 +123,46 @@ dscm_publish_notify:
 	mov	r0, #0
 	mcr	p15, 0, r0, c7, c10, 4      @ drain write buffer
 	bx	lr
+
+@ void dscm_publish_net_ring(void* ring): as above, for the ring pointer.
+	.global dscm_publish_net_ring
+	.type dscm_publish_net_ring, %function
+dscm_publish_net_ring:
+	ldr	r1, =dscm_net_ring
+	str	r0, [r1]
+	mcr	p15, 0, r1, c7, c10, 1
+	mov	r0, #0
+	mcr	p15, 0, r0, c7, c10, 4
+	bx	lr
+
+@ void dscm_dc_clean(const void* addr, uint32_t len): write cached lines to RAM.
+	.global dscm_dc_clean
+	.type dscm_dc_clean, %function
+dscm_dc_clean:
+	add	r1, r0, r1
+	bic	r0, r0, #31
+1:	cmp	r0, r1
+	bhs	2f
+	mcr	p15, 0, r0, c7, c10, 1
+	add	r0, r0, #32
+	b	1b
+2:	mov	r0, #0
+	mcr	p15, 0, r0, c7, c10, 4
+	bx	lr
+
+@ void dscm_dc_invalidate(const void* addr, uint32_t len): drop cached lines
+@ so the next read comes from RAM. Only for lines the ARM9 never writes.
+	.global dscm_dc_invalidate
+	.type dscm_dc_invalidate, %function
+dscm_dc_invalidate:
+	add	r1, r0, r1
+	bic	r0, r0, #31
+1:	cmp	r0, r1
+	bhs	2f
+	mcr	p15, 0, r0, c7, c6, 1
+	add	r0, r0, #32
+	b	1b
+2:	bx	lr
 
 @ uint32_t dscm_vblank_count_read(void): the ARM7 writes the count behind
 @ the data cache, so drop the cached line first. Nothing on the ARM9 writes

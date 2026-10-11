@@ -4,7 +4,7 @@ OUTPUT_ARCH(arm)
 ENTRY(dscm_header)
 
 MEMORY {
-  image : ORIGIN = 0x02D80000, LENGTH = 0x00040000
+  image : ORIGIN = 0x02D80000, LENGTH = 0x00080000
 }
 
 SECTIONS {

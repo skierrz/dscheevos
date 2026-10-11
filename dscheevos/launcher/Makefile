@@ -10,8 +10,17 @@ INCLUDEDIRS   := ../module/include ../../external/rcheevos/include ../../externa
                  tls ../../external/mbedtls/include
 DEFINES       := -DRC_NO_THREADS -DRC_CLIENT_SUPPORTS_HASH -DRC_HASH_NO_DISC -DRC_HASH_NO_ZIP \
                  -DRC_HASH_NO_ENCRYPTED -DNDEBUG '-DMBEDTLS_CONFIG_FILE="dsc_mbedtls_config.h"'
-ARM7ELF       := $(BLOCKSDS)/sys/arm7/main_core/arm7_dswifi.elf
+ARM7ELF       := arm7/build/arm7.elf
 LIBS          := -ldswifi9 -lnds9
 LIBDIRS       := $(BLOCKSDS)/libs/dswifi $(BLOCKSDS)/libs/libnds
 
 include $(BLOCKSDS)/sys/default_makefiles/rom_arm9/Makefile
+
+# our ARM7 core: DSWiFi plus the handover freeze
+$(ROM): $(ARM7ELF)
+$(ARM7ELF): $(wildcard arm7/source/*.c)
+	@+$(MAKE) -C arm7 --no-print-directory
+clean: clean-arm7
+.PHONY: clean-arm7
+clean-arm7:
+	@$(MAKE) -C arm7 clean --no-print-directory

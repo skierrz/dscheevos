@@ -8,6 +8,7 @@
 typedef struct dsc_settings_t {
   int enabled;          /* 0: boot games without achievements */
   int hardcore;
+  int live;             /* send unlocks during play over the session's Wi-Fi connection */
   char username[32];
   char token[64];       /* from the server at login; the password is never stored */
   char host[64];
