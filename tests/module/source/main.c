@@ -119,6 +119,11 @@ static int check_v6(void)
 	for (int i = 0; i < DSCM_INDICATOR_MAX; i++) trackers += n->trackers[i].id != 0;
 	fails += check(trackers == 0, "tracker hidden after submit");
 
+	/* LED cues: the ARM7 reads them from RAM */
+	u32 cues = *(volatile u32*)DSCM_UNCACHED(&hdr->cues);
+	siprintf(b, "cues %08lx: leaderboard started and submitted, no challenge", (unsigned long)cues);
+	fails += check((cues & DSCM_CUE_LEADERBOARD_MASK) >> DSCM_CUE_LEADERBOARD_SHIFT == 2 && !(cues & DSCM_CUE_CHALLENGE), b);
+
 	/* journal: the ARM7 copies it from RAM, so read it there */
 	const dscm_journal_t* j = (const dscm_journal_t*)DSCM_UNCACHED(hdr->journal);
 	int awards = 0, lbs = 0, unsent = 0;

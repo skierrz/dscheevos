@@ -132,6 +132,17 @@ dscm_publish_notify:
 	mcr	p15, 0, r0, c7, c10, 4      @ drain write buffer
 	bx	lr
 
+@ void dscm_publish_cues(uint32_t cues): as above, for the LED cue word.
+	.global dscm_publish_cues
+	.type dscm_publish_cues, %function
+dscm_publish_cues:
+	ldr	r1, =dscm_cues
+	str	r0, [r1]
+	mcr	p15, 0, r1, c7, c10, 1
+	mov	r0, #0
+	mcr	p15, 0, r0, c7, c10, 4
+	bx	lr
+
 @ void dscm_publish_net_ring(void* ring): as above, for the ring pointer.
 	.global dscm_publish_net_ring
 	.type dscm_publish_net_ring, %function

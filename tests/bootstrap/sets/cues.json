@@ -1,0 +1,79 @@
+{
+ "Success": true,
+ "GameId": 14763,
+ "Title": "Kirby Super Star Ultra",
+ "ConsoleId": 18,
+ "ImageIconUrl": "",
+ "RichPresenceGameId": 14763,
+ "RichPresencePatch": "",
+ "Sets": [
+  {
+   "AchievementSetId": 1,
+   "GameId": 14763,
+   "Title": null,
+   "Type": "core",
+   "ImageIconUrl": "",
+   "Achievements": [
+    {
+     "ID": 9921,
+     "Title": "Cues: measured",
+     "Description": "5 frames, measured, after 600",
+     "Flags": 3,
+     "Points": 1,
+     "MemAddr": "N:1=1.600._M:1=1.5.",
+     "Author": "t",
+     "BadgeName": "0",
+     "Created": 1,
+     "Modified": 1
+    },
+    {
+     "ID": 9922,
+     "Title": "Cues: challenge",
+     "Description": "Primed at 1200, unlocks at 1500",
+     "Flags": 3,
+     "Points": 2,
+     "MemAddr": "1=1.1200._T:1=1.1500.",
+     "Author": "t",
+     "BadgeName": "0",
+     "Created": 1,
+     "Modified": 1
+    },
+    {
+     "ID": 9923,
+     "Title": "Cues: wrap",
+     "Description": "300 frames, measured, after 2400: the progress counter wraps",
+     "Flags": 3,
+     "Points": 1,
+     "MemAddr": "N:1=1.2400._M:1=1.300.",
+     "Author": "t",
+     "BadgeName": "0",
+     "Created": 1,
+     "Modified": 1
+    },
+    {
+     "ID": 9929,
+     "Title": "Never",
+     "Description": "",
+     "Flags": 3,
+     "Points": 1,
+     "MemAddr": "0=1",
+     "Author": "t",
+     "BadgeName": "0",
+     "Created": 1,
+     "Modified": 1
+    }
+   ],
+   "Leaderboards": [
+    {
+     "ID": 9931,
+     "Title": "Cues: board",
+     "Description": "Starts at 1800, submits at 2100",
+     "Mem": "STA:1=1.1800.::CAN:0=1::SUB:1=1.2100.::VAL:0xH000000",
+     "Format": "VALUE",
+     "LowerIsBetter": false,
+     "Hidden": false
+    }
+   ]
+  }
+ ]
+}

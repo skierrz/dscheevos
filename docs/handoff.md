@@ -89,9 +89,9 @@ release/package.sh "$PWD/out/dscheevos" "$(git describe --tags --always)"
 
 ## Open work, in order
 
-Done on `features` (Oct 2026): offline queue, full achievement list, rich presence in hardcore, privacy policy and licences, spectator mode, real-server bench. Details in `docs/compliance.md` and `docs/architecture.md`.
+Done on `features` (Oct 2026): offline queue, full achievement list, rich presence in hardcore, privacy policy and licences, spectator mode, real-server bench, pre-boot placard with the mode, Wi-Fi LED cues (`RUNNER_ARGS=--trace-led` shows them; `tests/bootstrap/sets/cues.json` has measured, challenge and leaderboard entries). Details in `docs/compliance.md` and `docs/architecture.md`.
 
-1. **Notices during play** (compliance A and E): needs the owner's decision first. `docs/overlay-research.md` has the options, evidence from melonDS experiments, the decisions, the questions for RetroAchievements and the hardware tests. The module already produces the notices (`dscm_notices_t`); only the display is missing.
+1. **Notices drawn during play** (compliance A and E): needs the owner's decision first; the LED cues and the placard are the safe part, already built. The LED cue style (dark pulses on a lit LED) is not signed off yet. `docs/overlay-research.md` has the options, evidence from melonDS experiments, the decisions, the questions for RetroAchievements and the hardware tests. The module already produces the notices (`dscm_notices_t`); only the display is missing.
 2. **Ask RA** (RAdmin) about approving a hardware client: the questions are in `docs/overlay-research.md`. Their FAQ says manual unlocks aren't given for "original hardware", which hints at how they see hardware clients today.
 3. **Bench run on a real test account** in melonDS: `tests/real/run.sh` (spectator by default; `tests/real/README.md`).
 4. **VBlank cost**: about 113k instructions per frame for a typical synthetic set (qemu count), up from 54k before `backlog-reads`. Room to cut: read chain pointers from the snapshot instead of calling the platform reader; fill small gaps between table runs.
@@ -106,7 +106,7 @@ All with the env file sourced, one at a time, WORK deleted after each. Results f
 |---|---|
 | Core | `make -C dscheevos/core test` (307 checks) |
 | Module test ROM | as in "Local setup"; checks list, notices, journal |
-| Offline queue | `MOCK_ARGS="--fail-awards --known-client" SCRIPT=<open and close the menu at 4500/4800: lines "4500 0x284 20", "4800 0x2 5"> tests/launcher/run.sh tests/bootstrap/sets/live.json 5200 --expect-journal-unsent 4`, then with the same WORK: `MOCK_ARGS=--known-client tests/launcher/run.sh tests/bootstrap/sets/live.json 2600` (launcher.log: "pending: sent 4 unlocks"; events: `offset` > 0; no unlock twice) |
+| Offline queue | `MOCK_ARGS="--fail-awards --known-client" SCRIPT=<open and close the menu at 4500/4800: lines "4500 0x284 20", "4800 0x2 5"> tests/launcher/run.sh tests/bootstrap/sets/live.json 5200 --expect-journal-unsent 4`, then with the same WORK: `MOCK_ARGS=--known-client tests/launcher/run.sh tests/bootstrap/sets/live.json 2600` (launcher.log: "pending: sent 4 unlocks"; no unlock twice; `offset` > 0 for the earlier unlocks: melonDS runs faster than real time, so the last ones can be stamped ahead of the host clock and are sent with 0) |
 | Still offline at the next start | the first run twice, then the normal one: the second sets the old journal aside in `unsent/`, the third sends all 8 |
 | Hardcore always online | `HARDCORE=1 LIVE=0 tests/launcher/run.sh tests/bootstrap/sets/live.json 6000 --expect-sent 4` (a `ping` reaches the server) |
 | Spectator | `SPECTATOR=1 tests/launcher/run.sh tests/bootstrap/sets/live.json 6000` (no `startsession` or `unlock` events; the list shows the unlocks) |

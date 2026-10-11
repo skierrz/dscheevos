@@ -34,10 +34,13 @@ static int g_initialized;
 extern uint32_t dscm_vblank_count_read(void);  /* start.s */
 extern uint32_t dscm_dtcm_base(void);
 extern void dscm_publish_notify(uint32_t count);
+extern void dscm_publish_cues(uint32_t cues);
 extern void dscm_publish_list(void* list);
 extern void dscm_dc_clean(const void* addr, uint32_t len);
 extern void dscm_dc_invalidate(const void* addr, uint32_t len);
 static uint32_t g_notices_seen;
+static uint32_t g_cues_head;         /* last notice counted into the cues */
+static uint32_t g_cues;
 static volatile int g_reset_pending;
 static int g_progress_stale;
 static void update_progress(void);
@@ -198,6 +201,35 @@ static void clean_notices(void)
   }
 }
 
+/* Turn new notices into header->cues for the ARM7's LED: a counter per
+ * progress or leaderboard notice, and a bit while a challenge shows. */
+static void update_cues(void)
+{
+  uint32_t head = dscm_g_notices.head, cues = g_cues, seq;
+  int i;
+  if (head - g_cues_head > DSCM_NOTICE_RING)
+    g_cues_head = head - DSCM_NOTICE_RING;   /* older ones were overwritten */
+  for (seq = g_cues_head + 1; seq - 1 != head; seq++) {
+    const dscm_notice_t* x = &dscm_g_notices.ring[seq % DSCM_NOTICE_RING];
+    if (x->seq != seq)
+      continue;
+    if (x->kind == DSCM_NOTICE_PROGRESS)
+      cues = (cues & ~DSCM_CUE_PROGRESS_MASK) | ((cues + 1) & DSCM_CUE_PROGRESS_MASK);
+    else if (x->kind == DSCM_NOTICE_LEADERBOARD_STARTED || x->kind == DSCM_NOTICE_LEADERBOARD_FAILED
+             || x->kind == DSCM_NOTICE_LEADERBOARD_SUBMITTED)
+      cues = (cues & ~DSCM_CUE_LEADERBOARD_MASK) | ((cues + (1u << DSCM_CUE_LEADERBOARD_SHIFT)) & DSCM_CUE_LEADERBOARD_MASK);
+  }
+  g_cues_head = head;
+  cues &= ~DSCM_CUE_CHALLENGE;
+  for (i = 0; i < DSCM_INDICATOR_MAX; i++)
+    if (dscm_g_notices.challenges[i].id)
+      cues |= DSCM_CUE_CHALLENGE;
+  if (cues != g_cues) {
+    g_cues = cues;
+    dscm_publish_cues(cues);
+  }
+}
+
 /* ---- entry points ---- */
 
 extern char __bss_start[], __bss_end[];
@@ -270,6 +302,7 @@ int module_init(const dscm_boot_t* boot)
   if (dscm_g_status.active)
     update_progress();
   clean_notices();
+  update_cues();
 
   /* Keep using the launcher's Wi-Fi connection during play. */
   if (dscm_g_status.active && g_boot.net_valid) {
@@ -387,6 +420,7 @@ void module_idle(void)
     dsc_idle();   /* rcheevos' own timers: retries, pings */
   }
   clean_notices();
+  update_cues();
 
   /* Then the network: achievements come first. */
   if (g_net_started) {

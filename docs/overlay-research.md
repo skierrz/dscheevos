@@ -1,6 +1,6 @@
 # Showing RA notices during play on a DSi
 
-Research of 2026-10-11 (three research angles plus a critic pass). Nothing here is built yet. Nothing in the repo was changed except this file.
+Research of 2026-10-11 (three research angles plus a critic pass). Since built: the pre-boot placard (option 1) and the LED cues (option 3), each with the changes noted under it.
 
 ## Question
 
@@ -48,6 +48,8 @@ On the DSi, every notice also inherits the evaluation backlog. rc_client events 
 
 **Cost:** 1-2 days.
 
+**Built** (`retail/bootloaderi`): after the module's init the ARM7 draws the card into the ESRB screen's buffer with the in-game menu's font (state `ARM9_DSCHEEVOS_PLACARD`): "RetroAchievements", the game title, HARDCORE or Softcore (plus a line when hardcore was refused), unlocked/total achievements and points, and "Spectator: nothing is sent" in spectator sessions. It stays up 1.5 s from when it appears, counting the fade-in, while the ARM7 keeps loading; A, B or START skip it, and the screen is then cleared only once the key is let go (up to 2 s), so the game doesn't read it as a new press. `clearScreen()` runs after it unchanged.
+
 **Test:**
 - melonDS: take a screenshot during init. The first game frames must be pixel-identical to a run with the placard off.
 - Hardware: boot Kirby and Pokemon Platinum once each.
@@ -83,6 +85,12 @@ On the DSi, every notice also inherits the evaluation backlog. rc_client events 
 - DSi only: on a 3DS the CE7 blink function returns early.
 
 **Cost:** 1-2 days. Test with an I2C write trace in the headless runner, and on hardware by filming the LEDs.
+
+**Built, with changes** (`retail/cardenginei/arm7/source/cardengine.c`, header word `cues`):
+- Leaderboards use the Wi-Fi LED too, not the power LED: 2 blinks per attempt started, failed or submitted. 3 per unlock, 1 for progress.
+- A blink, and the hold while a challenge is primed, is the opposite of the LED's normal state: lit when it is normally off, dark when it is normally on (wireless enabled). "Steady on" would show nothing on a DSi with wireless on. Not yet signed off by the owner.
+- Patterns queue, unlocks first. Progress is a level, not an event, so at most one progress blink waits.
+- Off while nds-bootstrap's own "Wi-Fi LED on ROM read" option drives that LED. The LED goes back to normal before the in-game menu, resets and the return to the loader.
 
 **Limit:** it tells the player *that* something happened, not *what*. Whether RA counts it as "displayed" is open (question 1 below).
 
