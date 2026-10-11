@@ -34,3 +34,22 @@ jobs:
           cmake --build build/games
       - name: Game tests
         run: DSC_GAMETEST=build/games/dsc-gametest DSC_ROMS=$HOME/dsc-roms tests/games/run.sh
+  module:
+    runs-on: ubuntu-latest
+    container: devkitpro/devkitarm:20241104
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch rcheevos
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git submodule update --init --depth 1 external/rcheevos
+      - name: Build ARM9 module
+        run: make -C dscheevos/module
+      - name: Build module test
+        run: make -C tests/module
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dscheevos9
+          path: |
+            dscheevos/module/build/dscheevos9.bin
+            tests/module/out/module-test.nds
