@@ -82,6 +82,7 @@ typedef struct dsc_stats_t {
   uint32_t frames_evaluated;
   uint32_t frames_dropped;       /* snapshots lost because evaluation was behind */
   uint32_t frames_discarded;     /* queued snapshots from before a game reset */
+  uint32_t frames_repeated;      /* snapshotted frames queued as a repeat of the one before */
   uint32_t live_reads;           /* reads not covered by the snapshot (new or moved addresses) */
   uint32_t addresses;            /* addresses captured each VBlank */
   uint32_t pending_requests;

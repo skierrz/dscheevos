@@ -40,7 +40,8 @@ static const char* set_json =
   "\"Title\":null,\"Type\":\"core\",\"ImageIconUrl\":\"\",\"Achievements\":["
   "{\"ID\":1001,\"Title\":\"Byte\",\"Description\":\"byte 0x10 is 5\",\"Flags\":3,\"Points\":5,\"MemAddr\":\"0xH000010=5\",\"Author\":\"t\",\"BadgeName\":\"1\",\"Created\":1,\"Modified\":1},"
   "{\"ID\":1002,\"Title\":\"Pointer\",\"Description\":\"pointer target +4 is 7\",\"Flags\":3,\"Points\":10,\"MemAddr\":\"I:0xX000100&33554431_0xH000004=7\",\"Author\":\"t\",\"BadgeName\":\"2\",\"Created\":1,\"Modified\":1},"
-  "{\"ID\":1003,\"Title\":\"DTCM\",\"Description\":\"DTCM byte 0x10 is 9\",\"Flags\":3,\"Points\":25,\"MemAddr\":\"0xH1000010=9\",\"Author\":\"t\",\"BadgeName\":\"3\",\"Created\":1,\"Modified\":1}"
+  "{\"ID\":1003,\"Title\":\"DTCM\",\"Description\":\"DTCM byte 0x10 is 9\",\"Flags\":3,\"Points\":25,\"MemAddr\":\"0xH1000010=9\",\"Author\":\"t\",\"BadgeName\":\"3\",\"Created\":1,\"Modified\":1},"
+  "{\"ID\":1004,\"Title\":\"Steady\",\"Description\":\"byte 0x20 is 3 for 100 frames\",\"Flags\":3,\"Points\":1,\"MemAddr\":\"0xH000020=3.100.\",\"Author\":\"t\",\"BadgeName\":\"4\",\"Created\":1,\"Modified\":1}"
   "],\"Leaderboards\":[]}]}";
 
 static int server_down;
@@ -248,9 +249,9 @@ static void test_dropped_frames_are_reported(void)
   dsc_stats_t s;
   start(1);
   frames(3);
-  dsc_vblank();
-  dsc_vblank();
-  dsc_vblank();              /* no idle time for three VBlanks: one must be dropped */
+  ram[0x20] = 1; dsc_vblank();
+  ram[0x20] = 2; dsc_vblank();
+  ram[0x20] = 4; dsc_vblank();  /* no idle time for three changing VBlanks: one must be dropped */
   dsc_idle();
   dsc_get_stats(&s);
   CHECK(s.frames_dropped == 1);
@@ -296,11 +297,35 @@ static void test_snapshot_arena_wraps(void)
   dsc_get_stats(&s);
   CHECK(s.frames_dropped == 0);
   CHECK(was_unlocked(1001));
-  for (i = 0; i < 20; i++) dsc_vblank();   /* more than 64 bytes queued: drops, reported */
+  for (i = 0; i < 20; i++) {  /* more than 64 bytes of changing frames queued: drops, reported */
+    ram[0x20] = (uint8_t)(i + 10);
+    dsc_vblank();
+  }
   dsc_idle();
   dsc_get_stats(&s);
   CHECK(s.frames_dropped > 0);
   CHECK(degraded >= 1);
+  dsc_shutdown();
+}
+
+static void test_unchanged_frames_queue_as_repeats(void)
+{
+  dsc_stats_t s;
+  int i;
+  start_with(1, 4, 64);      /* room for only a few distinct frames */
+  frames(3);
+  ram[0x20] = 3;
+  for (i = 0; i < 99; i++)   /* a cutscene: no idle time, nothing watched changes */
+    dsc_vblank();
+  dsc_idle();
+  dsc_get_stats(&s);
+  CHECK(s.frames_dropped == 0);
+  CHECK(s.frames_repeated >= 97);
+  CHECK(s.frames_evaluated == s.frames_snapshotted);
+  CHECK(!was_unlocked(1004)); /* 99 of 100 frames: every repeat counted once, no more */
+  dsc_vblank();
+  dsc_idle();
+  CHECK(was_unlocked(1004));
   dsc_shutdown();
 }
 
@@ -309,7 +334,7 @@ static void test_reset_and_progress(void)
   dsc_progress_t p;
   start(1);
   dsc_get_progress(&p);
-  CHECK(p.achievements == 3 && p.unlocked == 0 && p.points == 40);
+  CHECK(p.achievements == 4 && p.unlocked == 0 && p.points == 41);
   frames(3);
   ram[0x10] = 5;
   frames(2);
@@ -355,6 +380,7 @@ int main(void)
   RUN(test_dropped_frames_are_reported);
   RUN(test_long_stretch_without_idle_is_queued);
   RUN(test_snapshot_arena_wraps);
+  RUN(test_unchanged_frames_queue_as_repeats);
   RUN(test_reset_and_progress);
   RUN(test_unlock_retried_when_server_down);
   printf("%d checks, %d failed\n", checks, failures);

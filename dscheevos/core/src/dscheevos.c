@@ -51,6 +51,7 @@ typedef struct slot_t {
   uint32_t size;
   const table_t* table;
   uint32_t frame;
+  volatile uint32_t repeats;  /* later frames whose bytes matched exactly; evaluated from this copy */
 } slot_t;
 
 typedef struct http_pending_t {
@@ -444,8 +445,23 @@ void dsc_vblank(void)
   }
   slot->table = t;
   slot->frame = S.frame_counter;
-  S.arena_head = (uint32_t)offset + t->count;
   S.stats.frames_snapshotted++;
+
+  /* Same bytes as the newest queued frame, which idle hasn't started on:
+   * count it there instead (cutscenes, loading, menus). Each repeat is still
+   * evaluated as its own frame, so nothing is lost. */
+  if (S.slot_head != S.slot_tail) {
+    slot_t* prev = &S.slots[(S.slot_head - 1) % MAX_SLOTS];
+    if (prev->state == SLOT_READY && prev->table == t && memcmp(prev->data, slot->data, t->count) == 0) {
+      prev->repeats++;
+      slot->state = SLOT_FREE;
+      S.stats.frames_repeated++;
+      return;
+    }
+  }
+
+  slot->repeats = 0;
+  S.arena_head = (uint32_t)offset + t->count;
   slot->state = SLOT_READY;
   S.slot_head++;    /* publish last */
 }
@@ -492,14 +508,19 @@ int dsc_idle(void)
     if (next->state != SLOT_READY)
       break;
 
-    next->state = SLOT_EVAL;
-    S.evaluating = next;
-    rc_client_do_frame(S.client);
-    S.evaluating = NULL;
+    next->state = SLOT_EVAL;          /* from here on, dsc_vblank leaves repeats alone */
+    {
+      uint32_t n = 1 + next->repeats, k;
+      S.evaluating = next;
+      for (k = 0; k < n; k++) {
+        rc_client_do_frame(S.client);
+        S.stats.frames_evaluated++;
+        evaluated++;
+      }
+      S.evaluating = NULL;
+    }
     next->state = SLOT_FREE;
     S.slot_tail++;
-    S.stats.frames_evaluated++;
-    evaluated++;
 
     publish_pending_addresses();
     finish_http();
@@ -541,11 +562,12 @@ void dsc_get_stats(dsc_stats_t* stats)
 
 void dsc_reset(void)
 {
-  uint32_t head = S.slot_head;
+  uint32_t head = S.slot_head, n;
   if (!S.initialized)
     return;
   S.evaluating = NULL;
-  S.stats.frames_discarded += head - S.slot_tail;
+  for (n = S.slot_tail; n != head; n++)
+    S.stats.frames_discarded += 1 + S.slots[n % MAX_SLOTS].repeats;
   S.slot_tail = head;          /* frames from before the reset */
   if (S.active)
     rc_client_reset(S.client);
