@@ -48,7 +48,8 @@ Playing
 
 Hardcore (on by default) follows RetroAchievements' rules. While a
 hardcore session runs, nds-bootstrap's cheats, RAM viewer, RAM dump and
-the slow-motion refresh rates are off.
+the slow-motion refresh rates are off. RAM dump is off in softcore too,
+since the dump would hold your login token.
 
 
 What works and what doesn't yet
@@ -64,6 +65,10 @@ What works and what doesn't yet
   sending pauses and resumes afterwards. Unlocks still waiting when you
   turn the console off are lost, because nothing is written to the SD
   card during play.
+- If the Wi-Fi drops during play, DScheevos joins it again by itself
+  and sends what was waiting. On WPA2 networks it uses the network key
+  the console already saved; the key never goes to the SD card. WEP
+  networks don't rejoin. The in-game menu counts the rejoins.
 - This build hasn't been tested on a real DSi yet. Treat it as a test
   build until it has.
 - The game must give the console a little idle time each frame. In

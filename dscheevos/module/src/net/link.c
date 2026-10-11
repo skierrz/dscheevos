@@ -8,11 +8,20 @@
  *   LLC/SNAP (6) | ethertype | payload
  * WMI events (endpoint 1) tell us when the AP drops us.
  *
+ * Rejoining: the launcher's dswifi did the WPA2 handshake, so its keys are
+ * unknown here. When the AP drops us, or starts a group rekey we can't
+ * answer, we reassociate with WMI_CONNECT and run the 4-way handshake
+ * ourselves (wpa.c) with the PMK nds-bootstrap read from the console's saved
+ * settings; later group rekeys are then answered in place. Commands and
+ * EAPOL frames wait in a small queue, since the shim moves one frame per
+ * VBlank and the ring has room for four.
+ *
  * Cache: the ring sits in cached RAM. Lines the ARM9 writes are cleaned
  * after writing; lines the ARM7 writes are invalidated before reading.
  */
 #include "net.h"
 #include "dscm_shim.h"
+#include "wpa.h"
 
 #include "lwip/etharp.h"
 #include "lwip/init.h"
@@ -24,16 +33,39 @@
 #include <stddef.h>
 #include <string.h>
 
-#define WMI_CONNECT_EVENT    0x1002
-#define WMI_DISCONNECT_EVENT 0x1003
+#define WMI_CONNECT_CMD        0x0001
+#define WMI_DISCONNECT_CMD     0x0003
+#define WMI_SYNCHRONIZE_CMD    0x0004
+#define WMI_ADD_CIPHER_KEY_CMD 0x0016
+#define WMI_CONNECT_EVENT      0x1002
+#define WMI_DISCONNECT_EVENT   0x1003
 #define HTC_EP_WMI  1
 #define HTC_EP_DATA 2
+
+#define JOIN_TIMEOUT_MS  8000    /* WMI_CONNECT to connect event */
+#define KEY_TIMEOUT_MS   5000    /* connect event to message 3 */
+#define LEAVE_TIMEOUT_MS 1000    /* our WMI_DISCONNECT to its event */
+#define BACKOFF_MIN_MS   1000
+#define BACKOFF_MAX_MS   30000
 
 static shim_shared_t g_ring;     /* aligned to cache lines by SHIM_LINE */
 static struct netif g_netif;
 static net_config_t g_config;
 static int g_connected = 1;      /* the launcher left us associated */
 static uint32_t g_rx_frames, g_tx_frames, g_tx_drops;
+
+/* association: the launcher's to start with, ours after a rejoin */
+enum { J_UP, J_LEAVING, J_WAITING, J_JOINING, J_KEYING, J_GIVEN_UP };
+static int g_join = J_UP;
+static uint32_t g_now, g_deadline, g_backoff = BACKOFF_MIN_MS;
+static uint32_t g_rejoins;
+static wpa_ctx_t g_wpa;
+
+/* frames we make ourselves (WMI commands, EAPOL), ahead of lwIP's */
+#define CTRL_SLOTS 8
+#define CTRL_MAX   256
+static struct { uint32_t len; uint8_t data[CTRL_MAX]; } g_ctrl[CTRL_SLOTS];
+static uint32_t g_ctrl_head, g_ctrl_tail;
 
 static void publish_arm9_line(void)
 {
@@ -70,11 +102,117 @@ void link_stir(void)
 
 /* ---- TX ---- */
 
+static int ring_full(void)
+{
+  return g_ring.tx_head - arm7_tx_tail() >= SHIM_TX_SLOTS;
+}
+
+static void ring_push(shim_slot_tx_t* slot, uint32_t len)
+{
+  slot->len = len;
+  dscm_dc_clean(slot, sizeof(*slot));
+  g_ring.tx_head++;
+  publish_arm9_line();
+  g_tx_frames++;
+}
+
+static void ctrl_flush(void)
+{
+  while (g_ctrl_tail != g_ctrl_head && !ring_full()) {
+    shim_slot_tx_t* slot = &g_ring.tx[g_ring.tx_head % SHIM_TX_SLOTS];
+    uint32_t i = g_ctrl_tail % CTRL_SLOTS;
+    memcpy(slot->data, g_ctrl[i].data, g_ctrl[i].len);
+    ring_push(slot, g_ctrl[i].len);
+    memset(g_ctrl[i].data, 0, g_ctrl[i].len);   /* key material passes through here */
+    g_ctrl_tail++;
+  }
+}
+
+/* HTC header: endpoint, flags, payload length, control bytes */
+static uint8_t* ctrl_frame(uint8_t ep, uint8_t flags, uint32_t payload)
+{
+  uint8_t* d;
+  if (g_ctrl_head - g_ctrl_tail >= CTRL_SLOTS || 6 + payload > CTRL_MAX)
+    return NULL;
+  d = g_ctrl[g_ctrl_head % CTRL_SLOTS].data;
+  memset(d, 0, 6 + payload);
+  d[0] = ep;
+  d[1] = flags;
+  d[2] = (uint8_t)payload;
+  d[3] = (uint8_t)(payload >> 8);
+  g_ctrl[g_ctrl_head % CTRL_SLOTS].len = 6 + payload;
+  return d + 6;
+}
+
+static void ctrl_commit(void)
+{
+  g_ctrl_head++;
+  ctrl_flush();
+}
+
+static void wmi_cmd(uint16_t id, const void* params, uint32_t len)
+{
+  uint8_t* p = ctrl_frame(HTC_EP_WMI, 1 /* ask for a credit report */, 2 + len);
+  if (!p)
+    return;
+  p[0] = (uint8_t)id;
+  p[1] = (uint8_t)(id >> 8);
+  if (len)
+    memcpy(p + 2, params, len);
+  ctrl_commit();
+}
+
+/* data frame with our own LLC/SNAP body, as dswifi sends EAPOL */
+static void send_eapol(const uint8_t* dst, const uint8_t* eapol, uint32_t len)
+{
+  uint8_t* m = ctrl_frame(HTC_EP_DATA, 0, 24 + len);
+  if (!m)
+    return;
+  m[1] = 0x1C;
+  memcpy(m + 2, dst, 6);
+  memcpy(m + 8, g_config.mac, 6);
+  m[14] = (uint8_t)((len + 8) >> 8);
+  m[15] = (uint8_t)(len + 8);
+  m[16] = 0xAA; m[17] = 0xAA; m[18] = 0x03;
+  m[22] = 0x88; m[23] = 0x8E;
+  memcpy(m + 24, eapol, len);
+  ctrl_commit();
+}
+
+static void data_sync(void)
+{
+  uint8_t* m = ctrl_frame(HTC_EP_DATA, 0, 2);
+  if (!m)
+    return;
+  m[1] = 0x02;
+  ctrl_commit();
+}
+
+static void add_key(uint8_t index, uint8_t usage, uint8_t cipher, const uint8_t* key, uint8_t key_len, const uint8_t* rsc)
+{
+  uint8_t k[45];
+  memset(k, 0, sizeof(k));
+  k[0] = index;
+  k[1] = cipher;
+  k[2] = usage;                   /* 0 pairwise, 1 group */
+  k[3] = key_len;
+  if (rsc)
+    memcpy(k + 4, rsc, 8);
+  memcpy(k + 12, key, key_len < 16 ? key_len : 16);
+  if (key_len == 32) {            /* TKIP: the chip wants the MIC keys swapped */
+    memcpy(k + 12 + 16, key + 24, 8);
+    memcpy(k + 12 + 24, key + 16, 8);
+  }
+  k[44] = 3;                      /* key_op_ctrl */
+  wmi_cmd(WMI_ADD_CIPHER_KEY_CMD, k, sizeof(k));
+  memset(k, 0, sizeof(k));
+}
+
 static err_t linkoutput(struct netif* netif, struct pbuf* p)
 {
   static uint8_t frame[1536] __attribute__((aligned(4)));
   shim_slot_tx_t* slot;
-  uint32_t head, n, body;
+  uint32_t n, body;
   uint8_t* m;
   (void)netif;
 
@@ -87,12 +225,12 @@ static err_t linkoutput(struct netif* netif, struct pbuf* p)
   if (6 + 24 + body > SHIM_TX_MAX)
     return ERR_MEM;
 
-  head = g_ring.tx_head;
-  if (head - arm7_tx_tail() >= SHIM_TX_SLOTS) {
+  ctrl_flush();
+  if (g_ctrl_tail != g_ctrl_head || ring_full()) {
     g_tx_drops++;                 /* TCP retransmits */
     return ERR_MEM;
   }
-  slot = &g_ring.tx[head % SHIM_TX_SLOTS];
+  slot = &g_ring.tx[g_ring.tx_head % SHIM_TX_SLOTS];
   memset(slot->data, 0, 6 + 24);
   slot->data[0] = HTC_EP_DATA;
   slot->data[2] = (uint8_t)(24 + body);
@@ -108,11 +246,7 @@ static err_t linkoutput(struct netif* netif, struct pbuf* p)
   m[22] = frame[12];              /* ethertype */
   m[23] = frame[13];
   memcpy(m + 24, frame + 14, body);
-  slot->len = 6 + 24 + body;
-  dscm_dc_clean(slot, sizeof(*slot));
-  g_ring.tx_head = head + 1;
-  publish_arm9_line();
-  g_tx_frames++;
+  ring_push(slot, 6 + 24 + body);
   link_stir();
   return ERR_OK;
 }
@@ -130,16 +264,157 @@ static err_t netif_setup(struct netif* netif)
   return ERR_OK;
 }
 
+/* ---- association ---- */
+
+static int can_rejoin(void)
+{
+  if (g_config.ap_ssid_len == 0 || g_config.ap_ssid_len > 32)
+    return 0;
+  if (g_config.ap_security == DSCM_AP_OPEN)
+    return 1;
+  return g_config.ap_security == DSCM_AP_WPA2 && g_config.pmk_valid;
+}
+
+static void set_up(int up)
+{
+  if (up == g_connected)
+    return;
+  g_connected = up;
+  if (up) {
+    if (g_join != J_UP)
+      g_rejoins++;
+    g_join = J_UP;
+    g_backoff = BACKOFF_MIN_MS;
+    netif_set_link_up(&g_netif);
+  } else {
+    netif_set_link_down(&g_netif);
+  }
+}
+
+/* try again after a pause that doubles with each failure */
+static void wait_then_join(void)
+{
+  set_up(0);
+  if (!can_rejoin()) {
+    g_join = J_GIVEN_UP;
+    return;
+  }
+  g_join = J_WAITING;
+  g_deadline = g_now + g_backoff;
+  g_backoff = g_backoff * 2 > BACKOFF_MAX_MS ? BACKOFF_MAX_MS : g_backoff * 2;
+}
+
+static void join(void)
+{
+  uint8_t c[55];
+  uint32_t mhz = g_config.ap_channel == 14 ? 2484 : 2407 + 5u * g_config.ap_channel;
+  int wpa2 = g_config.ap_security == DSCM_AP_WPA2;
+  memset(c, 0, sizeof(c));
+  c[0] = 1;                                 /* infrastructure */
+  c[1] = 1;                                 /* open system 802.11 auth */
+  c[2] = wpa2 ? 5 : 1;                      /* WPA2-PSK or none */
+  c[3] = wpa2 ? g_config.ap_pair_cipher : DSCM_CIPHER_NONE;
+  c[5] = wpa2 ? g_config.ap_group_cipher : DSCM_CIPHER_NONE;
+  c[7] = g_config.ap_ssid_len;
+  memcpy(c + 8, g_config.ap_ssid, g_config.ap_ssid_len);
+  c[40] = (uint8_t)mhz;
+  c[41] = (uint8_t)(mhz >> 8);
+  memcpy(c + 42, g_config.ap_bssid, 6);
+  c[48] = 0x20;                             /* follow the AP's channel switches */
+  wmi_cmd(WMI_CONNECT_CMD, c, 52);
+  g_join = J_JOINING;
+  g_deadline = g_now + JOIN_TIMEOUT_MS;
+}
+
+static void leave_then_join(void)
+{
+  set_up(0);
+  if (!can_rejoin()) {
+    g_join = J_GIVEN_UP;
+    return;
+  }
+  wmi_cmd(WMI_DISCONNECT_CMD, NULL, 0);
+  g_join = J_LEAVING;
+  g_deadline = g_now + LEAVE_TIMEOUT_MS;
+}
+
+/* an attempt that stalled: drop it and try again later */
+static void abandon_attempt(void)
+{
+  wmi_cmd(WMI_DISCONNECT_CMD, NULL, 0);
+  wait_then_join();
+}
+
+/* keys in, as dswifi does after its handshake */
+static void keys_done(const wpa_out_t* o, int pairwise)
+{
+  uint8_t one = 1;
+  if (pairwise) {
+    wmi_cmd(WMI_SYNCHRONIZE_CMD, &one, 1);
+    data_sync();
+    data_sync();
+    add_key(0, 0, DSCM_CIPHER_CCMP, g_wpa.tk, 16, NULL);
+  }
+  if (o->install_gtk)
+    add_key(o->gtk_index, 1, g_config.ap_group_cipher, o->gtk, o->gtk_len, o->rsc);
+  if (pairwise)
+    wmi_cmd(WMI_SYNCHRONIZE_CMD, &one, 1);
+}
+
+static void handle_eapol(const uint8_t* src, const uint8_t* eapol, uint32_t len)
+{
+  static wpa_out_t o;
+  uint8_t snonce[32];
+  int r;
+  if (g_config.ap_security != DSCM_AP_WPA2 || !g_config.pmk_valid)
+    return;                       /* no key: leave the launcher's association as it is */
+  entropy_bytes(snonce, 32);
+  r = wpa_rx(&g_wpa, eapol, len, snonce, &o);
+  if (r == WPA_REPLY) {
+    send_eapol(src, o.eapol, o.eapol_len);
+    if (o.install_ptk || o.install_gtk)
+      keys_done(&o, o.install_ptk);
+    if (o.install_ptk && g_join == J_KEYING)
+      set_up(1);
+  } else if (r == WPA_NEED_PTK && g_join == J_UP) {
+    leave_then_join();            /* the launcher's keys: only a new association gets us ours */
+  } else if (r == WPA_UNSUPPORTED && g_join == J_KEYING) {
+    g_join = J_GIVEN_UP;          /* a handshake we can't finish */
+  }
+  memset(&o, 0, sizeof(o));
+  memset(snonce, 0, sizeof(snonce));
+}
+
 /* ---- RX ---- */
 
-static void handle_wmi(uint16_t id)
+static void handle_wmi(uint16_t id, const uint8_t* p, uint32_t len)
 {
   if (id == WMI_DISCONNECT_EVENT) {
-    g_connected = 0;
-    netif_set_link_down(&g_netif);
+    if (g_join == J_LEAVING)
+      join();
+    else if (g_join != J_GIVEN_UP && g_join != J_WAITING)
+      wait_then_join();
+    else
+      set_up(0);
   } else if (id == WMI_CONNECT_EVENT) {
-    g_connected = 1;
-    netif_set_link_up(&g_netif);
+    const uint8_t* bssid = len >= 8 ? p + 2 : g_config.ap_bssid;
+    if (g_config.ap_security == DSCM_AP_WPA2) {
+      if (!g_config.pmk_valid) {
+        g_join = J_GIVEN_UP;
+        return;
+      }
+      set_up(0);
+      wpa_begin(&g_wpa, g_config.pmk, g_config.mac, bssid, g_config.ap_group_cipher);
+      g_join = J_KEYING;
+      g_deadline = g_now + KEY_TIMEOUT_MS;
+    } else {
+      uint8_t one = 1;
+      wmi_cmd(WMI_SYNCHRONIZE_CMD, &one, 1);
+      data_sync();
+      data_sync();
+      wmi_cmd(WMI_SYNCHRONIZE_CMD, &one, 1);
+      set_up(1);
+    }
   }
 }
 
@@ -158,7 +433,7 @@ static void handle_frame(const uint8_t* d, uint32_t avail)
   plen = len - trailer;
 
   if (d[0] == HTC_EP_WMI && plen >= 2) {
-    handle_wmi((uint16_t)(p[0] | (p[1] << 8)));
+    handle_wmi((uint16_t)(p[0] | (p[1] << 8)), p + 2, plen - 2);
     return;
   }
   if (d[0] != HTC_EP_DATA || plen < 24)
@@ -166,6 +441,10 @@ static void handle_frame(const uint8_t* d, uint32_t avail)
   dlen = ((uint32_t)p[14] << 8) | p[15];
   if (dlen < 8 || 16 + dlen > plen)
     return;
+  if (p[22] == 0x88 && p[23] == 0x8E) {
+    handle_eapol(p + 8, p + 24, dlen - 8);
+    return;
+  }
 
   /* rebuild an Ethernet II frame: dst, src, ethertype, payload */
   pb = pbuf_alloc(PBUF_RAW, (u16_t)(14 + dlen - 8), PBUF_POOL);
@@ -215,6 +494,9 @@ void* link_init(const net_config_t* config)
   netif_set_up(&g_netif);
   netif_set_link_up(&g_netif);
   entropy_stir(config->mac, 6);
+  /* answers a PTK rekey on the launcher's association; a group rekey needs a rejoin */
+  if (config->ap_security == DSCM_AP_WPA2 && config->pmk_valid)
+    wpa_begin(&g_wpa, config->pmk, config->mac, config->ap_bssid, config->ap_group_cipher);
   return &g_ring;
 }
 
@@ -234,10 +516,29 @@ int link_paused(uint32_t* paused_count)
   return 0;
 }
 
-void link_service(void)
+int link_rejoining(void)
 {
+  return g_join != J_UP && g_join != J_GIVEN_UP;
+}
+
+void link_service(uint32_t now_ms)
+{
+  g_now = now_ms;
   pump_rx();
+  ctrl_flush();
+  if ((int32_t)(g_now - g_deadline) >= 0) {
+    if (g_join == J_WAITING || g_join == J_LEAVING)
+      join();
+    else if (g_join == J_JOINING || g_join == J_KEYING)
+      abandon_attempt();
+  }
   sys_check_timeouts();
+}
+
+/* rejoins that got us back online */
+uint32_t link_rejoins(void)
+{
+  return g_rejoins;
 }
 
 void link_stats(uint32_t* rx, uint32_t* tx, uint32_t* drops)

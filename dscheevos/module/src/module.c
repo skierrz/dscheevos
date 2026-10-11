@@ -240,11 +240,25 @@ int module_init(const dscm_boot_t* boot)
     nc.netmask = g_boot.netmask;
     nc.gateway = g_boot.gateway;
     nc.dns = g_boot.dns;
+    memcpy(nc.ap_ssid, g_boot.ap_ssid, sizeof(nc.ap_ssid));
+    nc.ap_ssid_len = g_boot.ap_ssid_len;
+    memcpy(nc.ap_bssid, g_boot.ap_bssid, 6);
+    nc.ap_channel = g_boot.ap_channel;
+    nc.ap_security = g_boot.ap_security;
+    nc.ap_pair_cipher = g_boot.ap_pair_cipher;
+    nc.ap_group_cipher = g_boot.ap_group_cipher;
+    nc.pmk_valid = g_boot.pmk_valid;
+    memcpy(nc.pmk, g_boot.pmk, 32);
     nc.host = g_boot.host;
     strcpy(user_agent, "DScheevos/0.1.0 (Nintendo DSi) rcheevos/" RCHEEVOS_VERSION_STRING);
     nc.user_agent = user_agent;
     entropy_stir(&g_boot.unix_time, sizeof(g_boot.unix_time));
     ring = net_init(&nc);
+    /* the link keeps the one copy of the PMK it needs */
+    memset(nc.pmk, 0, sizeof(nc.pmk));
+    memset(g_boot.pmk, 0, sizeof(g_boot.pmk));
+    memset(((dscm_boot_t*)g_session)->pmk, 0, sizeof(g_boot.pmk));
+    dscm_dc_clean(((dscm_boot_t*)g_session)->pmk, sizeof(g_boot.pmk));
     if (g_boot.ca_length && g_boot.ca_offset <= g_boot.file_size && g_boot.ca_length <= g_boot.file_size - g_boot.ca_offset)
       https_add_ca(g_session + g_boot.ca_offset, g_boot.ca_length);
     dscm_publish_net_ring(ring);
@@ -335,6 +349,7 @@ void module_idle(void)
     dscm_g_status.net_state = net_state();
     dscm_g_status.net_detail = net_detail();
     dscm_g_status.tls_handshake_ms = net_handshake_ms();
+    dscm_g_status.net_rejoins = link_rejoins();
     poll_network();
   }
 }

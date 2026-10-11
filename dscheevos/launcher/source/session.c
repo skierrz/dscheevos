@@ -229,6 +229,19 @@ int session_write(const dsc_settings_t* settings, const char* rom_path, const ch
       boot.dns = dns1.s_addr;
     }
   }
+  /* so the module can rejoin it; nds-bootstrap adds the PMK in RAM */
+  {
+    net_ap_t ap;
+    if (boot.net_valid && net_current_ap(&ap) == 0) {
+      memcpy(boot.ap_ssid, ap.ssid, sizeof(boot.ap_ssid));
+      boot.ap_ssid_len = ap.ssid_len;
+      memcpy(boot.ap_bssid, ap.bssid, 6);
+      boot.ap_channel = ap.channel;
+      boot.ap_security = ap.security;
+      boot.ap_pair_cipher = ap.pair_cipher;
+      boot.ap_group_cipher = ap.group_cipher;
+    }
+  }
   /* extra trusted CA for a self-hosted or test server */
   ca = fopen(DSC_DIR "ca.pem", "rb");
   if (ca) {

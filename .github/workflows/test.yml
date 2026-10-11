@@ -7,10 +7,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Fetch rcheevos
-        run: git submodule update --init --depth 1 external/rcheevos
+      - name: Fetch rcheevos, mbedTLS
+        run: git submodule update --init --depth 1 external/rcheevos external/mbedtls
       - name: Core unit tests
         run: make -C dscheevos/core test
+      - name: WPA2 supplicant tests
+        run: make -C dscheevos/module/tests -j4 test
       - name: Session file layout matches mksession.py
         run: |
           cc -Idscheevos/module/include tools/mksession/layout.c -o layout

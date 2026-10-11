@@ -19,6 +19,7 @@ ap.add_argument('--expect', type=int, action='append', default=[], help='achieve
 ap.add_argument('--never', type=int, action='append', default=[], help='achievement ID that must not unlock')
 ap.add_argument('--max-dropped', type=int, default=0)
 ap.add_argument('--expect-sent', type=int, help='unlocks the server must have answered during play')
+ap.add_argument('--expect-rejoins', type=int, help='times the module must have rejoined the access point')
 args = ap.parse_args()
 ram = open(args.ram, 'rb').read()
 mp = open(args.map).read()
@@ -41,6 +42,9 @@ if len(ram) >= p + 84 and hdr_version(ram) >= 4:
     states = ['none', 'connecting', 'online', 'sending', 'paused', 'offline', 'error']
     print(f'progress {ach_un}/{ach} achievements, {pts_un}/{pts} pts; network {states[nstate] if nstate < len(states) else nstate}'
           f' (detail {ndetail:#x}), unlocks sent {sent}, last TLS handshake {hs_ms} ms')
+rejoins = struct.unpack_from('<I', ram, p + 88)[0] if hdr_version(ram) >= 5 else 0
+if hdr_version(ram) >= 5:
+    print(f'rejoined the access point {rejoins} times')
 hdr = struct.unpack_from('<10I', ram, 0xD80000)
 print('header magic %08x version %d vblank_count %d' % (hdr[0], hdr[1], hdr[9]))
 
@@ -58,6 +62,8 @@ if args.expect_sent is not None:
     sent_now = struct.unpack_from('<I', ram, p + 80)[0] if hdr_version(ram) >= 4 else 0
     if sent_now < args.expect_sent:
         fails.append(f'{sent_now} unlocks sent, expected {args.expect_sent}')
+if args.expect_rejoins is not None and rejoins < args.expect_rejoins:
+    fails.append(f'rejoined {rejoins} times, expected {args.expect_rejoins}')
 fails += [f'{i} unlocked' for i in args.never if i in unlocked]
 print('RESULT ' + ('FAIL: ' + '; '.join(fails) if fails else 'PASS'))
 sys.exit(1 if fails else 0)
