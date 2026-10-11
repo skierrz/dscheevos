@@ -30,7 +30,10 @@ dscm_notify_count:
 	.global dscm_net_ring
 dscm_net_ring:
 	.word 0                     @ 0x44: network ring for the ARM7 SDIO shim
-	.space 24
+	.global dscm_cues
+dscm_cues:
+	.word 0                     @ 0x48: LED cues for the ARM7 (same cache line)
+	.space 20
 
 	.section .text.entries, "ax"
 	.arm

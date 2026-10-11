@@ -295,6 +295,13 @@ typedef struct dscm_journal_t {
   dscm_journal_entry_t e[DSCM_JOURNAL_MAX];
 } dscm_journal_t;                     /* 1620 bytes, fits DSCM_JOURNAL_FILE_SIZE */
 
+/* header->cues: what the ARM7 turns into Wi-Fi LED cues. Counters wrap;
+ * the ARM7 acts on a change, not on the value. */
+#define DSCM_CUE_PROGRESS_MASK    0x000000FFu   /* measured progress updates */
+#define DSCM_CUE_LEADERBOARD_MASK 0x0000FF00u   /* leaderboard attempts started or finished */
+#define DSCM_CUE_LEADERBOARD_SHIFT 8
+#define DSCM_CUE_CHALLENGE        0x00010000u   /* a challenge indicator is showing */
+
 typedef struct dscm_header_t {
   uint32_t magic;
   uint32_t version;
@@ -313,7 +320,8 @@ typedef struct dscm_header_t {
   uint32_t reserved[2];
   volatile uint32_t notify_count;     /* 0x40: unlocks so far; own cache line, cleaned to RAM */
   void* net_ring;                     /* 0x44: dscm_shim.h ring, 0 if none; same line */
-  uint32_t reserved2[6];
+  volatile uint32_t cues;             /* 0x48: LED cues for the ARM7 (DSCM_CUE_*); same cache line, cleaned to RAM */
+  uint32_t reserved2[5];
 } dscm_header_t;
 
 #define DSCM_HEADER ((dscm_header_t*)DSCM_BASE)
