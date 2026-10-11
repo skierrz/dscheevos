@@ -43,10 +43,10 @@ jobs:
     container: devkitpro/devkitarm:20241104
     steps:
       - uses: actions/checkout@v4
-      - name: Fetch rcheevos
+      - name: Fetch rcheevos, lwIP, mbedTLS
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          git submodule update --init --depth 1 external/rcheevos
+          git submodule update --init --depth 1 external/rcheevos external/lwip external/mbedtls
       - name: Build ARM9 module
         run: make -C dscheevos/module
       - name: Build module test

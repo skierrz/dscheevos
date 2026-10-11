@@ -10,11 +10,15 @@ OBJCOPY  := $(PREFIX)objcopy
 SIZE     := $(PREFIX)size
 RCHEEVOS ?= ../../external/rcheevos
 CORE     := ../core
+LWIP     ?= ../../external/lwip
+MBEDTLS  ?= ../../external/mbedtls
+TLSCONF  := ../launcher/tls
 BUILD    := build
 
 ARCH     := -march=armv5te -mtune=arm946e-s -mthumb -mthumb-interwork
 CFLAGS   := $(ARCH) -Os -ffunction-sections -fdata-sections -fno-strict-aliasing -Wall \
-            -DRC_NO_THREADS -DNDEBUG -Iinclude -I$(CORE)/include -I$(RCHEEVOS)/include -I$(RCHEEVOS)/src
+            -DRC_NO_THREADS -DNDEBUG -Iinclude -I$(CORE)/include -I$(RCHEEVOS)/include -I$(RCHEEVOS)/src \
+            -Isrc/net -I$(LWIP)/src/include -I$(TLSCONF) -I$(MBEDTLS)/include '-DMBEDTLS_CONFIG_FILE="dsc_mbedtls_config.h"'
 LDFLAGS  := $(ARCH) -nostartfiles -T module.ld -Wl,--gc-sections -Wl,-Map,$(BUILD)/dscheevos9.map
 
 RC_SRC := $(addprefix $(RCHEEVOS)/src/, client/rc_client.c \
@@ -24,8 +28,16 @@ RC_SRC := $(addprefix $(RCHEEVOS)/src/, client/rc_client.c \
   runtime/rc_trigger.c runtime/rc_value.c \
   api/rc_api_common.c api/rc_api_info.c api/rc_api_runtime.c api/rc_api_user.c \
   util/md5.c util/rc_compat.c util/rc_util.c util/rc_version.c)
+LWIP_SRC := $(addprefix $(LWIP)/src/, core/init.c core/def.c core/dns.c core/inet_chksum.c core/ip.c \
+  core/mem.c core/memp.c core/netif.c core/pbuf.c core/stats.c core/sys.c core/tcp.c core/tcp_in.c \
+  core/tcp_out.c core/timeouts.c core/udp.c core/ipv4/etharp.c core/ipv4/icmp.c core/ipv4/ip4.c \
+  core/ipv4/ip4_addr.c core/ipv4/ip4_frag.c netif/ethernet.c)
+TLS_SRC := $(wildcard $(MBEDTLS)/library/*.c)
+NET_SRC := $(wildcard src/net/*.c) $(TLSCONF)/cacerts.c
 SRC := src/module.c src/syscalls.c $(CORE)/src/dscheevos.c
-OBJ := $(patsubst %.c,$(BUILD)/%.o,$(notdir $(SRC))) $(patsubst $(RCHEEVOS)/src/%.c,$(BUILD)/rc/%.o,$(RC_SRC)) $(BUILD)/start.o
+OBJ := $(patsubst %.c,$(BUILD)/%.o,$(notdir $(SRC))) $(patsubst $(RCHEEVOS)/src/%.c,$(BUILD)/rc/%.o,$(RC_SRC)) $(BUILD)/start.o \
+  $(patsubst $(LWIP)/src/%.c,$(BUILD)/lwip/%.o,$(LWIP_SRC)) $(patsubst $(MBEDTLS)/library/%.c,$(BUILD)/tls/%.o,$(TLS_SRC)) \
+  $(patsubst %.c,$(BUILD)/net/%.o,$(notdir $(NET_SRC)))
 
 .PHONY: all clean
 all: $(BUILD)/dscheevos9.bin
@@ -39,6 +51,18 @@ $(BUILD)/dscheevos.o: $(CORE)/src/dscheevos.c
 $(BUILD)/rc/%.o: $(RCHEEVOS)/src/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -w -c $< -o $@
+$(BUILD)/lwip/%.o: $(LWIP)/src/%.c src/net/lwipopts.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -w -c $< -o $@
+$(BUILD)/tls/%.o: $(MBEDTLS)/library/%.c $(TLSCONF)/dsc_mbedtls_config.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(if $(filter bignum% ecp% ecdsa ecdh,$*),-marm -O2) -w -c $< -o $@
+$(BUILD)/net/%.o: src/net/%.c src/net/net.h include/dscheevos_module.h include/dscm_shim.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD)/net/cacerts.o: $(TLSCONF)/cacerts.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
 $(BUILD)/start.o: src/start.s
 	@mkdir -p $(BUILD)
 	$(CC) $(ARCH) -c $< -o $@

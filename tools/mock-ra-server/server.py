@@ -101,6 +101,7 @@ def main():
         state = State(json.load(f), args.hash, args.log)
 
     class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"   # keep-alive, like the real server
         def _reply(self, params):
             body = json.dumps(handle(state, params)).encode()
             self.send_response(200)

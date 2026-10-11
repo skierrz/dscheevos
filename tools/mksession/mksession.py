@@ -16,7 +16,7 @@ import sys
 import time
 
 MAGIC = 0x53435344          # "DSCS"
-BOOT_SIZE = 496             # sizeof(dscm_boot_t); checked by layout.c in CI
+BOOT_SIZE = 528             # sizeof(dscm_boot_t); checked by layout.c in CI
 SESSION_MAX = 0x60000
 
 DEFAULT_LOGIN = b'{"Success":true,"User":"tester","Token":"tok","Score":0,"SoftcoreScore":0,"Messages":0}'
@@ -55,6 +55,8 @@ def build(args):
     head += struct.pack("<B2x", 0 if args.softcore else 1)  # hardcore, reserved[2]
     head += struct.pack("<II", 0, int(args.unix_time or time.time()))
     head += struct.pack("<3I", *offsets) + struct.pack("<3I", *lengths)
+    # network during play (mac, valid, ip, netmask, gateway, dns) and extra CA: none offline
+    head += bytes(6) + struct.pack("<BB", 0, 0) + struct.pack("<4I", 0, 0, 0, 0) + struct.pack("<II", 0, 0)
     assert len(head) == BOOT_SIZE, len(head)
     return head + body
 

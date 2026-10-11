@@ -46,6 +46,7 @@ static void on_setting(const char* key, const char* value, void* ud)
   dsc_settings_t* s = (dsc_settings_t*)ud;
   if (!strcmp(key, "ENABLED")) s->enabled = atoi(value) != 0;
   else if (!strcmp(key, "HARDCORE")) s->hardcore = atoi(value) != 0;
+  else if (!strcmp(key, "SEND_DURING_PLAY")) s->live = atoi(value) != 0;
   else if (!strcmp(key, "USERNAME")) copy(s->username, sizeof(s->username), value);
   else if (!strcmp(key, "TOKEN")) copy(s->token, sizeof(s->token), value);
   else if (!strcmp(key, "HOST")) copy(s->host, sizeof(s->host), value);
@@ -56,6 +57,7 @@ void settings_load(dsc_settings_t* s)
   memset(s, 0, sizeof(*s));
   s->enabled = 1;
   s->hardcore = 1;
+  s->live = 1;
   strcpy(s->host, DEFAULT_HOST);
   read_ini(SETTINGS_PATH, on_setting, s);
 }
@@ -65,8 +67,8 @@ int settings_save(const dsc_settings_t* s)
   FILE* f = fopen(SETTINGS_PATH, "w");
   if (!f)
     return 0;
-  fprintf(f, "[DSCHEEVOS]\nENABLED = %d\nHARDCORE = %d\nUSERNAME = %s\nTOKEN = %s\n",
-          s->enabled, s->hardcore, s->username, s->token);
+  fprintf(f, "[DSCHEEVOS]\nENABLED = %d\nHARDCORE = %d\nSEND_DURING_PLAY = %d\nUSERNAME = %s\nTOKEN = %s\n",
+          s->enabled, s->hardcore, s->live, s->username, s->token);
   if (strcmp(s->host, DEFAULT_HOST) != 0)
     fprintf(f, "HOST = %s\n", s->host);
   fclose(f);
