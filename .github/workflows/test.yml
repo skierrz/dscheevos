@@ -11,3 +11,26 @@ jobs:
         run: git submodule update --init --depth 1 external/rcheevos
       - name: Core unit tests
         run: make -C dscheevos/core test
+  games:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch submodules
+        run: git submodule update --init --depth 1 external/rcheevos tools/melonDS
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y ninja-build p7zip-full
+      - name: Cache test games
+        uses: actions/cache@v4
+        with:
+          path: ~/dsc-roms
+          key: dsc-roms-${{ hashFiles('tests/games/games.txt') }}
+      - name: Fetch test games
+        run: |
+          make -C tools/rahash
+          python3 tests/games/fetch_roms.py --hasher tools/rahash/rahash --out ~/dsc-roms
+      - name: Build game test harness
+        run: |
+          cmake -S tests/games -B build/games -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/games
+      - name: Game tests
+        run: DSC_GAMETEST=build/games/dsc-gametest DSC_ROMS=$HOME/dsc-roms tests/games/run.sh
