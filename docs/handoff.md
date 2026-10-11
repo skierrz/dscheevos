@@ -9,18 +9,22 @@ Everything below is pushed to GitHub. Nothing lives only in the cloud container 
 | `skierrz/dscheevos` | `main` | last release build: `090b4ae` |
 | | `snapshot-repeats` | PR #12, CI green, parked |
 | | `backlog-reads` | on top of #12: queued frames use memory from their own VBlank. CI green. No PR yet. |
-| | `compliance` | on top of `backlog-reads`: GPL-3.0 `LICENSE`, `VERSION` file, `docs/compliance.md`, hardcore warning detection. Newest work, `fb72f3d`. No PR yet. |
+| | `compliance` | on top of `backlog-reads`: GPL-3.0 `LICENSE`, `VERSION` file, `docs/compliance.md`, hardcore warning detection. No PR yet. |
+| | `mac-setup` | on top of `compliance`: macOS script fixes, `.gitignore`, Wi-Fi drop script, local setup notes. |
+| | `features` | on top of `mac-setup`: ABI v6, offline queue, full achievement list, notices, hardcore always online, spectator mode, real-server bench, privacy policy, toolkit licences. Newest work. |
 | `skierrz/nds-bootstrap` | `dscheevos` | what `main` builds with (`9c602ce`) |
-| | `dscheevos-hc-status` | `9deddf1`, in-game page shows whether RA counts hardcore. `compliance` points its submodule here. Fast-forward `dscheevos` to it when `compliance` merges (the release README and `SOURCES.txt` name the `dscheevos` branch). |
+| | `dscheevos-hc-status` | `9deddf1`, in-game page shows whether RA counts hardcore. `compliance` points its submodule here. |
+| | `dscheevos-features` | on top of `dscheevos-hc-status`: ABI v6, journal writes at safe points, `fileWrite` fix, full achievement list page. `features` points its submodule here. Fast-forward `dscheevos` to it when `features` merges (the release README and `SOURCES.txt` name the `dscheevos` branch). |
 | `skierrz/melonDS` | `dscheevos` | `e9dd6eb`, test bench only (`tools/melonDS` submodule) |
+| | `dscheevos-features` | on top: in-place SD writes reach the host folder, `--rtc` (clock starts at host time). `features` points its submodule here. |
 
-The three dscheevos branches are stacked: #12 must merge first (or rebase the stack onto `main`). Suggested order: merge #12, then open PRs for `backlog-reads` and `compliance` in turn.
+The dscheevos branches are stacked: #12 must merge first (or rebase the stack onto `main`). Suggested order: merge #12, then PRs for `backlog-reads`, `compliance`, `mac-setup` and `features` in turn.
 
 ## Setting up on a Mac
 
 1. `git clone --recurse-submodules https://github.com/skierrz/dscheevos && cd dscheevos && git checkout compliance && git submodule update --init --recursive`
 2. Docker Desktop. The images are x86-64; on Apple Silicon they run under emulation: slower, but they work. Images: `devkitpro/devkitarm:20241104` (module, nds-bootstrap), `devkitpro/devkitarm:20260610` (loader), `skylyrac/blocksds:slim-v1.24.0` (launcher). The exact commands are in `.github/workflows/release.yml`.
-3. Native tools: `brew install cmake ninja openssl python` (and `pillow` for screenshots: `pip3 install pillow`).
+3. Native tools: `brew install cmake ninja openssl python` and `brew install pillow` for screenshots (`pip3` on a Mac is the system Python 3.9, not Homebrew's `python3`; the scripts skip PNG conversion silently without it).
 4. Build the headless runner: `cmake -S tools/melonDS/tools/dscheevos/headless -B build/runner -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build/runner`. Game tests: see `tests/games/README.md`.
 5. Private files, never in git. Put them in one folder (e.g. `~/dsi-private`) and point `DSI_FILES` at it: `biosnds7.bin`, `biosnds9.bin`, `biosdsi7.bin`, `biosdsi9.bin`, `dsfirmware.bin`, `dsifirmware.bin`, `dsinand.bin` (your own dumps). ROMs: Kirby Super Star Ultra (USA), Pokemon Platinum (USA, Rev 1), New Super Mario Bros. (USA) from your Drive folder. TWiLight Menu++ downloads itself (`tests/twilight/get-twilight.sh`).
 
@@ -85,23 +89,29 @@ release/package.sh "$PWD/out/dscheevos" "$(git describe --tags --always)"
 
 ## Open work, in order
 
-1. **SD unlock queue** (compliance A, "offline queueing"). The module keeps pending unlocks and leaderboard entries in RAM and writes them only when it's safe (not from the VBlank IRQ: another fork froze Ketsui doing that). Candidates: when the in-game menu opens, and at exit. The launcher sends them at the next start, with rcheevos' `o=` offset. Also port their fix for nds-bootstrap's `fileWrite` partial-sector bug (`retail/common/source/my_fat.c`, see `bakkerrrs/retroachievements-ds-on-3ds` docs, "fileWrite") before writing files in-game.
-2. **Full achievement list** in the in-game menu: titles, descriptions, state, measured progress.
-3. **Overlay during play** (compliance A and E). See below.
-4. **Rich presence in hardcore**: keep the network path on while a hardcore session runs (now it only runs with "Send unlocks during play").
-5. **Privacy policy**; ship DScheevos' own licence and the toolkit licences (libnds, DSWiFi, newlib) in the zip.
-6. **VBlank cost**: about 113k instructions per frame for a typical synthetic set (qemu count), up from 54k before `backlog-reads`. Room to cut: read chain pointers from the snapshot instead of calling the platform reader; fill small gaps between table runs.
-7. **Ask RA** (RAdmin) about approving a hardware client: hardcore validation, how they want unlocks offset by days treated, rich presence without pings, and what "displayed during gameplay" means for a DSi. Their FAQ says manual unlocks aren't given for "original hardware", which hints at how they see hardware clients today.
-8. **First public release**: starts RA's 6-month clock.
-9. **Hardware test** when you're back with the DSi: watch the router's client list at boot, +5, +15 and +30 minutes into a game. Another fork (3DS) lost Wi-Fi seconds after the game booted; we switch the Wi-Fi hardware differently, but that's untested.
+Done on `features` (Oct 2026): offline queue, full achievement list, rich presence in hardcore, privacy policy and licences, spectator mode, real-server bench. Details in `docs/compliance.md` and `docs/architecture.md`.
 
-## Overlay research in progress
+1. **Notices during play** (compliance A and E): needs the owner's decision first. `docs/overlay-research.md` has the options, evidence from melonDS experiments, the decisions, the questions for RetroAchievements and the hardware tests. The module already produces the notices (`dscm_notices_t`); only the display is missing.
+2. **Ask RA** (RAdmin) about approving a hardware client: the questions are in `docs/overlay-research.md`. Their FAQ says manual unlocks aren't given for "original hardware", which hints at how they see hardware clients today.
+3. **Bench run on a real test account** in melonDS: `tests/real/run.sh` (spectator by default; `tests/real/README.md`).
+4. **VBlank cost**: about 113k instructions per frame for a typical synthetic set (qemu count), up from 54k before `backlog-reads`. Room to cut: read chain pointers from the snapshot instead of calling the platform reader; fill small gaps between table runs.
+5. **Hardware test** with the DSi: watch the router's client list at boot, +5, +15 and +30 minutes into a game (another fork lost Wi-Fi seconds after boot on 3DS); open the in-game menu after unlocks with the server unreachable and check `pending.bin` is sent at the next start; the overlay hardware tests in `docs/overlay-research.md`.
+6. **First public release**: starts RA's 6-month clock.
 
-The owner's rules: no pausing, no slowdown, no corruption, no way to change game state or show more than RA allows. Graphical, RetroArch-like if possible; badge images a stretch goal.
+## End-to-end checks on `features`
 
-- 3DS (later): patch TwlBg and draw after the DS picture is finished. Zero contact with the game. Noted in `docs/compliance.md`.
-- DSi: a 4-ideator → 4-critic → synthesis workflow was started and stopped early (cloud credits). `docs/handoff-overlay-gauntlet.js` is the script; it has absolute paths from the cloud box (`/home/user/...`, `/tmp/claude-0/gbatek`) to change before rerunning. It needs: this repo, `~/nds-bootstrap` (fork, `dscheevos-hc-status`), a clone of `Bakkerrrs/retroachievements-ds-on-3ds`, and GBATEK as text (problemkaputt.de/gbatek.htm). In Claude Code: ask it to "run the workflow in docs/handoff-overlay-gauntlet.js".
-- The one ideator that finished (VRAM/display-mode angle) is in `docs/handoff-overlay-ideas-vram.json`. Its lead idea: a banner on the top scanlines in engine A's main-memory display mode, fed by a DSi-only NDMA channel from DScheevos' RAM. It rejected display-capture blending, windows/blending, master brightness, extended palettes, VRAM H/I and the 3D quad. None of this has been checked by a critic yet.
+All with the env file sourced, one at a time, WORK deleted after each. Results from the last run (Oct 2026): all pass.
+
+| Check | Command |
+|---|---|
+| Core | `make -C dscheevos/core test` (307 checks) |
+| Module test ROM | as in "Local setup"; checks list, notices, journal |
+| Offline queue | `MOCK_ARGS="--fail-awards --known-client" SCRIPT=<open and close the menu at 4500/4800: lines "4500 0x284 20", "4800 0x2 5"> tests/launcher/run.sh tests/bootstrap/sets/live.json 5200 --expect-journal-unsent 4`, then with the same WORK: `MOCK_ARGS=--known-client tests/launcher/run.sh tests/bootstrap/sets/live.json 2600` (launcher.log: "pending: sent 4 unlocks"; events: `offset` > 0; no unlock twice) |
+| Still offline at the next start | the first run twice, then the normal one: the second sets the old journal aside in `unsent/`, the third sends all 8 |
+| Hardcore always online | `HARDCORE=1 LIVE=0 tests/launcher/run.sh tests/bootstrap/sets/live.json 6000 --expect-sent 4` (a `ping` reaches the server) |
+| Spectator | `SPECTATOR=1 tests/launcher/run.sh tests/bootstrap/sets/live.json 6000` (no `startsession` or `unlock` events; the list shows the unlocks) |
+| Real server | `tests/real/run.sh --check` (no account: retroachievements.org answers over TLS) |
+| In-game list | open the menu, DOWN, A (summary), RIGHT (list), A (detail); screenshots with the runner's `--screenshot` |
 
 ## What the RA docs say (sources)
 

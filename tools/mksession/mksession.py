@@ -5,7 +5,7 @@ The DScheevos launcher writes this file after going online; this tool makes
 the same file offline for tests (mock server replies, test sets).
 
   mksession.py --rom-path sd:/games/kirby.nds --hash <md5> --set set.json \
-      [--login login.json] [--session start.json] [--softcore] -o session.bin
+      [--login login.json] [--session start.json] [--softcore] [--spectator] -o session.bin
 
 Layout: dscm_boot_t (see dscheevos/module/include/dscheevos_module.h), then
 the login2, achievementsets and startsession replies, 4-byte aligned.
@@ -17,7 +17,9 @@ import time
 
 MAGIC = 0x53435344          # "DSCS"
 BOOT_SIZE = 604             # sizeof(dscm_boot_t); checked by layout.c in CI
-SESSION_MAX = 0x60000
+FLAGS_OFFSET = 462          # offsetof(dscm_boot_t, flags), as layout.c prints it
+SESSION_MAX = 0x40000       # DSCM_SESSION_MAX
+BOOT_SPECTATOR = 0x01       # DSCM_BOOT_SPECTATOR
 
 DEFAULT_LOGIN = b'{"Success":true,"User":"tester","Token":"tok","Score":0,"SoftcoreScore":0,"Messages":0}'
 DEFAULT_SESSION = b'{"Success":true,"Unlocks":[],"HardcoreUnlocks":[],"ServerNow":%d}'
@@ -52,7 +54,9 @@ def build(args):
     head += fixed(args.rom_path, 256)
     head += fixed(args.host, 64) + fixed(args.user, 32) + fixed(args.token, 64)
     head += fixed(args.hash.lower(), 33)
-    head += struct.pack("<B2x", 0 if args.softcore else 1)  # hardcore, reserved[2]
+    head += struct.pack("<B", 0 if args.softcore else 1)    # hardcore
+    assert len(head) == FLAGS_OFFSET, len(head)
+    head += struct.pack("<Bx", BOOT_SPECTATOR if args.spectator else 0)  # flags, reserved
     head += struct.pack("<II", 0, int(args.unix_time or time.time()))
     head += struct.pack("<3I", *offsets) + struct.pack("<3I", *lengths)
     # network during play (mac, valid, ip, netmask, gateway, dns) and extra CA: none offline
@@ -76,6 +80,7 @@ def main():
     ap.add_argument("--user", default="tester")
     ap.add_argument("--token", default="tok")
     ap.add_argument("--softcore", action="store_true")
+    ap.add_argument("--spectator", action="store_true", help="rc_client spectator mode: evaluate, send nothing")
     ap.add_argument("--unix-time", type=int)
     ap.add_argument("--net", action="store_true", help="mark the network as usable during play (tests)")
     ap.add_argument("--ap-ssid", default="", help="access point the module may rejoin (tests)")

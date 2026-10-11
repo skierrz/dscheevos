@@ -20,20 +20,33 @@
  * arena, also used as a ring, so each frame costs only the bytes watched
  * and a long stretch without idle time (loading, save writes) queues many
  * frames instead of dropping them.
+ *
+ * Journal, notices and the achievement list (ABI v6) are filled from
+ * rc_client's events and server replies, all in idle time.
  */
 #include "dscheevos.h"
+#include "../../module/include/dscheevos_module.h"
 
 #include "rc_client.h"
+#include "rc_api_runtime.h"
 #include "rc_consoles.h"
 #include "client/rc_client_internal.h"
 #include "runtime/rc_internal.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define MAX_SLOTS 1024
 #define TABLES 3              /* current, plus up to two still used by queued snapshots */
 #define MAX_PENDING_HTTP 8
+#define LIST_MIN_FRAMES 30    /* rebuild the achievement list at most this often */
+#define WARNING_ID 101000001u /* the server's "unsupported emulator" achievement, and above */
+
+/* Readers (in-game menu, ARM7) may look at any time: a count or head is
+ * stored only after what it covers. */
+#define PUBLISH_BARRIER() __asm__ __volatile__("" ::: "memory")
 
 typedef struct run_t {
   uint32_t address;           /* RA address of the first byte */
@@ -87,6 +100,9 @@ typedef struct http_pending_t {
   int status;
   char* body;
   size_t body_length;
+  uint8_t journal_kind;       /* DSCM_JOURNAL_* if the request is an award or a leaderboard entry */
+  uint32_t journal_id;
+  int32_t journal_score;      /* leaderboard entries only */
 } http_pending_t;
 
 static struct {
@@ -115,6 +131,13 @@ static struct {
 
   http_pending_t http[MAX_PENDING_HTTP];
   char game_hash[33];
+
+  dscm_list_t* list_buf[2];    /* double buffer; list_published is the one readers may use */
+  dscm_list_t* list_published;
+  uint32_t list_max;
+  uint32_t list_generation;
+  uint32_t list_frame;         /* frame_counter at the last build */
+  int list_stale;
 
   dsc_stats_t stats;
 } S;
@@ -478,6 +501,337 @@ fail:
   free_chains();
 }
 
+/* ---- journal, notices, achievement list ---- */
+
+/* Copy UTF-8 text into a fixed field, cut on a character boundary. */
+static void copy_text(char* dst, const char* src, size_t n)
+{
+  size_t len = src ? strlen(src) : 0;
+  if (len >= n) {
+    len = n - 1;
+    while (len > 0 && ((uint8_t)src[len] & 0xC0) == 0x80)
+      len--;
+  }
+  if (len)
+    memcpy(dst, src, len);
+  dst[len] = '\0';
+}
+
+static uint32_t unix_now(void)
+{
+  return S.platform.unix_time ? S.platform.unix_time() : (uint32_t)time(NULL);
+}
+
+/* The frame the event belongs to: the queued one being evaluated, if any. */
+static uint32_t current_frame(void)
+{
+  return S.evaluating ? S.evaluating->frame : S.frame_counter;
+}
+
+/* Header fields, once the game is known; magic last. */
+static void journal_start(uint32_t game_id)
+{
+  dscm_journal_t* j = S.platform.journal;
+  if (!j)
+    return;
+  j->size = sizeof(dscm_journal_t);
+  j->game_id = game_id;
+  copy_text(j->username, S.config.username, sizeof(j->username));
+  copy_text(j->game_hash, S.game_hash, sizeof(j->game_hash));
+  PUBLISH_BARRIER();
+  j->magic = DSCM_JOURNAL_MAGIC;
+}
+
+/* The oldest entry with the given sent flag, or DSCM_JOURNAL_MAX. */
+static uint32_t journal_oldest(const dscm_journal_t* j, int sent)
+{
+  uint32_t i, pick = DSCM_JOURNAL_MAX;
+  for (i = 0; i < j->count; i++)
+    if (j->e[i].sent == sent && (pick == DSCM_JOURNAL_MAX || j->e[i].unix_time < j->e[pick].unix_time))
+      pick = i;
+  return pick;
+}
+
+/* An entry is written with kind 0, so a reader skips it until it is complete. */
+static void journal_add(uint8_t kind, uint32_t id, int32_t score)
+{
+  dscm_journal_t* j = S.platform.journal;
+  dscm_journal_entry_t* e;
+  uint32_t pick;
+  if (!j || S.config.spectator)
+    return;
+  if (j->count < DSCM_JOURNAL_MAX) {
+    pick = j->count;
+  }
+  else {
+    /* full: reuse the oldest answered entry, or lose the oldest unsent one */
+    pick = journal_oldest(j, 1);
+    if (pick == DSCM_JOURNAL_MAX) {
+      pick = journal_oldest(j, 0);
+      S.stats.journal_lost++;
+    }
+  }
+  e = &j->e[pick];
+  e->kind = 0;
+  PUBLISH_BARRIER();
+  e->hardcore = rc_client_get_hardcore_enabled(S.client) ? 1 : 0;
+  e->sent = 0;
+  e->reserved = 0;
+  e->id = id;
+  e->score = score;
+  e->unix_time = unix_now();
+  PUBLISH_BARRIER();
+  e->kind = kind;
+  if (pick == j->count) {
+    PUBLISH_BARRIER();
+    j->count = pick + 1;
+  }
+}
+
+/* Leaderboard entries also match on score: two for one board can be in flight. */
+static void journal_answered(uint8_t kind, uint32_t id, int32_t score)
+{
+  dscm_journal_t* j = S.platform.journal;
+  uint32_t i, pick = DSCM_JOURNAL_MAX;
+  if (!j)
+    return;
+  for (i = 0; i < j->count; i++)
+    if (j->e[i].kind == kind && j->e[i].id == id && !j->e[i].sent &&
+        (kind != DSCM_JOURNAL_LEADERBOARD || j->e[i].score == score) &&
+        (pick == DSCM_JOURNAL_MAX || j->e[i].unix_time < j->e[pick].unix_time))
+      pick = i;
+  if (pick < DSCM_JOURNAL_MAX)
+    j->e[pick].sent = 1;
+}
+
+/* Number after "key=" in form data, 0 if missing. */
+static uint32_t post_param(const char* post, const char* key)
+{
+  size_t n = strlen(key);
+  const char* p = post;
+  while (p && *p) {
+    if (strncmp(p, key, n) == 0 && p[n] == '=')
+      return (uint32_t)strtoul(p + n + 1, NULL, 10);
+    p = strchr(p, '&');
+    if (p)
+      p++;
+  }
+  return 0;
+}
+
+static void request_journal_kind(http_pending_t* p, const char* post)
+{
+  if (!post)
+    return;
+  if (strncmp(post, "r=awardachievement&", 19) == 0) {
+    p->journal_kind = DSCM_JOURNAL_AWARD;
+    p->journal_id = post_param(post, "a");
+  }
+  else if (strncmp(post, "r=submitlbentry&", 16) == 0) {
+    p->journal_kind = DSCM_JOURNAL_LEADERBOARD;
+    p->journal_id = post_param(post, "i");
+    p->journal_score = (int32_t)post_param(post, "s");
+  }
+}
+
+/* 1 if the server answered for good, as rc_client decides: accepted (or
+ * "already unlocked", which comes as a success), or refused with an error
+ * it won't retry. */
+static int answered(int result, const rc_api_response_t* r, const rc_api_server_response_t* resp)
+{
+  if (result == RC_OK && r->succeeded)
+    return 1;
+  return r->error_message && !rc_client_should_retry(resp);
+}
+
+static int request_answered(uint8_t kind, const rc_api_server_response_t* resp)
+{
+  int result, ok;
+  if (kind == DSCM_JOURNAL_AWARD) {
+    rc_api_award_achievement_response_t a;
+    result = rc_api_process_award_achievement_server_response(&a, resp);
+    ok = answered(result, &a.response, resp);
+    rc_api_destroy_award_achievement_response(&a);
+  }
+  else {
+    rc_api_submit_lboard_entry_response_t l;
+    result = rc_api_process_submit_lboard_entry_server_response(&l, resp);
+    ok = answered(result, &l.response, resp);
+    rc_api_destroy_submit_lboard_entry_response(&l);
+  }
+  return ok;
+}
+
+/* One-shot notice: the slot is complete before head moves to it. */
+static void notice(uint16_t kind, uint32_t id, int32_t value, const char* text, const char* detail)
+{
+  dscm_notices_t* n = S.platform.notices;
+  dscm_notice_t* x;
+  uint32_t seq;
+  if (!n)
+    return;
+  seq = n->head + 1;
+  x = &n->ring[seq % DSCM_NOTICE_RING];
+  x->seq = seq;
+  x->kind = kind;
+  x->reserved = 0;
+  x->id = id;
+  x->value = value;
+  x->frame = S.platform.frame ? S.platform.frame() : current_frame();
+  copy_text(x->text, text, sizeof(x->text));
+  copy_text(x->detail, detail, sizeof(x->detail));
+  PUBLISH_BARRIER();
+  n->head = seq;
+}
+
+/* Show or update an indicator. More than DSCM_INDICATOR_MAX at once are not shown. */
+static void indicator_set(dscm_indicator_t* list, uint32_t id, const char* text)
+{
+  dscm_notices_t* n = S.platform.notices;
+  int i, free_slot = -1;
+  if (!n || !id)
+    return;
+  for (i = 0; i < DSCM_INDICATOR_MAX; i++) {
+    if (list[i].id == id) {
+      copy_text(list[i].text, text, sizeof(list[i].text));
+      n->indicators_generation++;
+      return;
+    }
+    if (!list[i].id && free_slot < 0)
+      free_slot = i;
+  }
+  if (free_slot < 0)
+    return;
+  copy_text(list[free_slot].text, text, sizeof(list[free_slot].text));
+  PUBLISH_BARRIER();
+  list[free_slot].id = id;
+  n->indicators_generation++;
+}
+
+static void indicator_clear(dscm_indicator_t* list, uint32_t id)
+{
+  dscm_notices_t* n = S.platform.notices;
+  int i;
+  if (!n)
+    return;
+  for (i = 0; i < DSCM_INDICATOR_MAX; i++)
+    if (list[i].id == id)
+      list[i].id = 0;
+  n->indicators_generation++;
+}
+
+static void list_free(void)
+{
+  if (S.list_published && S.platform.publish_list)
+    S.platform.publish_list(NULL);
+  free(S.list_buf[0]);
+  free(S.list_buf[1]);
+  S.list_buf[0] = S.list_buf[1] = S.list_published = NULL;
+}
+
+/* Two buffers big enough for the core set, allocated once at load. */
+static void list_alloc(void)
+{
+  const rc_client_subset_info_t* core = S.client->game ? S.client->game->subsets : NULL;
+  size_t size;
+  list_free();
+  if (!S.platform.publish_list)
+    return;
+  S.list_max = core ? core->public_.num_achievements : 0;
+  size = sizeof(dscm_list_t) + S.list_max * sizeof(dscm_list_entry_t);
+  S.list_buf[0] = (dscm_list_t*)malloc(size);
+  S.list_buf[1] = (dscm_list_t*)malloc(size);
+  if (!S.list_buf[0] || !S.list_buf[1]) {
+    dsc_log("no memory for the achievement list");
+    list_free();
+  }
+  S.list_stale = 1;
+}
+
+static uint8_t list_state(const rc_client_achievement_info_t* a, int hardcore)
+{
+  if (hardcore && (a->public_.unlocked & RC_CLIENT_ACHIEVEMENT_UNLOCKED_HARDCORE))
+    return DSCM_ACH_UNLOCKED;
+  if (!hardcore && a->public_.unlocked)
+    return DSCM_ACH_UNLOCKED;
+  if (a->public_.unlocked & RC_CLIENT_ACHIEVEMENT_UNLOCKED_CASUAL)
+    return DSCM_ACH_UNLOCKED_SOFTCORE;
+  if (a->public_.state == RC_CLIENT_ACHIEVEMENT_STATE_DISABLED || a->public_.bucket == RC_CLIENT_ACHIEVEMENT_BUCKET_UNSUPPORTED)
+    return DSCM_ACH_DISABLED;
+  return DSCM_ACH_LOCKED;
+}
+
+/* Build the core set into the buffer readers aren't using, then publish it. */
+static void list_build(void)
+{
+  const rc_client_subset_info_t* core = S.client->game ? S.client->game->subsets : NULL;
+  rc_client_achievement_list_t* refresh;
+  dscm_list_t* out;
+  int hardcore = rc_client_get_hardcore_enabled(S.client);
+  uint32_t i, n = 0;
+
+  if (!S.list_buf[0] || !core)
+    return;
+  /* rc_client's list refreshes each achievement's bucket and measured progress */
+  refresh = rc_client_create_achievement_list(S.client, RC_CLIENT_ACHIEVEMENT_CATEGORY_PROMOTED,
+    RC_CLIENT_ACHIEVEMENT_LIST_GROUPING_LOCK_STATE);
+  if (!refresh)
+    return;
+  out = S.list_buf[S.list_published == S.list_buf[0] ? 1 : 0];
+
+  /* the set's own order is its display order */
+  for (i = 0; i < core->public_.num_achievements && n < S.list_max; i++) {
+    const rc_client_achievement_info_t* a = &core->achievements[i];
+    dscm_list_entry_t* e;
+    if (a->public_.id >= WARNING_ID || a->public_.category != RC_CLIENT_ACHIEVEMENT_CATEGORY_PROMOTED)
+      continue;
+    e = &out->e[n++];
+    memset(e, 0, sizeof(*e));
+    e->id = a->public_.id;
+    e->points = (uint16_t)a->public_.points;
+    e->state = list_state(a, hardcore);
+    if (e->state == DSCM_ACH_UNLOCKED)
+      e->unlock_time = (uint32_t)(hardcore ? a->unlock_time_hardcore : a->public_.unlock_time);
+    else if (e->state == DSCM_ACH_UNLOCKED_SOFTCORE)
+      e->unlock_time = (uint32_t)a->unlock_time_casual;
+    if (a->public_.measured_progress[0]) {
+      e->flags |= DSCM_ACH_FLAG_MEASURED;
+      copy_text(e->measured, a->public_.measured_progress, sizeof(e->measured));
+    }
+    if (a->public_.bucket == RC_CLIENT_ACHIEVEMENT_BUCKET_ACTIVE_CHALLENGE)
+      e->flags |= DSCM_ACH_FLAG_CHALLENGE;
+    if (a->public_.type == RC_CLIENT_ACHIEVEMENT_TYPE_MISSABLE)
+      e->flags |= DSCM_ACH_FLAG_MISSABLE;
+    else if (a->public_.type == RC_CLIENT_ACHIEVEMENT_TYPE_PROGRESSION)
+      e->flags |= DSCM_ACH_FLAG_PROGRESSION;
+    else if (a->public_.type == RC_CLIENT_ACHIEVEMENT_TYPE_WIN)
+      e->flags |= DSCM_ACH_FLAG_WIN;
+    copy_text(e->title, a->public_.title, sizeof(e->title));
+    copy_text(e->description, a->public_.description, sizeof(e->description));
+  }
+  rc_client_destroy_achievement_list(refresh);
+
+  out->magic = DSCM_LIST_MAGIC;
+  out->generation = ++S.list_generation;
+  out->count = n;
+  out->entry_size = sizeof(dscm_list_entry_t);
+  S.list_published = out;
+  S.list_frame = S.frame_counter;
+  S.stats.list_builds++;
+  S.platform.publish_list(out);
+}
+
+/* Idle time: rebuild a stale list, at most once every LIST_MIN_FRAMES frames. */
+static void list_update(void)
+{
+  if (!S.active || !S.list_stale || !S.list_buf[0])
+    return;
+  if (S.list_published && S.frame_counter - S.list_frame < LIST_MIN_FRAMES)
+    return;
+  S.list_stale = 0;
+  list_build();
+}
+
 /* ---- rcheevos callbacks ---- */
 
 static uint32_t RC_CCONV read_memory(uint32_t address, uint8_t* buffer, uint32_t num_bytes, rc_client_t* client)
@@ -544,6 +898,7 @@ static void RC_CCONV server_call(const rc_api_request_t* request, rc_client_serv
   S.http[i].used = 1;
   S.http[i].callback = callback;
   S.http[i].callback_data = callback_data;
+  request_journal_kind(&S.http[i], request->post_data);
   S.stats.pending_requests++;
 
   req.url = request->url;
@@ -567,18 +922,78 @@ static void RC_CCONV log_message(const char* message, const rc_client_t* client)
 
 static void RC_CCONV event_handler(const rc_client_event_t* event, rc_client_t* client)
 {
+  dscm_notices_t* n = S.platform.notices;
+  const rc_client_achievement_t* a = event->achievement;
+  const rc_client_leaderboard_t* l = event->leaderboard;
   (void)client;
   switch (event->type) {
     case RC_CLIENT_EVENT_ACHIEVEMENT_TRIGGERED:
-      if (event->achievement->id >= 101000001u)
+      if (a->id >= WARNING_ID)
         break;    /* the server's "unsupported emulator" warning, not an unlock (see hardcore_refused) */
-      emit(DSC_EVENT_UNLOCK, event->achievement->id, event->achievement->points, event->achievement->title, event->achievement->description);
+      emit(DSC_EVENT_UNLOCK, a->id, a->points, a->title, a->description);
+      journal_add(DSCM_JOURNAL_AWARD, a->id, 0);
+      notice(DSCM_NOTICE_UNLOCK, a->id, (int32_t)a->points, a->title, a->description);
+      S.list_stale = 1;
       break;
-    case RC_CLIENT_EVENT_LEADERBOARD_SUBMITTED:
-      emit(DSC_EVENT_LEADERBOARD_SUBMIT, event->leaderboard->id, 0, event->leaderboard->title, event->leaderboard->tracker_value);
+    case RC_CLIENT_EVENT_ACHIEVEMENT_PROGRESS_INDICATOR_SHOW:
+    case RC_CLIENT_EVENT_ACHIEVEMENT_PROGRESS_INDICATOR_UPDATE:
+      notice(DSCM_NOTICE_PROGRESS, a->id, 0, a->title, a->measured_progress);
+      S.list_stale = 1;
       break;
-    case RC_CLIENT_EVENT_GAME_COMPLETED:
+    case RC_CLIENT_EVENT_ACHIEVEMENT_CHALLENGE_INDICATOR_SHOW:
+      if (n)
+        indicator_set(n->challenges, a->id, a->title);
+      S.list_stale = 1;
+      break;
+    case RC_CLIENT_EVENT_ACHIEVEMENT_CHALLENGE_INDICATOR_HIDE:
+      if (n)
+        indicator_clear(n->challenges, a->id);
+      S.list_stale = 1;
+      break;
+    case RC_CLIENT_EVENT_LEADERBOARD_STARTED:
+      notice(DSCM_NOTICE_LEADERBOARD_STARTED, l->id, 0, l->title, NULL);
+      break;
+    case RC_CLIENT_EVENT_LEADERBOARD_FAILED:
+      notice(DSCM_NOTICE_LEADERBOARD_FAILED, l->id, 0, l->title, NULL);
+      break;
+    case RC_CLIENT_EVENT_LEADERBOARD_SUBMITTED: {
+      int32_t score = ((const rc_client_leaderboard_info_t*)l)->value;
+      emit(DSC_EVENT_LEADERBOARD_SUBMIT, l->id, 0, l->title, l->tracker_value);
+      journal_add(DSCM_JOURNAL_LEADERBOARD, l->id, score);
+      notice(DSCM_NOTICE_LEADERBOARD_SUBMITTED, l->id, score, l->title, l->tracker_value);
+      break;
+    }
+    case RC_CLIENT_EVENT_LEADERBOARD_SCOREBOARD: {
+      char rank[24];
+      snprintf(rank, sizeof(rank), "%u/%u", (unsigned)event->leaderboard_scoreboard->new_rank,
+        (unsigned)event->leaderboard_scoreboard->num_entries);
+      notice(DSCM_NOTICE_LEADERBOARD_RANK, event->leaderboard_scoreboard->leaderboard_id,
+        (int32_t)event->leaderboard_scoreboard->new_rank, l ? l->title : NULL, rank);
+      break;
+    }
+    case RC_CLIENT_EVENT_LEADERBOARD_TRACKER_SHOW:
+    case RC_CLIENT_EVENT_LEADERBOARD_TRACKER_UPDATE:
+      if (n)
+        indicator_set(n->trackers, event->leaderboard_tracker->id, event->leaderboard_tracker->display);
+      break;
+    case RC_CLIENT_EVENT_LEADERBOARD_TRACKER_HIDE:
+      if (n)
+        indicator_clear(n->trackers, event->leaderboard_tracker->id);
+      break;
+    case RC_CLIENT_EVENT_RESET:
+      S.list_stale = 1;
+      break;
+    case RC_CLIENT_EVENT_GAME_COMPLETED: {
+      const rc_client_game_t* game = rc_client_get_game_info(S.client);
       emit(DSC_EVENT_MASTERY, 0, 0, NULL, NULL);
+      notice(DSCM_NOTICE_MASTERY, game ? game->id : 0, 0, game ? game->title : NULL, NULL);
+      break;
+    }
+    case RC_CLIENT_EVENT_DISCONNECTED:
+      notice(DSCM_NOTICE_OFFLINE, 0, 0, NULL, NULL);
+      break;
+    case RC_CLIENT_EVENT_RECONNECTED:
+      notice(DSCM_NOTICE_ONLINE, 0, 0, NULL, NULL);
       break;
     case RC_CLIENT_EVENT_SERVER_ERROR:
       emit(DSC_EVENT_SERVER_ERROR, 0, 0, event->server_error->api, event->server_error->error_message);
@@ -594,8 +1009,17 @@ static void RC_CCONV game_loaded(int result, const char* error_message, rc_clien
   (void)userdata;
   if (result == RC_OK) {
     const rc_client_game_t* game = rc_client_get_game_info(S.client);
+    rc_client_user_game_summary_t summary;
+    char count[48];
     prepare_snapshots();
     S.hardcore_refused = S.config.hardcore && hardcore_refused(S.client);
+    journal_start(game ? game->id : 0);
+    list_alloc();
+    rc_client_get_user_game_summary(S.client, &summary);
+    snprintf(count, sizeof(count), "%u/%u achievements", (unsigned)summary.num_unlocked_achievements,
+      (unsigned)summary.num_promoted_achievements);
+    notice(DSCM_NOTICE_SESSION_START, game ? game->id : 0, rc_client_get_hardcore_enabled(S.client) ? 1 : 0,
+      game ? game->title : NULL, count);
     S.active = 1;
     emit(DSC_EVENT_GAME_LOADED, game ? game->id : 0, 0, game ? game->title : NULL, NULL);
   }
@@ -662,6 +1086,16 @@ int dsc_init(const dsc_platform_t* platform, const dsc_config_t* config)
   if (S.config.host)
     rc_client_set_host(S.client, S.config.host);
   rc_client_set_hardcore_enabled(S.client, S.config.hardcore ? 1 : 0);
+  /* before login: rc_client can't turn it on once a game is loaded */
+  if (S.config.spectator)
+    rc_client_set_spectator_mode_enabled(S.client, 1);
+
+  if (S.platform.journal)
+    memset(S.platform.journal, 0, sizeof(dscm_journal_t));    /* magic is set once the game loads */
+  if (S.platform.notices) {
+    memset(S.platform.notices, 0, sizeof(dscm_notices_t));
+    S.platform.notices->magic = DSCM_NOTICES_MAGIC;
+  }
 
   S.initialized = 1;
   return 0;
@@ -771,6 +1205,11 @@ static void finish_http(void)
       resp.http_status_code = p->status;
       p->used = 0;
       S.stats.pending_requests--;
+      if (p->journal_kind && request_answered(p->journal_kind, &resp)) {
+        journal_answered(p->journal_kind, p->journal_id, p->journal_score);
+        if (p->journal_kind == DSCM_JOURNAL_AWARD)
+          emit(DSC_EVENT_UNLOCK_SENT, p->journal_id, 0, NULL, NULL);
+      }
       cb(&resp, data);
       free(body);
       progress = 1;
@@ -814,6 +1253,7 @@ int dsc_idle(void)
 
   if (!evaluated && S.active)
     rc_client_idle(S.client);
+  list_update();
 
   if (S.stats.frames_dropped != dropped_reported) {
     dropped_reported = S.stats.frames_dropped;
@@ -855,8 +1295,10 @@ void dsc_reset(void)
   for (n = S.slot_tail; n != head; n++)
     S.stats.frames_discarded += 1 + S.slots[n % MAX_SLOTS].repeats;
   S.slot_tail = head;          /* frames from before the reset */
-  if (S.active)
+  if (S.active) {
     rc_client_reset(S.client);
+    S.list_stale = 1;
+  }
 }
 
 /* RetroAchievements adds a warning achievement (ID 101000001 and up) to the
@@ -912,5 +1354,6 @@ void dsc_shutdown(void)
       free(S.http[i].body);
   free(S.pending_new);
   free_chains();
+  list_free();
   memset(&S, 0, sizeof(S));
 }

@@ -21,6 +21,7 @@ printf '%s\n' "$version" > "$sd/_nds/dscheevos/version.txt"
 
 # Licenses of what the binaries contain
 lic=$sd/_nds/dscheevos/licenses
+cp "$repo/LICENSE" "$lic/dscheevos.txt"
 cp "$repo/external/rcheevos/LICENSE" "$lic/rcheevos.txt"
 cp "$repo/external/mbedtls/LICENSE" "$lic/mbedtls.txt"
 cp "$repo/external/lwip/COPYING" "$lic/lwip.txt"
@@ -28,6 +29,9 @@ cp "$repo/external/lwip/COPYING" "$lic/lwip.txt"
 # (release/GPL-2.txt is Debian's common-licenses/GPL-2, kept here so macOS builds the same zip)
 { echo "devkitPro nds-bootloader: GNU General Public License, version 2 or (at your option) any later version."; echo; cat "$repo/release/GPL-2.txt"; } > "$lic/nds-bootloader.txt"
 cp "$repo/external/nds-bootstrap/LICENSE" "$lic/nds-bootstrap.txt"
+# Toolkit runtime libraries linked into the binaries, vendored from the build images
+# (release/licenses/, first line of each names the source) so packaging needs no network
+cp "$repo"/release/licenses/*.txt "$lic/"
 cat > "$lic/SOURCES.txt" <<SRC
 DScheevos $version is built from:
   https://github.com/skierrz/dscheevos ($version)
@@ -36,10 +40,20 @@ DScheevos $version is built from:
   https://github.com/RetroAchievements/rcheevos ($(git -C "$repo/external/rcheevos" rev-parse --short HEAD))
   https://github.com/lwip-tcpip/lwip ($(git -C "$repo/external/lwip" describe --tags 2>/dev/null || git -C "$repo/external/lwip" rev-parse --short HEAD))
   https://github.com/Mbed-TLS/mbedtls ($(git -C "$repo/external/mbedtls" describe --tags 2>/dev/null || git -C "$repo/external/mbedtls" rev-parse --short HEAD))
-The launcher is built with BlocksDS (libnds, DSWiFi with lwIP), the module and
-nds-bootstrap with devkitARM; their licenses ship with those toolkits.
+DScheevos itself is GPL-3.0 (dscheevos.txt).
+Toolkit libraries linked into the binaries, licence texts in this folder:
+  launcher (BlocksDS v1.24.0): libnds, DSWiFi (with lwIP), start-up code, picolibc
+    blocksds-libnds.txt blocksds-dswifi.txt blocksds-crts.txt picolibc.txt
+  module (devkitARM, devkitpro/devkitarm:20241104): newlib
+    newlib.txt
+  nds-bootstrap (same devkitARM): libnds 1.8, libfat, newlib
+    devkitarm-libnds.txt libfat.txt newlib.txt
+  load.bin (devkitARM, devkitpro/devkitarm:20260610): libnds 2, calico, newlib
+    devkitarm-libnds2.txt calico.txt newlib.txt
 SRC
 
 cp "$repo/release/README.txt" "$out/README.txt"
-(cd "$out" && zip -qr "../dscheevos-$version.zip" README.txt sd)
+cp "$repo/docs/privacy.md" "$out/privacy.txt"
+cp "$repo/docs/privacy.md" "$sd/_nds/dscheevos/privacy.txt"
+(cd "$out" && zip -qr "../dscheevos-$version.zip" README.txt privacy.txt sd)
 echo "packed $(cd "$out/.." && pwd)/dscheevos-$version.zip"

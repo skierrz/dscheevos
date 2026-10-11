@@ -1,4 +1,5 @@
 #include "session.h"
+#include "log.h"
 #include "net.h"
 #include "dscheevos_module.h"
 
@@ -22,6 +23,21 @@ static size_t g_reply_len[DSCM_PRELOAD_COUNT];
 static int g_done, g_result;
 static char g_error[128];
 
+/* Logs the request's API name and the answer (never the parameters: they hold the token). */
+void session_log_request(const char* post, int status)
+{
+  char api[24];
+  size_t n = 0;
+  if (post && !strncmp(post, "r=", 2))
+    for (post += 2; post[n] && post[n] != '&' && n < sizeof(api) - 1; n++)
+      api[n] = post[n];
+  api[n] = '\0';
+  if (status > 0)
+    log_line("%s: HTTP %d", n ? api : "request", status);
+  else
+    log_line("%s: network error: %s", n ? api : "request", net_error());
+}
+
 static int request_kind(const char* post)
 {
   if (!post) return -1;
@@ -41,6 +57,7 @@ static void RC_CCONV server_call(const rc_api_request_t* request, rc_client_serv
   (void)client;
 
   http_request(request->url, request->post_data, request->content_type, &r);
+  session_log_request(request->post_data, r.status);
   memset(&response, 0, sizeof(response));
   response.http_status_code = r.status > 0 ? r.status : RC_API_SERVER_RESPONSE_RETRYABLE_CLIENT_ERROR;
   response.body = r.body ? r.body : "";
@@ -84,6 +101,7 @@ static rc_client_t* make_client(const dsc_settings_t* settings)
   if (strcmp(settings->host, "https://retroachievements.org") != 0)
     rc_client_set_host(client, settings->host);
   rc_client_set_hardcore_enabled(client, settings->hardcore);
+  rc_client_set_spectator_mode_enabled(client, settings->spectator);
   rc_client_get_user_agent_clause(client, clause, sizeof(clause));
   snprintf(ua, sizeof(ua), "DScheevos/" DSC_VERSION " (Nintendo DSi) %s", clause);
   http_set_user_agent(ua);
@@ -199,7 +217,8 @@ int session_start(const dsc_settings_t* settings, const char* rom_path, const ch
     return SESSION_ERROR;
   }
   for (i = 0; i < DSCM_PRELOAD_COUNT; i++) {
-    if (!g_reply[i]) {
+    /* a spectator starts no session on the server */
+    if (!g_reply[i] && !(settings->spectator && i == DSCM_PRELOAD_SESSION)) {
       strcpy(g_error, "Server reply missing");
       return SESSION_ERROR;
     }
@@ -227,6 +246,7 @@ int session_write(const dsc_settings_t* settings, const char* rom_path, const ch
   snprintf(boot.token, sizeof(boot.token), "%s", settings->token);
   snprintf(boot.game_hash, sizeof(boot.game_hash), "%s", hash);
   boot.hardcore = (uint8_t)(settings->hardcore != 0);
+  boot.flags = settings->spectator ? DSCM_BOOT_SPECTATOR : 0;
   boot.unix_time = (uint32_t)time(NULL);
   for (i = 0; i < DSCM_PRELOAD_COUNT; i++) {
     boot.preload_offset[i] = offset;
@@ -239,7 +259,7 @@ int session_write(const dsc_settings_t* settings, const char* rom_path, const ch
   {
     struct in_addr gateway, netmask, dns1, dns2;
     struct in_addr ip = Wifi_GetIPInfo(&gateway, &netmask, &dns1, &dns2);
-    if (settings->live && ip.s_addr && Wifi_GetData(WIFIGETDATA_MACADDRESS, 6, boot.mac) >= 0) {
+    if (settings_keep_wifi(settings) && ip.s_addr && Wifi_GetData(WIFIGETDATA_MACADDRESS, 6, boot.mac) >= 0) {
       boot.net_valid = 1;
       boot.ip = ip.s_addr;
       boot.netmask = netmask.s_addr;
@@ -283,7 +303,8 @@ int session_write(const dsc_settings_t* settings, const char* rom_path, const ch
   fwrite(&boot, 1, sizeof(boot), f);
   fwrite(pad, 1, ((sizeof(boot) + 3) & ~3u) - sizeof(boot), f);
   for (i = 0; i < DSCM_PRELOAD_COUNT; i++) {
-    fwrite(g_reply[i], 1, g_reply_len[i], f);
+    if (g_reply_len[i])
+      fwrite(g_reply[i], 1, g_reply_len[i], f);
     fwrite(pad, 1, ((g_reply_len[i] + 3) & ~3u) - g_reply_len[i], f);
   }
   if (ca_len) {

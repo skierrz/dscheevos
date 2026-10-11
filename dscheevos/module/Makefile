@@ -44,10 +44,10 @@ OBJ := $(patsubst %.c,$(BUILD)/%.o,$(notdir $(SRC))) $(patsubst $(RCHEEVOS)/src/
 .PHONY: all clean
 all: $(BUILD)/dscheevos9.bin
 
-$(BUILD)/%.o: src/%.c include/dscheevos_module.h ../../VERSION
+$(BUILD)/%.o: src/%.c include/dscheevos_module.h $(CORE)/include/dscheevos.h ../../VERSION
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
-$(BUILD)/dscheevos.o: $(CORE)/src/dscheevos.c
+$(BUILD)/dscheevos.o: $(CORE)/src/dscheevos.c $(CORE)/include/dscheevos.h include/dscheevos_module.h
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 $(BUILD)/rc/%.o: $(RCHEEVOS)/src/%.c

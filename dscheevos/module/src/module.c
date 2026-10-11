@@ -14,6 +14,14 @@
 
 dscm_status_t dscm_g_status;   /* referenced by the header in start.s */
 dscm_net_slot_t dscm_g_net[DSCM_NET_SLOTS];
+dscm_notices_t dscm_g_notices;
+/* Written only through the uncached mirror, so the ARM7 can copy it from
+ * RAM. It has cache lines of its own: a cached write to a neighbour can
+ * never write stale journal bytes back. */
+union {
+  dscm_journal_t j;
+  uint8_t lines[(sizeof(dscm_journal_t) + 31) & ~31u];
+} dscm_g_journal __attribute__((aligned(32)));
 static void* g_net_handle[DSCM_NET_SLOTS];
 static uint32_t g_net_sequence;
 static dscm_boot_t g_boot;
@@ -26,6 +34,10 @@ static int g_initialized;
 extern uint32_t dscm_vblank_count_read(void);  /* start.s */
 extern uint32_t dscm_dtcm_base(void);
 extern void dscm_publish_notify(uint32_t count);
+extern void dscm_publish_list(void* list);
+extern void dscm_dc_clean(const void* addr, uint32_t len);
+extern void dscm_dc_invalidate(const void* addr, uint32_t len);
+static uint32_t g_notices_seen;
 static volatile int g_reset_pending;
 static int g_progress_stale;
 static void update_progress(void);
@@ -53,6 +65,8 @@ static uint32_t millis(void)
   return (uint32_t)(((uint64_t)g_frames * 1000u) / 60u);
 }
 uint32_t dscm_millis(void) { return millis(); }
+
+static uint32_t frame_count(void) { return g_frames; }
 
 static int g_net_started;
 extern void dscm_publish_net_ring(void* ring);
@@ -166,6 +180,24 @@ static void on_event(const dsc_event_t* e)
   }
 }
 
+/* The list is complete: write it to RAM, then swap header->list. */
+static void publish_list(dscm_list_t* list)
+{
+  if (list)
+    dscm_dc_clean(list, sizeof(dscm_list_t) + list->count * sizeof(dscm_list_entry_t));
+  dscm_publish_list(list);
+}
+
+/* Keep RAM current for readers past the cache, after notices change. */
+static void clean_notices(void)
+{
+  uint32_t seen = dscm_g_notices.head + dscm_g_notices.indicators_generation;
+  if (seen != g_notices_seen) {
+    g_notices_seen = seen;
+    dscm_dc_clean(&dscm_g_notices, sizeof(dscm_g_notices));
+  }
+}
+
 /* ---- entry points ---- */
 
 extern char __bss_start[], __bss_end[];
@@ -177,6 +209,9 @@ int module_init(const dscm_boot_t* boot)
   int i;
 
   memset(__bss_start, 0, (size_t)(__bss_end - __bss_start));
+  /* from here on the journal is only written uncached: drop its cached lines */
+  dscm_dc_clean(&dscm_g_journal, sizeof(dscm_g_journal));
+  dscm_dc_invalidate(&dscm_g_journal, sizeof(dscm_g_journal));
   if (!boot || boot->magic != DSCM_SESSION_MAGIC || boot->size != sizeof(dscm_boot_t)
       || boot->file_size > DSCM_SESSION_MAX) {
     dscm_g_status.error = DSCM_ERROR_BAD_BOOT;
@@ -203,12 +238,18 @@ int module_init(const dscm_boot_t* boot)
   platform.millis = millis;
   platform.http_send = http_send;
   platform.event = on_event;
+  platform.unix_time = dscm_unix_time;
+  platform.journal = (dscm_journal_t*)DSCM_UNCACHED(&dscm_g_journal.j);
+  platform.notices = &dscm_g_notices;
+  platform.publish_list = publish_list;
+  platform.frame = frame_count;
 
   memset(&config, 0, sizeof(config));
   config.host = g_boot.host;
   config.username = g_boot.username;
   config.token = g_boot.token;
   config.hardcore = g_boot.hardcore;
+  config.spectator = (g_boot.flags & DSCM_BOOT_SPECTATOR) ? 1 : 0;
   config.max_addresses = 4096;
   config.snapshot_slots = 1024;          /* ~17 s of frames with no idle time (loading, save writes) */
   config.snapshot_bytes = 256 * 1024;    /* shared by queued frames: a few hundred bytes each, typically */
@@ -228,6 +269,7 @@ int module_init(const dscm_boot_t* boot)
   dscm_g_status.active = dsc_is_active();
   if (dscm_g_status.active)
     update_progress();
+  clean_notices();
 
   /* Keep using the launcher's Wi-Fi connection during play. */
   if (dscm_g_status.active && g_boot.net_valid) {
@@ -344,6 +386,7 @@ void module_idle(void)
   else {
     dsc_idle();   /* rcheevos' own timers: retries, pings */
   }
+  clean_notices();
 
   /* Then the network: achievements come first. */
   if (g_net_started) {

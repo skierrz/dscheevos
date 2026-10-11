@@ -33,6 +33,9 @@ int session_start(const dsc_settings_t* settings, const char* rom_path, const ch
 /* Writes sd:/_nds/dscheevos/session.bin for the session just started. */
 int session_write(const dsc_settings_t* settings, const char* rom_path, const char* hash);
 
+/* Appends "api: HTTP status" (or the network error) to launcher.log. */
+void session_log_request(const char* post, int status);
+
 int session_hash_rom(const char* rom_path, char hash[33]);
 
 #endif

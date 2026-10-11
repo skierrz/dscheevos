@@ -12,6 +12,12 @@
  *
  * Everything else (memory map, clock, network, display) comes through
  * dsc_platform_t, so the same code runs on the DS and in host tests.
+ *
+ * What a display layer and the launcher read (ABI v6 in dscheevos_module.h)
+ * is written by the core in idle time, never in dsc_vblank():
+ *   journal   every unlock and leaderboard entry, and whether the server answered
+ *   notices   one-shot notices and the challenge/tracker indicators
+ *   list      the core set, rebuilt when stale and handed to publish_list()
  */
 #ifndef DSCHEEVOS_H
 #define DSCHEEVOS_H
@@ -22,6 +28,10 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+struct dscm_journal_t;            /* dscheevos_module.h */
+struct dscm_notices_t;
+struct dscm_list_t;
 
 /* Unlock and status notifications for the display layer. */
 typedef enum dsc_event_type_t {
@@ -65,6 +75,17 @@ typedef struct dsc_platform_t {
   void (*event)(const dsc_event_t* event);
   /* Diagnostics (may be NULL). */
   void (*log)(const char* message);
+  /* Console clock, for journal entries (may be NULL: time()). */
+  uint32_t (*unix_time)(void);
+  /* Offline journal, written in place (on the DS through the uncached mirror). May be NULL. */
+  struct dscm_journal_t* journal;
+  /* Notices for a display layer, written in place. May be NULL. */
+  struct dscm_notices_t* notices;
+  /* A complete achievement list to make visible; the core owns both buffers
+   * and never writes the one published last. May be NULL. */
+  void (*publish_list)(struct dscm_list_t* list);
+  /* Platform frame count, stamped on notices (may be NULL: the core's own count). */
+  uint32_t (*frame)(void);
 } dsc_platform_t;
 
 typedef struct dsc_config_t {
@@ -75,6 +96,7 @@ typedef struct dsc_config_t {
   uint32_t max_addresses;        /* snapshot capacity, e.g. 4096 */
   uint32_t snapshot_slots;       /* most frames that can wait for evaluation; 0 = 2, max 1024 */
   uint32_t snapshot_bytes;       /* memory for queued snapshots; 0 = snapshot_slots * max_addresses */
+  int spectator;                 /* 1: rc_client spectator mode, nothing is sent or journaled */
 } dsc_config_t;
 
 typedef struct dsc_stats_t {
@@ -86,6 +108,8 @@ typedef struct dsc_stats_t {
   uint32_t live_reads;           /* reads not covered by the snapshot (new or moved addresses) */
   uint32_t addresses;            /* addresses captured each VBlank */
   uint32_t pending_requests;
+  uint32_t journal_lost;         /* unsent journal entries overwritten because it was full */
+  uint32_t list_builds;          /* achievement lists published */
 } dsc_stats_t;
 
 /* Progress in the loaded game's core set (for menus). */

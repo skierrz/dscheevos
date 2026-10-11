@@ -6,7 +6,7 @@ Starts each RetroAchievements session before the game boots. TWiLight Menu++ run
 2. Hashes the ROM the way RetroAchievements does (rcheevos).
 3. Connects with the Wi-Fi settings saved on the console. On a DSi this uses the DSi's own Wi-Fi, so WPA2 works.
 4. Logs in with the saved token, loads the game's set and starts a session over HTTPS. mbedTLS checks the server's certificate chain and host name against the root CAs in `tls/cacerts.c`. The console clock isn't trusted, so certificate dates aren't checked.
-5. Writes `_nds/dscheevos/session.bin` with the server's replies.
+5. Sends what the last session couldn't (`_nds/dscheevos/pending.bin`, see below), then writes `_nds/dscheevos/session.bin` with the server's replies.
 6. Freezes its Wi-Fi driver on the ARM7 without disconnecting (`arm7/`), so the chip stays associated and the game can keep sending unlocks over the same connection. Then it boots the DScheevos build of nds-bootstrap (`_nds/dscheevos/nds-bootstrap.nds`). That build loads the module with the session. `source/chainload.c` does the boot through devkitPro's nds-bootloader (`_nds/dscheevos/load.bin`, built in `loader/`), the way TWiLight Menu++ and hbmenu boot programs.
 
 If the game has no set, achievements are off, or the game will run in DSi mode, it boots the game without achievements. If it can't get online, it asks: try again, or play without achievements. Hardcore needs a session started online, so it doesn't offer "play now, send later".
@@ -17,15 +17,26 @@ If the game has no set, achievements are off, or the game will run in DSi mode, 
 - **Settings.** Press A on the game in TWiLight Menu++, then hold SELECT, to change them:
   - turn achievements off or on
   - hardcore on or off
+  - send unlocks during play (softcore only: hardcore always keeps Wi-Fi, so it shows "on (hardcore)")
   - log out
+
+  `SPECTATOR = 1` in `dscheevos.ini` (not in the menu) turns on rcheevos' spectator mode: the game evaluates and shows unlocks, nothing is sent, and no session starts on the server. The launcher shows "Spectator: nothing is sent". For bench runs on a real account.
+
+## Unlocks sent later
+
+During play the module keeps a journal of every unlock and leaderboard entry and whether the server answered it. nds-bootstrap saves it to `pending.bin` at safe points (in-game menu, reset, exit). At its next start, once logged in, the launcher sends this user's unsent entries with rcheevos' request builders and the time since they happened (`o=`), then zeroes the file. An answer that a retry won't change (e.g. already unlocked) counts as sent. Entries that still fail go to `unsent/` and are tried again next time, since the coming session overwrites `pending.bin`. A spectator session's journal is never sent.
 
 ## Files on the SD card
 
 | File | What it is |
 |---|---|
-| `_nds/dscheevos/dscheevos.ini` | `ENABLED`, `HARDCORE`, `SEND_DURING_PLAY`, `USERNAME`, `TOKEN`, and optionally `HOST` |
+| `_nds/dscheevos/dscheevos.ini` | `ENABLED`, `HARDCORE`, `SEND_DURING_PLAY`, `USERNAME`, `TOKEN`, and optionally `HOST` and `SPECTATOR` |
 | `_nds/dscheevos/ca.pem` | optional extra trusted CA, for a self-hosted or test server |
 | `_nds/dscheevos/session.bin` | written here, used once by nds-bootstrap (renamed to `session.used`) |
+| `_nds/dscheevos/pending.bin` | the last session's journal, 4096 bytes; created zeroed here, written by nds-bootstrap |
+| `_nds/dscheevos/unsent/` | journals with entries the server didn't take yet |
+| `_nds/dscheevos/pending.spectator` | the last session was a spectator one: its journal is dropped |
+| `_nds/dscheevos/launcher.log` | the last run: which requests went out, HTTP status, errors shown. No username, password or token |
 | `_nds/dscheevos/load.bin` | devkitPro's nds-bootloader (GPLv2+, source in `external/nds-bootloader`) |
 | `_nds/dscheevos/nds-bootstrap.nds` | the DScheevos build of nds-bootstrap |
 

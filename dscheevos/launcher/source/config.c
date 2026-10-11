@@ -49,6 +49,7 @@ static void on_setting(const char* key, const char* value, void* ud)
   else if (!strcmp(key, "SEND_DURING_PLAY")) s->live = atoi(value) != 0;
   else if (!strcmp(key, "USERNAME")) copy(s->username, sizeof(s->username), value);
   else if (!strcmp(key, "TOKEN")) copy(s->token, sizeof(s->token), value);
+  else if (!strcmp(key, "SPECTATOR")) s->spectator = atoi(value) != 0;
   else if (!strcmp(key, "HOST")) copy(s->host, sizeof(s->host), value);
 }
 
@@ -71,6 +72,8 @@ int settings_save(const dsc_settings_t* s)
           s->enabled, s->hardcore, s->live, s->username, s->token);
   if (strcmp(s->host, DEFAULT_HOST) != 0)
     fprintf(f, "HOST = %s\n", s->host);
+  if (s->spectator)
+    fprintf(f, "SPECTATOR = 1\n");
   fclose(f);
   return 1;
 }

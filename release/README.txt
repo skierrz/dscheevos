@@ -64,9 +64,11 @@ What works and what doesn't yet
   Wi-Fi connection the session started on. The in-game menu shows
   "Online", how many were sent and how many are waiting.
 - While a game uses its own wireless (Download Play, multiplayer),
-  sending pauses and resumes afterwards. Unlocks still waiting when you
-  turn the console off are lost, because nothing is written to the SD
-  card during play.
+  sending pauses and resumes afterwards.
+- Unlocks still waiting are saved to the SD card (pending.bin) only at
+  safe points: when you open the in-game menu, and before Reset Game,
+  Exit or a soft reset. The launcher sends them at the next start.
+  Turning the console off without one of those loses what was waiting.
 - If the Wi-Fi drops during play, DScheevos joins it again by itself
   and sends what was waiting. On WPA2 networks it uses the network key
   the console already saved; the key never goes to the SD card. WEP
@@ -85,4 +87,13 @@ _nds/nds-bootstrap-nightly.nds   the same launcher
 _nds/dscheevos/nds-bootstrap.nds nds-bootstrap with DScheevos hooks
 _nds/dscheevos/dscheevos9.bin    the achievement module (runs in the game)
 _nds/dscheevos/load.bin          devkitPro's nds-bootloader
+_nds/dscheevos/privacy.txt       privacy policy (also next to this file)
 _nds/dscheevos/licenses/         licenses and source links
+
+
+Cost and privacy
+----------------
+DScheevos is free: no paid features, no ads, no donations required.
+It talks only to RetroAchievements and collects nothing for itself.
+privacy.txt says what is sent, what is kept on the SD card, and how to
+delete it.

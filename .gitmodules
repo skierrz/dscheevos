@@ -1,7 +1,7 @@
 [submodule "tools/melonDS"]
 	path = tools/melonDS
 	url = https://github.com/skierrz/melonDS
-	branch = dscheevos
+	branch = dscheevos-features
 [submodule "external/rcheevos"]
 	path = external/rcheevos
 	url = https://github.com/RetroAchievements/rcheevos
@@ -14,7 +14,7 @@
 [submodule "external/nds-bootstrap"]
 	path = external/nds-bootstrap
 	url = https://github.com/skierrz/nds-bootstrap
-	branch = dscheevos
+	branch = dscheevos-features
 [submodule "external/lwip"]
 	path = external/lwip
 	url = https://github.com/lwip-tcpip/lwip

@@ -4,6 +4,10 @@ RetroAchievements for DS games on a DSi (and 3DS in DSi mode), on the console it
 
 > **Status: test builds, not yet tried on a real DSi.** In the emulator test bench, the whole flow works: session start over HTTPS, per-frame evaluation, unlocks sent during play, the in-game achievements page and the hardcore lockouts. Dropped Wi-Fi rejoins by itself, with the module's own WPA2 handshake. The open item is testing on real hardware (see `docs/architecture.md`). See `release/README.txt` for what a build can do.
 
+**Cost:** free. No paid features, no ads, and no donations required.
+
+**Privacy:** DScheevos talks only to RetroAchievements and collects nothing for itself. What it sends and stores: [`docs/privacy.md`](docs/privacy.md).
+
 ## How it fits together
 
 | Piece | Where | What it does |
@@ -30,4 +34,4 @@ rcheevos is used unmodified as a submodule.
 
 ## Licence
 
-GPL-3.0 (`LICENSE`), the same as nds-bootstrap, which the module runs inside. rcheevos (MIT), lwIP (BSD) and mbedTLS (Apache-2.0) keep their own licences.
+GPL-3.0 (`LICENSE`), the same as nds-bootstrap, which the module runs inside. rcheevos (MIT), lwIP (BSD) and mbedTLS (Apache-2.0) keep their own licences. The release zip carries every licence of what it ships, toolkit libraries included, in `_nds/dscheevos/licenses/`.

@@ -140,6 +140,20 @@ dscm_publish_net_ring:
 	mcr	p15, 0, r0, c7, c10, 4
 	bx	lr
 
+@ void dscm_publish_list(void* list): store the list pointer (header 0x2C)
+@ through the uncached mirror, then drop the cached line. The ARM9 never
+@ writes that line through the cache: the vblank_count read invalidates it.
+	.global dscm_publish_list
+	.type dscm_publish_list, %function
+dscm_publish_list:
+	ldr	r1, =dscm_list_ptr
+	add	r2, r1, #0x0A000000         @ uncached mirror (0x0C000000)
+	str	r0, [r2]
+	mov	r0, #0
+	mcr	p15, 0, r0, c7, c10, 4      @ drain write buffer
+	mcr	p15, 0, r1, c7, c6, 1       @ invalidate D-cache line
+	bx	lr
+
 @ void dscm_dc_clean(const void* addr, uint32_t len): write cached lines to RAM.
 	.global dscm_dc_clean
 	.type dscm_dc_clean, %function

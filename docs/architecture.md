@@ -94,10 +94,17 @@ Also measured in melonDS: the access point dropping the console mid-game (`WIFID
 
 Not covered by melonDS, and so untested until real hardware: the WPA2 handshake against a real access point (melonDS only offers an open one; the supplicant's own tests cover the protocol), group rekeys over the air, and real SDIO timing.
 
+## Offline queue
+
+Every unlock and leaderboard entry of the session goes into a journal in module RAM (`dscm_journal_t`), marked sent once the server answers. The module writes it through the uncached mirror, so RAM always holds the current copy. nds-bootstrap's ARM7 copies it to `_nds/dscheevos/pending.bin` (4 KB, created by the launcher) only when the game is stopped: when the in-game menu opens (unless a ROM read is still in flight), before Reset and Exit, before the soft-reset and return combos, and before a reset the game asks for. Never from an interrupt while the game runs. At the next start the launcher sends what is unsent, with the time since each unlock (rcheevos' `seconds_since_unlock`), and clears the file; if it still can't, it keeps a copy in `unsent/` for later. Turning the console off between safe points loses the unsent entries since the last one.
+
+The ARM7 writes with nds-bootstrap's `fileWrite`, which used to write back stale bytes when a write started mid-sector; that is fixed (from Bakkerrrs' retroachievements-ds-on-3ds).
+
 ## What the player sees
 
 - **Unlock.** The DSi's Wi-Fi LED blinks three times. It changes nothing on screen or in the sound, so it can't get in the game's way. The ARM7 reads the module's unlock count at VBlank and drives the LED over I2C, as nds-bootstrap already does for its ROM-read LED. Not on 3DS.
-- **In-game menu (L+DOWN+SELECT).** It has an "Achievements..." page with the game, hardcore or softcore, unlocked/total achievements and points, the unlocks of this session, what is still waiting to be sent, and frames checked/skipped.
+- **In-game menu (L+DOWN+SELECT).** Its "Achievements..." page opens on a summary (game, hardcore or softcore, unlocked/total achievements and points, this session's unlocks, network, what is waiting to be sent, active challenges and leaderboard trackers, frames checked/skipped), then lists every achievement with its state, points and measured progress; A shows one's description. The module rebuilds the list (`dscm_list_t`) in idle time when something changed and publishes it whole, so the menu never reads a half-built one.
+- **Notices.** The module also keeps what rcheevos asks a client to show (`dscm_notices_t`: unlocks, progress, challenge indicators, leaderboard start/fail/submit/rank, trackers, offline/online, the mode at session start). Nothing draws them over the game yet; see `docs/overlay-research.md`.
 - **Hardcore.** The in-game menu hides the RAM viewer and RAM dump (the dump is hidden in softcore too), and the refresh-rate option, whose rates below 60 Hz act as slow motion. nds-bootstrap's front end skips user cheats. AP-fix patches, which games need to run, still apply. nds-bootstrap has no save states.
 
 ## Measured so far

@@ -16,12 +16,12 @@ Status: **done**, **partial**, **missing**, or **n/a** (the feature doesn't exis
 
 | Requirement | Status | Where / what's left |
 |---|---|---|
-| Achievement list reachable in the client | **partial** | In-game menu > "Achievements..." (`nds-bootstrap: arm9_igm/dscheevosMenu.c`) shows the game, mode, totals and this session's unlocks. It doesn't list every achievement with its description and state yet. |
+| Achievement list reachable in the client | **done** | In-game menu > "Achievements..." (`nds-bootstrap: arm9_igm/dscheevosMenu.c`): a summary page (game, mode, totals, this session's unlocks, network), then every achievement of the set with its state, points and measured progress, and a detail page with the description. The module publishes the list (`dscm_list_t`, ABI v6). |
 | Triggers evaluate correctly | **done** | rcheevos `rc_client`, unmodified. `tests/games` checks unlock frames against rcheevos reading live memory every frame, with and without a 10 s backlog. |
-| Measured and Trigger (challenge) indicators shown in the list and during play | **missing** | Nothing draws over the game. An unlock only blinks the Wi-Fi light. Needs an on-screen notice during play. |
-| Rich presence works | **partial** | rc_client pings every 2 minutes, but only when "Send unlocks during play" is on: that's the only network path during play. |
-| Leaderboards work | **partial** | Evaluated and submitted like unlocks (same network path). No on-screen tracker or start/fail notice yet. |
-| Offline queueing: unlocks made offline are cached and sent later | **missing** | Requests wait in RAM only. Turning the console off loses them (`release/README.txt`). Needs a file on the SD card that the launcher sends at the next start. |
+| Measured and Trigger (challenge) indicators shown in the list and during play | **partial** | In the list: measured progress and an active-challenge mark per achievement, plus the active challenges and leaderboard trackers on the summary page. During play: an unlock blinks the Wi-Fi light; nothing is drawn over the game. Options and the decision they need are in `docs/overlay-research.md`. |
+| Rich presence works | **done** | rc_client pings every 2 minutes during play. A hardcore session always keeps the Wi-Fi connection for it; softcore does when "Send unlocks during play" is on. |
+| Leaderboards work | **partial** | Evaluated, submitted and queued offline like unlocks; trackers and results show in the in-game menu. No on-screen tracker or start/fail notice during play (see the indicators row). |
+| Offline queueing: unlocks made offline are cached and sent later | **done** | The module keeps every unlock and leaderboard entry of the session in a journal (`dscm_journal_t`); nds-bootstrap's ARM7 copies it to `_nds/dscheevos/pending.bin` at safe points only (in-game menu opening, Reset, Exit, the soft-reset and return combos, a reset the game asks for). The launcher sends what is unsent at the next start with the time since each unlock (`o=`), and sets a file aside in `unsent/` if it still can't. Turning the console off without one of those safe points loses what was unsent since the last one. Tested in melonDS (`tests/launcher/run.sh` with `--fail-awards`, then a normal run). |
 | Save state hit storage | n/a | nds-bootstrap has no save states. |
 | RAIntegration (Windows) | n/a | No Windows build. |
 | Standard save files | **done** | nds-bootstrap's `.sav` files, the same raw format emulators use. |
@@ -34,7 +34,7 @@ Status: **done**, **partial**, **missing**, or **n/a** (the feature doesn't exis
 | No rewind | n/a | Not in nds-bootstrap. |
 | No slowdown or frame advance | **done** | The in-game menu's refresh-rate option (slow motion) is hidden in hardcore (`arm9_igm/inGameMenu.c`). No frame advance exists. |
 | Loading save states blocked | n/a | Not in nds-bootstrap. |
-| Rich presence and leaderboards can't be turned off | **partial** | No setting turns them off, but with "Send unlocks during play" off, rich presence never reaches the server. Hardcore must keep the network path on, or the setting must go. |
+| Rich presence and leaderboards can't be turned off | **done** | No setting turns them off, and in hardcore the session always keeps Wi-Fi ("Send unlocks during play" is forced on and shown so). |
 | Resume must drop to casual | n/a | No resume feature. Every start goes through the launcher and a new session. |
 | No switch from casual to hardcore mid-session | **done** | The mode is chosen in the launcher before the game boots. The session file is used once. Nothing in the game changes it. |
 | Memory editors, debuggers, scripting | **done** | RAM viewer (it can edit memory) hidden in hardcore; RAM dump hidden whenever DScheevos runs. |
@@ -57,16 +57,16 @@ Status: **done**, **partial**, **missing**, or **n/a** (the feature doesn't exis
 | Requirement | Status | Where |
 |---|---|---|
 | Hardcore on by default (recommended) | **done** | `launcher/source/config.c` defaults to `HARDCORE = 1`. |
-| Hardcore state shown during play | **partial** | The launcher shows the mode before the game boots, and the in-game menu shows it. Nothing shows it once the game is running. |
+| Hardcore state shown during play | **partial** | The launcher shows the mode before the game boots, and the in-game menu shows it. Nothing on screen once the game runs; a pre-boot notice and the other options are in `docs/overlay-research.md`. |
 
 ## F. Transparency and legality
 
 | Requirement | Status | Where / what's left |
 |---|---|---|
-| Monetization disclosure | **done** | None: DScheevos is free, with no paid features. Say so in the README. |
-| Licences of everything shipped | **partial** | The zip has `_nds/dscheevos/licenses/` (rcheevos, mbedTLS, lwIP, nds-bootloader, nds-bootstrap) and `SOURCES.txt`. DScheevos itself is GPL-3.0 (`LICENSE`). Missing: DScheevos' own licence in the zip, and the BlocksDS and devkitARM runtime libraries linked into the launcher and module (libnds, DSWiFi, newlib). |
-| GPL obligations for shipped binaries | **partial** | DScheevos, nds-bootstrap (GPL-3.0) and nds-bootloader (GPL-2.0+): `SOURCES.txt` names the exact commits. The zip should carry the GPL text for DScheevos too. |
-| Privacy policy | **missing** | Must say what goes where: username, login token and game hashes to RetroAchievements only; nothing else collected; what stays on the SD card. |
+| Monetization disclosure | **done** | None: DScheevos is free, with no paid features, ads or required donations. Stated in `README.md` and the zip's `README.txt`. |
+| Licences of everything shipped | **done** | The zip's `_nds/dscheevos/licenses/` has DScheevos (GPL-3.0), rcheevos, mbedTLS, lwIP, nds-bootloader, nds-bootstrap, and the toolkit libraries linked into the binaries: BlocksDS libnds, DSWiFi, start-up code and picolibc (launcher); devkitARM newlib (module), libnds 1.8 and libfat (nds-bootstrap), libnds 2 and calico (`load.bin`). The toolkit texts are vendored in `release/licenses/`; `SOURCES.txt` says which binary links what. |
+| GPL obligations for shipped binaries | **done** | DScheevos, nds-bootstrap (GPL-3.0) and nds-bootloader (GPL-2.0+): `SOURCES.txt` names the exact commits, and the zip carries each one's licence text. |
+| Privacy policy | **done** | `docs/privacy.md`, shipped as `privacy.txt`: what goes to RetroAchievements (username, token, game hash, unlocks, leaderboard entries, rich presence), the Wi-Fi key kept in RAM only, every file on the SD card including the offline queue, how to delete it, contact through the issue tracker. |
 
 ## G. Auto-fail criteria
 
@@ -79,7 +79,7 @@ Status: **done**, **partial**, **missing**, or **n/a** (the feature doesn't exis
 | Non-unique user agent | own user agent (C) |
 | Undisclosed use of another client's user agent | never happened (C) |
 | Non-commercial cores with commercialization | none shipped, no commercialization |
-| Privacy policy with placeholders or contradictions | policy still to write (F) |
+| Privacy policy with placeholders or contradictions | complete policy, no placeholders (F) |
 
 ## Targets
 
@@ -89,9 +89,7 @@ Status: **done**, **partial**, **missing**, or **n/a** (the feature doesn't exis
 
 ## What's left, in order
 
-1. Offline queue: unlocks and leaderboard entries made during play written to the SD card, sent by the launcher at the next start.
-2. Notices during play: unlock, measured progress, challenge indicators, leaderboard start, tracker and result, and the mode at game start.
-3. Full achievement list in the in-game menu, with descriptions, state and measured progress.
-4. Rich presence in hardcore: keep the network path on while a hardcore session runs.
-5. Privacy policy, and the missing licences in the zip (DScheevos' own, the toolkit libraries).
-6. A first public release, which starts the 6-month clock.
+1. Notices during play: unlock, measured progress, challenge indicators, leaderboard start, tracker and result, and the mode at game start. Needs the owner's decision and RetroAchievements' answer first (`docs/overlay-research.md`): on the DSi nothing can draw over the game without touching its display state.
+2. Ask RetroAchievements (RAdmin) to validate the client; the questions are in `docs/overlay-research.md`.
+3. Real hardware: the tests listed in `docs/handoff.md` and `docs/overlay-research.md`.
+4. A first public release, which starts the 6-month clock.

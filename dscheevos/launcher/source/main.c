@@ -7,7 +7,9 @@
  */
 #include "chainload.h"
 #include "config.h"
+#include "log.h"
 #include "net.h"
+#include "pending.h"
 #include "session.h"
 #include "ui.h"
 
@@ -44,7 +46,7 @@ static void hand_over_wifi(void)
 /* Hands over to nds-bootstrap; only returns on failure. */
 static void boot_game(int with_achievements)
 {
-  int keep_wifi = with_achievements && settings.live;
+  int keep_wifi = with_achievements && settings_keep_wifi(&settings);
   const char* argv[1] = { BOOTSTRAP_PATH };
   if (!with_achievements)
     remove(DSC_DIR "session.bin");
@@ -54,6 +56,7 @@ static void boot_game(int with_achievements)
   else
     Wifi_DisableWifi();
   int err = chainload(BOOTSTRAP_PATH, 1, argv);
+  log_line("chainload failed: %d", err);
   ui_status("\x1b[31;1mCouldn't start nds-bootstrap (%d)\x1b[39;0m", err);
   ui_status("%s", err == CHAINLOAD_ERR_LOADER ? CHAINLOAD_LOADER_PATH : BOOTSTRAP_PATH);
   for (;;) swiWaitForVBlank();
@@ -96,8 +99,25 @@ static int log_in(void)
       ui_status("Logged in.");
       return 1;
     }
+    log_line("login: %s", error);
     ui_status("\x1b[31;1m%s\x1b[39;0m", error);
   }
+}
+
+/* Unlocks the last session couldn't send, now that we're online. Returns
+ * how many were for this game: the session must be started again so its
+ * cached unlock list includes them. */
+static unsigned send_pending(const char* hash)
+{
+  pending_result_t p;
+  pending_send(&settings, hash, &p);
+  if (p.sent_unlocks)
+    ui_status("Sent %u unlock%s from last time", p.sent_unlocks, p.sent_unlocks == 1 ? "" : "s");
+  if (p.sent_entries)
+    ui_status("Sent %u leaderboard entr%s", p.sent_entries, p.sent_entries == 1 ? "y" : "ies");
+  if (p.failed)
+    ui_status("\x1b[33;1m%u couldn't be sent; will retry\n next time\x1b[39;0m", p.failed);
+  return p.this_game;
 }
 
 static void settings_menu(void)
@@ -108,7 +128,8 @@ static void settings_menu(void)
     ui_bottom("\n Settings\n\n");
     ui_bottom(" \x1b[32;1mA\x1b[39;0m  Achievements: %s\n", settings.enabled ? "on" : "off");
     ui_bottom(" \x1b[32;1mX\x1b[39;0m  Hardcore: %s\n", settings.hardcore ? "on" : "off");
-    ui_bottom(" \x1b[32;1mR\x1b[39;0m  Send unlocks during play: %s\n", settings.live ? "on" : "off");
+    ui_bottom(" \x1b[32;1mR\x1b[39;0m  Send unlocks during play: %s\n",
+              settings.hardcore ? "on (hardcore)" : settings.live ? "on" : "off");
     ui_bottom(" \x1b[32;1mY\x1b[39;0m  Log out%s%s\n", settings.username[0] ? " " : "", settings.username);
     ui_bottom("\n \x1b[31;1mB\x1b[39;0m  Done\n");
     do {
@@ -118,7 +139,7 @@ static void settings_menu(void)
     } while (!(k & (KEY_A | KEY_B | KEY_X | KEY_Y | KEY_R)));
     if (k & KEY_A) settings.enabled = !settings.enabled;
     if (k & KEY_X) settings.hardcore = !settings.hardcore;
-    if (k & KEY_R) settings.live = !settings.live;
+    if ((k & KEY_R) && !settings.hardcore) settings.live = !settings.live;
     if (k & KEY_Y) { settings.token[0] = '\0'; settings.username[0] = '\0'; }
     if (k & KEY_B) { settings_save(&settings); return; }
   }
@@ -136,6 +157,7 @@ int main(int argc, char** argv)
     ui_status("\x1b[31;1mCan't read the SD card\x1b[39;0m");
     for (;;) swiWaitForVBlank();
   }
+  log_start();
   settings_load(&settings);
   if (!bootstrap_ini_game(rom_path, sizeof(rom_path), &dsi_mode)) {
     ui_status("No game in _nds/nds-bootstrap.ini.");
@@ -172,6 +194,7 @@ int main(int argc, char** argv)
 
     ui_status("Connecting to Wi-Fi...");
     if (net_connect(60 * 20) != 0) {
+      log_line("wifi: %s", net_error());
       ui_status("\x1b[31;1m%s\x1b[39;0m", net_error());
       if (ui_choose("Achievements need the Internet\n when the game starts.", "Try again", "Play without achievements") == 'B')
         boot_game(0);
@@ -180,6 +203,8 @@ int main(int argc, char** argv)
 
     ui_status("Starting the session...");
     r = session_start(&settings, rom_path, hash, &info, &error);
+    if ((r == SESSION_OK || r == SESSION_NO_SET) && send_pending(hash) && r == SESSION_OK)
+      r = session_start(&settings, rom_path, hash, &info, &error);
     if (r == SESSION_OK) {
       char line[40];
       snprintf(line, sizeof(line), "%u/%u achievements, %u/%u pts", info.unlocked, info.achievements,
@@ -188,7 +213,11 @@ int main(int argc, char** argv)
       ui_status("%s%s (%u pts)%s", settings.hardcore ? "\x1b[31;1mHARDCORE\x1b[39;0m  " : "Softcore  ",
                 info.display_name, info.score,
                 !settings.hardcore ? "" : info.hardcore_refused ? "\n Rules on, RA counts as softcore" : "\n Not yet confirmed by RA");
-      if (!session_write(&settings, rom_path, hash)) {
+      if (settings.spectator)
+        ui_status("\x1b[33;1mSpectator: nothing is sent\x1b[39;0m");
+      log_line("session: started%s", settings.spectator ? ", spectator" : "");
+      if (!pending_prepare(&settings) || !session_write(&settings, rom_path, hash)) {
+        log_line("session: couldn't write the session files");
         if (ui_choose("Couldn't write the session file.", "Try again", "Play without achievements") == 'B')
           boot_game(0);
         continue;
@@ -198,9 +227,11 @@ int main(int argc, char** argv)
       boot_game(1);
     }
     if (r == SESSION_NO_SET) {
+      log_line("session: no set for this game");
       ui_wait("RetroAchievements doesn't know\n this version of the game.", 150);
       boot_game(0);
     }
+    log_line("session: %s", error);
     if (r == SESSION_LOGIN_FAILED) {
       ui_status("\x1b[31;1m%s\x1b[39;0m", error);
       settings.token[0] = '\0';
