@@ -1,0 +1,22 @@
+# Build trees at the repo root (runner, game tests, release package)
+/build/
+/out/
+
+# Private files: BIOS, firmware and NAND dumps, game dumps and saves. Keep them
+# outside the repo (DSI_FILES, ROM); these patterns catch a stray copy.
+biosnds7.bin
+biosnds9.bin
+biosdsi7.bin
+biosdsi9.bin
+dsfirmware.bin
+dsifirmware.bin
+dsinand.bin
+nand*.bin
+*.nds
+*.srl
+*.dsi
+*.sav
+*.env
+
+# macOS
+.DS_Store

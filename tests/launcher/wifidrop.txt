@@ -1,0 +1,5 @@
+# Runner script for tests/launcher/run.sh with sets/live.json and Kirby Super Star Ultra.
+# The game starts about frame 1800; its unlocks go out near frames 2120, 2720, 3320, 4220.
+# The emulated access point drops the DSi between the first two and the last two.
+2500 WIFIDROP
+3900 WIFIDROP

@@ -10,6 +10,10 @@
 # Optional: SCRIPT=file (timed input), WORK=dir (keep files), PORT, LIVE=0 (no sending during play),
 #   RUNNER_ARGS (extra runner options, e.g. --wpa-ap melonAP:<PMK> for a WPA2 access point).
 # Usage: run.sh SET.json FRAMES [status.py checks, e.g. --expect 9901 --never 9902]
+# Wi-Fi drop test: wifidrop.txt drops the access point twice during play (Kirby Super Star
+# Ultra's game starts about frame 1800 here); every unlock must still arrive:
+#   SCRIPT=tests/launcher/wifidrop.txt tests/launcher/run.sh tests/bootstrap/sets/live.json 6000 \
+#     --expect-sent 4 --expect-rejoins 2
 set -eu
 : "${DSI_FILES:?}" "${ROM:?}" "${BOOTSTRAP:?}" "${RUNNER:?}"
 here=$(cd "$(dirname "$0")" && pwd)

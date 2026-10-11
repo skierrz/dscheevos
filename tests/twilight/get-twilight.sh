@@ -15,6 +15,10 @@ if [ ! -f "$archive" ]; then
   curl -fsSL -o "$archive.part" "https://github.com/DS-Homebrew/TWiLightMenu/releases/download/$version/TWiLightMenu-DSi.7z"
   mv "$archive.part" "$archive"
 fi
-echo "$sha256  $archive" | sha256sum -c --quiet
+# macOS's sha256sum has no --quiet and older macOS has none at all: compare by hand
+actual=$( (sha256sum "$archive" 2>/dev/null || shasum -a 256 "$archive") | cut -d' ' -f1)
+[ "$actual" = "$sha256" ] || { echo "$archive: SHA-256 is $actual, expected $sha256" >&2; exit 1; }
 rm -rf "$dir" && mkdir -p "$dir"
-7z x -y -o"$dir" "$archive" > /dev/null
+# p7zip installs 7z; Homebrew's sevenzip only installs 7zz
+sevenz=$(command -v 7z || command -v 7zz) || { echo "need 7z or 7zz" >&2; exit 1; }
+"$sevenz" x -y -o"$dir" "$archive" > /dev/null

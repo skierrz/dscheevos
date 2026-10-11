@@ -34,7 +34,9 @@ if [ ! -f "$zip" ]; then
   curl -fsSL -o "$zip.part" https://problemkaputt.de/unlaunch.zip
   mv "$zip.part" "$zip"
 fi
-echo "d0dbe7705af1aa02f5ab01e9583568b006d5d8ec9ccf291e7248ebb4f520b2cf  $zip" | sha256sum -c --quiet
+want=d0dbe7705af1aa02f5ab01e9583568b006d5d8ec9ccf291e7248ebb4f520b2cf
+actual=$( (sha256sum "$zip" 2>/dev/null || shasum -a 256 "$zip") | cut -d' ' -f1)  # macOS sha256sum has no --quiet
+[ "$actual" = "$want" ] || { echo "$zip: SHA-256 is $actual, expected $want" >&2; exit 1; }
 python3 -I -c 'import sys, zipfile; open(sys.argv[2], "wb").write(zipfile.ZipFile(sys.argv[1]).read("UNLAUNCH.DSI"))' "$zip" "$work/UNLAUNCH.DSI"
 
 # --- nandtool, linked against the runner's melonDS core

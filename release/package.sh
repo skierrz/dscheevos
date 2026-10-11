@@ -25,7 +25,8 @@ cp "$repo/external/rcheevos/LICENSE" "$lic/rcheevos.txt"
 cp "$repo/external/mbedtls/LICENSE" "$lic/mbedtls.txt"
 cp "$repo/external/lwip/COPYING" "$lic/lwip.txt"
 # nds-bootloader states GPL v2 or later in its source headers and ships no license file
-{ echo "devkitPro nds-bootloader: GNU General Public License, version 2 or (at your option) any later version."; echo; cat /usr/share/common-licenses/GPL-2; } > "$lic/nds-bootloader.txt"
+# (release/GPL-2.txt is Debian's common-licenses/GPL-2, kept here so macOS builds the same zip)
+{ echo "devkitPro nds-bootloader: GNU General Public License, version 2 or (at your option) any later version."; echo; cat "$repo/release/GPL-2.txt"; } > "$lic/nds-bootloader.txt"
 cp "$repo/external/nds-bootstrap/LICENSE" "$lic/nds-bootstrap.txt"
 cat > "$lic/SOURCES.txt" <<SRC
 DScheevos $version is built from:

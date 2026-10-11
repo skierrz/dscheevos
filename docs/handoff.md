@@ -31,6 +31,58 @@ Checks that should pass before you change anything:
 
 Practical notes from the cloud runs: a full TWiLight chain run takes 1–3 minutes; old run folders hold NAND and SD copies (hundreds of MB each), so clean `WORK` dirs.
 
+## Local setup (macOS)
+
+Set up and checked on an Apple Silicon Mac (macOS 26, Oct 2026). Everything below builds and every check passes.
+
+**Layout** (the owner keeps projects in `~/Developer`, not `~/dev`):
+
+| Path | What |
+|---|---|
+| `~/Developer/DScheevos/` | planning notes (`ARCHITECTURE.md`, `DESIGN.md`, `TESTING.md`, `research/`), not a git repo |
+| `~/Developer/DScheevos/dscheevos/` | this repo |
+| `~/Developer/DScheevos/nds-bootstrap/` | the fork, `dscheevos-hc-status`, for in-game work (the submodule is a separate checkout) |
+| `~/Developer/DScheevos/private/dsi/` | BIOS, firmware and NAND dumps (`DSI_FILES`) |
+| `~/Developer/DScheevos/private/roms/` | Kirby, Pokemon Platinum, NSMB |
+| `~/Developer/DScheevos/private/homebrew-roms/` | `fetch_roms.py` output (`DSC_ROMS`) |
+| `~/Developer/DScheevos/dscheevos.env` | exports `DSI_FILES`, `ROM_KIRBY`, `ROM_POKEMON`, `ROM_NSMB`, `ROM` (Kirby), `DSC_ROMS`, `RUNNER`, `BOOTSTRAP`, `DSC_GAMETEST`. From the repo: `source ../dscheevos.env` |
+
+**Homebrew packages** beyond step 3 above: `pkgconf` and `enet` (the runner's CMake looks up libenet with pkg-config), and `sevenzip` for `get-twilight.sh` (it installs `7zz`, which the script accepts).
+
+**Docker on Apple Silicon:** pass `--platform linux/amd64` to every `docker run`. Under emulation nds-bootstrap takes about 12 minutes and the module about 2. The devkitARM image has no host gcc, so build `lzss` for Linux in the `gcc` image and mount it as CI does:
+
+```sh
+docker run --rm --platform linux/amd64 -v "$PWD:/src" -w /src gcc:14 \
+  gcc -O2 -static external/nds-bootstrap/lzss.c -o build/host/lzss
+docker run --rm --platform linux/amd64 -v "$PWD:/src" -v "$PWD/build/host/lzss:/usr/local/bin/lzss:ro" \
+  -w /src/external/nds-bootstrap devkitpro/devkitarm:20241104 \
+  bash -c 'git config --global safe.directory "*" && make package-nightly'
+docker run --rm --platform linux/amd64 -v "$PWD:/src" -w /src devkitpro/devkitarm:20241104 make -C dscheevos/module
+docker run --rm --platform linux/amd64 -v "$PWD:/src" -w /src devkitpro/devkitarm:20260610 make -C dscheevos/launcher/loader
+docker run --rm --platform linux/amd64 -v "$PWD:/src" -w /src skylyrac/blocksds:slim-v1.24.0 make -C dscheevos/launcher
+docker run --rm --platform linux/amd64 -v "$PWD:/src" -w /src devkitpro/devkitarm:20241104 make -C tests/module
+release/package.sh "$PWD/out/dscheevos" "$(git describe --tags --always)"
+```
+
+**Checks** (with the env file sourced; times on this Mac):
+
+| Check | Result |
+|---|---|
+| `make -C dscheevos/core test` | 130 checks, 0 failed |
+| `make -C dscheevos/module/tests test`, session layout (as in `test.yml`) | 54 checks, 0 failed; layout OK |
+| `tests/games/run.sh` | ALL GAME TESTS PASSED (2m40s) |
+| module test ROM: `$RUNNER --mode dsi --rom tests/module/out/module-test.nds --bios-dir "$DSI_FILES" --nand COPY --frames 3000 --until RESULT` | RESULT PASS |
+| `tests/twilight/run.sh tests/bootstrap/sets/pipeline.json 4000 --expect 9901 --never 9902`, Kirby | RESULT PASS, `'hardcore': 2` (30 s) |
+| same, `ROM="$ROM_POKEMON"` | RESULT PASS, `'hardcore': 2` |
+| `SCRIPT=tests/launcher/wifidrop.txt tests/launcher/run.sh tests/bootstrap/sets/live.json 6000 --expect-sent 4 --expect-rejoins 2`, Kirby | RESULT PASS, 4 sent, 2 rejoins (45 s) |
+
+**Gotchas:**
+- `--nand` gets modified: always pass a copy, never `$DSI_FILES/dsinand.bin`.
+- Run emulator tests one at a time (they share mock-server port 8443) and set `WORK` to a folder you delete afterwards: 450–650 MB per run.
+- macOS's `/sbin/sha256sum` has no `--quiet`, and Debian's `/usr/share/common-licenses/GPL-2` doesn't exist on a Mac: the scripts no longer depend on either (branch `mac-setup`).
+- The runner's CMake defines `ARCHITECTURE_x86_64=1` even on arm64. Only JIT code reads it and the runner builds without JIT, so it's harmless; turn JIT on and it won't be.
+- In zsh, `set -- $var` doesn't split words; wrap loops like that in `bash -c`.
+
 ## Open work, in order
 
 1. **SD unlock queue** (compliance A, "offline queueing"). The module keeps pending unlocks and leaderboard entries in RAM and writes them only when it's safe (not from the VBlank IRQ: another fork froze Ketsui doing that). Candidates: when the in-game menu opens, and at exit. The launcher sends them at the next start, with rcheevos' `o=` offset. Also port their fix for nds-bootstrap's `fileWrite` partial-sector bug (`retail/common/source/my_fat.c`, see `bakkerrrs/retroachievements-ds-on-3ds` docs, "fileWrite") before writing files in-game.
