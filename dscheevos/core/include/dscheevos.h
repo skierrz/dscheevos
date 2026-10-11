@@ -73,17 +73,27 @@ typedef struct dsc_config_t {
   const char* token;             /* login token, never a password */
   int hardcore;                  /* 1: hardcore session */
   uint32_t max_addresses;        /* snapshot capacity, e.g. 4096 */
-  uint32_t snapshot_slots;  /* frames that can wait for evaluation; 0 = 2, max 64 */
+  uint32_t snapshot_slots;       /* most frames that can wait for evaluation; 0 = 2, max 1024 */
+  uint32_t snapshot_bytes;       /* memory for queued snapshots; 0 = snapshot_slots * max_addresses */
 } dsc_config_t;
 
 typedef struct dsc_stats_t {
   uint32_t frames_snapshotted;
   uint32_t frames_evaluated;
   uint32_t frames_dropped;       /* snapshots lost because evaluation was behind */
+  uint32_t frames_discarded;     /* queued snapshots from before a game reset */
   uint32_t live_reads;           /* reads not covered by the snapshot (new or moved addresses) */
   uint32_t addresses;            /* addresses captured each VBlank */
   uint32_t pending_requests;
 } dsc_stats_t;
+
+/* Progress in the loaded game's core set (for menus). */
+typedef struct dsc_progress_t {
+  uint32_t achievements;
+  uint32_t unlocked;
+  uint32_t points;
+  uint32_t points_unlocked;
+} dsc_progress_t;
 
 /* Set up the core. Returns 0 on success. */
 int dsc_init(const dsc_platform_t* platform, const dsc_config_t* config);
@@ -105,6 +115,12 @@ int dsc_idle(void);
 void dsc_http_done(void* handle, int http_status, const char* body, size_t body_length);
 
 void dsc_get_stats(dsc_stats_t* stats);
+
+/* The game was reset: drop queued frames and reset achievement state, as
+ * an emulator does on reset. Call from idle context, not from an IRQ. */
+void dsc_reset(void);
+
+void dsc_get_progress(dsc_progress_t* progress);
 
 /* Tear down: unload the game and free everything. */
 void dsc_shutdown(void);

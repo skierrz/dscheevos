@@ -23,6 +23,10 @@ static int g_initialized;
 
 extern uint32_t dscm_vblank_count_read(void);  /* start.s */
 extern uint32_t dscm_dtcm_base(void);
+extern void dscm_publish_notify(uint32_t count);
+static volatile int g_reset_pending;
+static int g_progress_stale;
+static void update_progress(void);
 
 /* used by the stubs in syscalls.c */
 uint32_t dscm_unix_time(void) { return g_boot.unix_time + g_frames / 60; }
@@ -134,10 +138,13 @@ static void on_event(const dsc_event_t* e)
       u->frame = g_frames;
       copy_title(u->title, e->title, sizeof(u->title));
       dscm_g_status.unlock_count++;
+      dscm_publish_notify(dscm_g_status.unlock_count);
+      g_progress_stale = 1;
       break;
     }
     case DSC_EVENT_GAME_LOADED:
       copy_title(dscm_g_status.game_title, e->title, sizeof(dscm_g_status.game_title));
+      g_progress_stale = 1;
       break;
     case DSC_EVENT_LOGIN_FAILED:
       dscm_g_status.error = DSCM_ERROR_LOGIN;
@@ -194,7 +201,8 @@ int module_init(const dscm_boot_t* boot)
   config.token = g_boot.token;
   config.hardcore = g_boot.hardcore;
   config.max_addresses = 4096;
-  config.snapshot_slots = 60;   /* ride out a second of frames with no idle time (loading) */
+  config.snapshot_slots = 1024;          /* ~17 s of frames with no idle time (loading, save writes) */
+  config.snapshot_bytes = 256 * 1024;    /* shared by queued frames: a few hundred bytes each, typically */
 
   if (dsc_init(&platform, &config) != 0) {
     dscm_g_status.error = DSCM_ERROR_NO_MEMORY;
@@ -209,6 +217,8 @@ int module_init(const dscm_boot_t* boot)
     dsc_idle();
 
   dscm_g_status.active = dsc_is_active();
+  if (dscm_g_status.active)
+    update_progress();
   g_initialized = 1;
   return dscm_g_status.active ? 0 : -1;
 }
@@ -235,6 +245,23 @@ void module_vblank(void)
   dscm_g_status.frames_dropped = s.frames_dropped;
 }
 
+static void update_progress(void)
+{
+  dsc_progress_t p;
+  dsc_get_progress(&p);
+  dscm_g_status.achievements = p.achievements;
+  dscm_g_status.achievements_unlocked = p.unlocked;
+  dscm_g_status.points = p.points;
+  dscm_g_status.points_unlocked = p.points_unlocked;
+  g_progress_stale = 0;
+}
+
+/* From reset_entry (start.s); IRQs are off. */
+void module_reset(void)
+{
+  g_reset_pending = 1;
+}
+
 /* Called on the module's own stack from halt_entry, in the game's idle thread.
  * NitroSDK switches threads when an IRQ returns, so any game thread that wakes
  * (the main loop at VBlank, a loader thread at a card IRQ) preempts this work
@@ -248,9 +275,15 @@ void module_idle(void)
   if (!g_initialized || !dscm_g_status.active)
     return;
 
+  if (g_reset_pending) {
+    g_reset_pending = 0;
+    dsc_reset();
+  }
   poll_network();
+  if (g_progress_stale)
+    update_progress();
   dsc_get_stats(&s);
-  if (s.frames_snapshotted == s.frames_evaluated + s.frames_dropped)
+  if (s.frames_snapshotted == s.frames_evaluated + s.frames_dropped + s.frames_discarded)
     return; /* nothing waiting */
 
   start = REG_VCOUNT;

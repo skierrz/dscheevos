@@ -112,10 +112,10 @@ static int was_unlocked(int id)
 }
 
 /* ---- helpers ---- */
-static void start(int hardcore)
+static void start_with(int hardcore, uint32_t slots, uint32_t bytes)
 {
   dsc_platform_t p = { read_memory, millis, http_send, on_event, NULL };
-  dsc_config_t c = { "http://mock", "tester", "tok", hardcore, 1024 };
+  dsc_config_t c = { "http://mock", "tester", "tok", hardcore, 1024, slots, bytes };
   memset(ram, 0, sizeof ram);
   memset(dtcm, 0, sizeof dtcm);
   put32(0x100, 0x02000020);  /* pointer -> 0x20, target byte at 0x24 */
@@ -128,6 +128,7 @@ static void start(int hardcore)
   CHECK(loaded);
   CHECK(dsc_is_active());
 }
+static void start(int hardcore) { start_with(hardcore, 0, 0); }
 
 /* one game frame: VBlank snapshot, then the game changes memory, then idle time */
 static void frame(void (*after_vblank)(void))
@@ -257,6 +258,74 @@ static void test_dropped_frames_are_reported(void)
   dsc_shutdown();
 }
 
+static void test_long_stretch_without_idle_is_queued(void)
+{
+  dsc_stats_t s;
+  int i;
+  start_with(1, 1024, 0);
+  frames(3);                 /* learn the addresses */
+  for (i = 0; i < 600; i++) {   /* ten seconds of VBlanks with no idle time */
+    ram[0x10] = (i == 300) ? 5 : 0;
+    dsc_vblank();
+  }
+  CHECK(!was_unlocked(1001));
+  dsc_idle();                /* catch up, in order */
+  dsc_get_stats(&s);
+  CHECK(s.frames_dropped == 0);
+  CHECK(s.frames_evaluated == s.frames_snapshotted);
+  CHECK(was_unlocked(1001)); /* the one-frame value was seen */
+  dsc_shutdown();
+}
+
+static void test_snapshot_arena_wraps(void)
+{
+  dsc_stats_t s;
+  uint32_t per_frame;
+  int i;
+  start_with(1, 1024, 64);   /* a few frames' worth: the ring wraps many times */
+  frames(3);
+  dsc_get_stats(&s);
+  per_frame = s.addresses;
+  CHECK(per_frame > 0 && per_frame * 4 < 64);
+  for (i = 0; i < 400; i++) {
+    ram[0x10] = (i == 333) ? 5 : 0;
+    dsc_vblank();
+    if (i % 3 == 2) dsc_idle(); /* three frames queue up each time */
+  }
+  dsc_idle();
+  dsc_get_stats(&s);
+  CHECK(s.frames_dropped == 0);
+  CHECK(was_unlocked(1001));
+  for (i = 0; i < 20; i++) dsc_vblank();   /* more than 64 bytes queued: drops, reported */
+  dsc_idle();
+  dsc_get_stats(&s);
+  CHECK(s.frames_dropped > 0);
+  CHECK(degraded >= 1);
+  dsc_shutdown();
+}
+
+static void test_reset_and_progress(void)
+{
+  dsc_progress_t p;
+  start(1);
+  dsc_get_progress(&p);
+  CHECK(p.achievements == 3 && p.unlocked == 0 && p.points == 40);
+  frames(3);
+  ram[0x10] = 5;
+  frames(2);
+  CHECK(was_unlocked(1001));
+  dsc_get_progress(&p);
+  CHECK(p.unlocked == 1 && p.points_unlocked == 5);
+  dsc_vblank();
+  dsc_vblank();
+  dsc_reset();               /* queued frames dropped, state reset, unlocks kept */
+  frames(2);
+  dsc_get_progress(&p);
+  CHECK(p.unlocked == 1);
+  CHECK(dsc_is_active());
+  dsc_shutdown();
+}
+
 static void test_unlock_retried_when_server_down(void)
 {
   int i;
@@ -284,6 +353,9 @@ int main(void)
   RUN(test_unlock_sent_in_hardcore);
   RUN(test_softcore_session);
   RUN(test_dropped_frames_are_reported);
+  RUN(test_long_stretch_without_idle_is_queued);
+  RUN(test_snapshot_arena_wraps);
+  RUN(test_reset_and_progress);
   RUN(test_unlock_retried_when_server_down);
   printf("%d checks, %d failed\n", checks, failures);
   return failures ? 1 : 0;

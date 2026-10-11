@@ -7,8 +7,14 @@
  * VBlank captures it too (this covers pointers that just moved).
  *
  * Address tables are immutable once published. dsc_vblank() copies the bytes
- * listed in the current table into a free snapshot slot as a few runs of
+ * listed in the current table into the next snapshot as a few runs of
  * contiguous memory. Each snapshot remembers which table it was taken with.
+ *
+ * Snapshots queue in a ring: dsc_vblank (IRQ) adds at the head, dsc_idle
+ * evaluates and frees at the tail, oldest first. Their bytes live in one
+ * arena, also used as a ring, so each frame costs only the bytes watched
+ * and a long stretch without idle time (loading, save writes) queues many
+ * frames instead of dropping them.
  */
 #include "dscheevos.h"
 
@@ -18,7 +24,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define MAX_SLOTS 64
+#define MAX_SLOTS 1024
 #define TABLES 3              /* current, plus up to two still used by queued snapshots */
 #define MAX_PENDING_HTTP 8
 
@@ -41,6 +47,8 @@ enum { SLOT_FREE, SLOT_FILLING, SLOT_READY, SLOT_EVAL };
 typedef struct slot_t {
   volatile int state;
   uint8_t* data;
+  uint32_t offset;            /* in the arena */
+  uint32_t size;
   const table_t* table;
   uint32_t frame;
 } slot_t;
@@ -67,8 +75,13 @@ static struct {
   uint32_t* pending_new;       /* addresses missed during evaluation, merged after the frame */
   uint32_t pending_new_count;
 
-  slot_t slots[MAX_SLOTS];
-  uint32_t slot_count;
+  slot_t slots[MAX_SLOTS];     /* ring: [slot_tail, slot_head) are queued */
+  uint32_t slot_count;         /* most frames that may wait */
+  volatile uint32_t slot_head; /* written by dsc_vblank only */
+  volatile uint32_t slot_tail; /* written by dsc_idle only */
+  uint8_t* arena;
+  uint32_t arena_size;
+  uint32_t arena_head;         /* end of the newest snapshot's bytes */
   slot_t* evaluating;
   volatile uint32_t frame_counter;
 
@@ -125,10 +138,12 @@ static void build_runs(table_t* t)
 static int table_in_use(const table_t* t)
 {
   int i;
+  uint32_t n;
+  (void)i;
   if (t == S.current)
     return 1;
-  for (i = 0; i < (int)S.slot_count; i++)
-    if (S.slots[i].state != SLOT_FREE && S.slots[i].table == t)
+  for (n = S.slot_tail; n != S.slot_head; n++)
+    if (S.slots[n % MAX_SLOTS].table == t)
       return 1;
   return 0;
 }
@@ -338,6 +353,7 @@ int dsc_init(const dsc_platform_t* platform, const dsc_config_t* config)
   S.slot_count = S.config.snapshot_slots ? S.config.snapshot_slots : 2;
   if (S.slot_count > MAX_SLOTS)
     S.slot_count = MAX_SLOTS;
+  S.arena_size = S.config.snapshot_bytes ? S.config.snapshot_bytes : S.slot_count * max;
 
   for (i = 0; i < TABLES; i++) {
     S.tables[i].addresses = (uint32_t*)malloc(max * sizeof(uint32_t));
@@ -345,11 +361,9 @@ int dsc_init(const dsc_platform_t* platform, const dsc_config_t* config)
     if (!S.tables[i].addresses || !S.tables[i].runs)
       return -2;
   }
-  for (i = 0; i < (int)S.slot_count; i++) {
-    S.slots[i].data = (uint8_t*)malloc(max);
-    if (!S.slots[i].data)
-      return -2;
-  }
+  S.arena = (uint8_t*)malloc(S.arena_size);
+  if (!S.arena)
+    return -2;
   S.pending_new = (uint32_t*)malloc(max * sizeof(uint32_t));
   if (!S.pending_new)
     return -2;
@@ -384,29 +398,45 @@ int dsc_is_active(void)
   return S.active;
 }
 
+/* Space for n bytes after the newest snapshot, or at the start of the
+ * arena, without reaching the oldest queued one. -1 if there is none. */
+static int32_t arena_alloc(uint32_t n)
+{
+  uint32_t head = S.arena_head, tail;
+  if (S.slot_head == S.slot_tail)
+    return n <= S.arena_size ? 0 : -1;    /* nothing queued: start over */
+  tail = S.slots[S.slot_tail % MAX_SLOTS].offset;
+  if (head >= tail) {
+    if (S.arena_size - head >= n) return (int32_t)head;
+    if (tail > n) return 0;
+    return -1;
+  }
+  return tail - head > n ? (int32_t)head : -1;
+}
+
 void dsc_vblank(void)
 {
   const table_t* t;
-  slot_t* slot = NULL;
+  slot_t* slot;
+  int32_t offset;
   uint32_t i;
 
   if (!S.active)
     return;
 
   S.frame_counter++;
-  for (i = 0; i < (int)S.slot_count; i++) {
-    if (S.slots[i].state == SLOT_FREE) {
-      slot = &S.slots[i];
-      break;
-    }
-  }
-  if (!slot) {
+  t = S.current;
+  offset = S.slot_head - S.slot_tail < S.slot_count ? arena_alloc(t->count) : -1;
+  if (offset < 0) {
     S.stats.frames_dropped++;
     return;
   }
 
+  slot = &S.slots[S.slot_head % MAX_SLOTS];
   slot->state = SLOT_FILLING;
-  t = S.current;
+  slot->offset = (uint32_t)offset;
+  slot->size = t->count;
+  slot->data = S.arena + offset;
   for (i = 0; i < t->run_count; i++) {
     const run_t* r = &t->runs[i];
     if (S.platform.read_memory(r->address, slot->data + r->offset, r->length) != r->length)
@@ -414,8 +444,10 @@ void dsc_vblank(void)
   }
   slot->table = t;
   slot->frame = S.frame_counter;
+  S.arena_head = (uint32_t)offset + t->count;
   S.stats.frames_snapshotted++;
   slot->state = SLOT_READY;
+  S.slot_head++;    /* publish last */
 }
 
 static void finish_http(void)
@@ -455,13 +487,9 @@ int dsc_idle(void)
 
   finish_http();
 
-  for (;;) {
-    slot_t* next = NULL;
-    int i;
-    for (i = 0; i < (int)S.slot_count; i++)
-      if (S.slots[i].state == SLOT_READY && (!next || S.slots[i].frame < next->frame))
-        next = &S.slots[i];
-    if (!next)
+  while (S.slot_tail != S.slot_head) {
+    slot_t* next = &S.slots[S.slot_tail % MAX_SLOTS];
+    if (next->state != SLOT_READY)
       break;
 
     next->state = SLOT_EVAL;
@@ -469,6 +497,7 @@ int dsc_idle(void)
     rc_client_do_frame(S.client);
     S.evaluating = NULL;
     next->state = SLOT_FREE;
+    S.slot_tail++;
     S.stats.frames_evaluated++;
     evaluated++;
 
@@ -510,6 +539,31 @@ void dsc_get_stats(dsc_stats_t* stats)
   *stats = S.stats;
 }
 
+void dsc_reset(void)
+{
+  uint32_t head = S.slot_head;
+  if (!S.initialized)
+    return;
+  S.evaluating = NULL;
+  S.stats.frames_discarded += head - S.slot_tail;
+  S.slot_tail = head;          /* frames from before the reset */
+  if (S.active)
+    rc_client_reset(S.client);
+}
+
+void dsc_get_progress(dsc_progress_t* progress)
+{
+  rc_client_user_game_summary_t summary;
+  memset(progress, 0, sizeof(*progress));
+  if (!S.initialized || !S.active)
+    return;
+  rc_client_get_user_game_summary(S.client, &summary);
+  progress->achievements = summary.num_promoted_achievements;
+  progress->unlocked = summary.num_unlocked_achievements;
+  progress->points = summary.points_available;
+  progress->points_unlocked = summary.points_unlocked;
+}
+
 void dsc_shutdown(void)
 {
   int i;
@@ -524,8 +578,7 @@ void dsc_shutdown(void)
     free(S.tables[i].addresses);
     free(S.tables[i].runs);
   }
-  for (i = 0; i < (int)S.slot_count; i++)
-    free(S.slots[i].data);
+  free(S.arena);
   for (i = 0; i < MAX_PENDING_HTTP; i++)
     if (S.http[i].used)
       free(S.http[i].body);

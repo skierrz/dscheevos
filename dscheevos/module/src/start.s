@@ -7,7 +7,7 @@
 	.align 2
 dscm_header:
 	.word 0x56435344            @ DSCM_MAGIC "DSCV"
-	.word 2                     @ DSCM_VERSION
+	.word 3                     @ DSCM_VERSION
 	.word __image_size
 	.word init_entry
 	.word vblank_entry
@@ -16,7 +16,13 @@ dscm_header:
 	.word dscm_g_status
 	.word dscm_g_net
 dscm_vblank_count:
-	.word 0                     @ bumped by the ARM7 VBlank hook
+	.word 0                     @ 0x24: bumped by the ARM7 VBlank hook
+	.word reset_entry           @ 0x28
+	.space 20
+	.global dscm_notify_count
+dscm_notify_count:
+	.word 0                     @ 0x40: unlock count for the ARM7 (own cache line)
+	.space 28
 
 	.section .text.entries, "ax"
 	.arm
@@ -87,6 +93,32 @@ halt_entry:
 2:	mov	r0, #0
 	mcr	p15, 0, r0, c7, c0, 4       @ wait for interrupt
 	pop	{r4, r5, lr}
+	bx	lr
+
+@ Reset: called from nds-bootstrap's reset path with IRQs off. The game's
+@ threads are gone, so work that was preempted will never resume: clear
+@ the re-entry guards. The achievement reset itself happens in idle time.
+	.global reset_entry
+	.type reset_entry, %function
+reset_entry:
+	ldr	r0, =in_vblank
+	mov	r1, #0
+	str	r1, [r0]
+	ldr	r0, =in_halt
+	str	r1, [r0]
+	ldr	r0, =module_reset
+	bx	r0
+
+@ void dscm_publish_notify(uint32_t count): store the unlock count and clean
+@ its cache line to RAM so the ARM7 sees it.
+	.global dscm_publish_notify
+	.type dscm_publish_notify, %function
+dscm_publish_notify:
+	ldr	r1, =dscm_notify_count
+	str	r0, [r1]
+	mcr	p15, 0, r1, c7, c10, 1      @ clean D-cache line
+	mov	r0, #0
+	mcr	p15, 0, r0, c7, c10, 4      @ drain write buffer
 	bx	lr
 
 @ uint32_t dscm_vblank_count_read(void): the ARM7 writes the count behind
