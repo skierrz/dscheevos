@@ -45,7 +45,7 @@
 #define DSCM_HEAP_END    (DSCM_IRQ_STACK_TOP - DSCM_IRQ_STACK_SIZE)
 
 #define DSCM_MAGIC   0x56435344u  /* "DSCV" */
-#define DSCM_VERSION 5u
+#define DSCM_VERSION 6u
 #define DSCM_SESSION_MAGIC 0x53435344u  /* "DSCS" */
 
 /* IPC sync value the ARM7 VBlank handler sends to request a snapshot. */
@@ -145,7 +145,8 @@ typedef struct dscm_boot_t {
   char token[64];
   char game_hash[33];
   uint8_t hardcore;
-  uint8_t reserved[2];
+  uint8_t flags;                      /* DSCM_BOOT_* */
+  uint8_t reserved;
   uint32_t dtcm_base;                 /* 0: read the game's DTCM base from CP15 */
   uint32_t unix_time;                 /* RTC time at boot, for unlock timestamps */
   uint32_t preload_offset[DSCM_PRELOAD_COUNT];  /* from the start of this struct */
@@ -168,9 +169,131 @@ typedef struct dscm_boot_t {
   uint8_t pmk[32];                    /* fills them in RAM from the console's own Wi-Fi settings */
 } dscm_boot_t;
 
+/* dscm_boot_t.flags */
+#define DSCM_BOOT_SPECTATOR 0x01      /* rc_client spectator mode: evaluate and show, send no unlocks or entries (bench runs on a real account) */
+
 /* dswifi's numbering, which the launcher reads off its connection */
 enum { DSCM_AP_OPEN = 0, DSCM_AP_WEP, DSCM_AP_WPA, DSCM_AP_WPA2 };
 enum { DSCM_CIPHER_NONE = 1, DSCM_CIPHER_WEP, DSCM_CIPHER_TKIP, DSCM_CIPHER_CCMP };
+
+/* ---- ABI v6: achievement list, notices, offline journal ---- */
+
+/* Every achievement of the core set, for the in-game menu. The module builds
+ * a complete copy in idle time and then publishes it by swapping
+ * header->list, so a reader never sees a half-written list. Readers on the
+ * ARM9 (the in-game menu) read it while the game is paused. */
+#define DSCM_LIST_MAGIC 0x4C435344u   /* "DSCL" */
+enum {
+  DSCM_ACH_LOCKED = 0,
+  DSCM_ACH_UNLOCKED,                  /* unlocked in this session's mode (hardcore in hardcore) */
+  DSCM_ACH_UNLOCKED_SOFTCORE,         /* hardcore session, unlocked earlier in softcore only */
+  DSCM_ACH_DISABLED,                  /* rcheevos can't evaluate it (bad address, unsupported) */
+};
+#define DSCM_ACH_FLAG_MEASURED   0x01 /* measured[] holds progress, e.g. "12/30" or "40%" */
+#define DSCM_ACH_FLAG_CHALLENGE  0x02 /* its challenge indicator is showing now */
+#define DSCM_ACH_FLAG_MISSABLE   0x04
+#define DSCM_ACH_FLAG_PROGRESSION 0x08
+#define DSCM_ACH_FLAG_WIN        0x10
+
+typedef struct dscm_list_entry_t {
+  uint32_t id;
+  uint32_t unlock_time;               /* unix time, 0 if locked */
+  uint16_t points;
+  uint8_t state;                      /* DSCM_ACH_* */
+  uint8_t flags;                      /* DSCM_ACH_FLAG_* */
+  char title[48];                     /* UTF-8, NUL-terminated, cut to fit */
+  char description[100];
+  char measured[16];
+} dscm_list_entry_t;                  /* 176 bytes */
+
+typedef struct dscm_list_t {
+  uint32_t magic;                     /* DSCM_LIST_MAGIC */
+  uint32_t generation;                /* bumped on every rebuild */
+  uint32_t count;                     /* entries in e[] */
+  uint32_t entry_size;                /* sizeof(dscm_list_entry_t), for readers to check */
+  dscm_list_entry_t e[];              /* game's display order */
+} dscm_list_t;
+
+/* Notices for a display layer (overlay, in-game menu): what rcheevos asks a
+ * client to show during play. A ring of one-shot notices plus the indicators
+ * that stay up while active. Written by the module in idle time; head is
+ * bumped after a notice is complete. */
+#define DSCM_NOTICES_MAGIC 0x4E435344u /* "DSCN" */
+#define DSCM_NOTICE_RING 16
+#define DSCM_INDICATOR_MAX 8
+enum {
+  DSCM_NOTICE_NONE = 0,
+  DSCM_NOTICE_SESSION_START,          /* value: 1 hardcore, 0 softcore; text: game title; detail: "N/M achievements" */
+  DSCM_NOTICE_UNLOCK,                 /* id, value: points, text: title, detail: description */
+  DSCM_NOTICE_MASTERY,                /* text: game title */
+  DSCM_NOTICE_PROGRESS,               /* id, text: title, detail: measured progress */
+  DSCM_NOTICE_LEADERBOARD_STARTED,    /* id, text: title */
+  DSCM_NOTICE_LEADERBOARD_FAILED,     /* id, text: title */
+  DSCM_NOTICE_LEADERBOARD_SUBMITTED,  /* id, value: score, text: title, detail: formatted score */
+  DSCM_NOTICE_LEADERBOARD_RANK,       /* id, value: rank, text: title, detail: "rank/entries" (server reply) */
+  DSCM_NOTICE_OFFLINE,                /* unlocks are waiting: the server can't be reached */
+  DSCM_NOTICE_ONLINE,                 /* everything waiting was sent */
+};
+
+typedef struct dscm_notice_t {
+  uint32_t seq;                       /* 1, 2, ...: ring position is seq % DSCM_NOTICE_RING */
+  uint16_t kind;                      /* DSCM_NOTICE_* */
+  uint16_t reserved;
+  uint32_t id;
+  int32_t value;
+  uint32_t frame;                     /* module frame count when raised */
+  char text[48];
+  char detail[48];
+} dscm_notice_t;                      /* 116 bytes */
+
+typedef struct dscm_indicator_t {
+  uint32_t id;                        /* achievement (challenge) or leaderboard (tracker) id; 0 = slot free */
+  char text[24];                      /* challenge: title; tracker: formatted value */
+} dscm_indicator_t;
+
+typedef struct dscm_notices_t {
+  uint32_t magic;                     /* DSCM_NOTICES_MAGIC */
+  volatile uint32_t head;             /* seq of the newest complete notice, 0 = none */
+  dscm_notice_t ring[DSCM_NOTICE_RING];
+  volatile uint32_t indicators_generation;   /* bumped whenever challenges[] or trackers[] change */
+  dscm_indicator_t challenges[DSCM_INDICATOR_MAX];   /* challenge indicators showing now */
+  dscm_indicator_t trackers[DSCM_INDICATOR_MAX];     /* leaderboard trackers showing now */
+} dscm_notices_t;
+
+/* Offline journal: every unlock and leaderboard entry of the session, with
+ * whether the server has answered it. The module writes it through the
+ * uncached mirror (DSCM_UNCACHED), so it is always current in RAM; at safe
+ * points (in-game menu opening, reset, exit) nds-bootstrap's ARM7 copies
+ * DSCM_JOURNAL_FILE_SIZE bytes from header->journal to
+ * sd:/_nds/dscheevos/pending.bin, a file the launcher creates at that size.
+ * The launcher sends unsent entries at its next start, with the time since
+ * the unlock (rcheevos' seconds_since_unlock), then clears the file. */
+#define DSCM_JOURNAL_MAGIC 0x4A435344u /* "DSCJ" */
+#define DSCM_JOURNAL_MAX 96
+#define DSCM_JOURNAL_FILE_SIZE 4096u
+#define DSCM_UNCACHED(p) ((void*)((uint32_t)(p) - 0x02000000u + 0x0C000000u))
+enum { DSCM_JOURNAL_AWARD = 1, DSCM_JOURNAL_LEADERBOARD };
+
+typedef struct dscm_journal_entry_t {
+  uint8_t kind;                       /* DSCM_JOURNAL_* */
+  uint8_t hardcore;
+  uint8_t sent;                       /* 1: the server answered (accepted or refused for good) */
+  uint8_t reserved;
+  uint32_t id;                        /* achievement or leaderboard */
+  int32_t score;                      /* leaderboard entries */
+  uint32_t unix_time;                 /* when it happened (console clock) */
+} dscm_journal_entry_t;               /* 16 bytes */
+
+typedef struct dscm_journal_t {
+  uint32_t magic;                     /* DSCM_JOURNAL_MAGIC; 0 in a cleared file */
+  uint32_t size;                      /* sizeof(dscm_journal_t) */
+  uint32_t count;                     /* entries used */
+  uint32_t game_id;
+  char username[32];                  /* entries belong to this account only */
+  char game_hash[33];
+  uint8_t reserved[3];
+  dscm_journal_entry_t e[DSCM_JOURNAL_MAX];
+} dscm_journal_t;                     /* 1620 bytes, fits DSCM_JOURNAL_FILE_SIZE */
 
 typedef struct dscm_header_t {
   uint32_t magic;
@@ -184,7 +307,10 @@ typedef struct dscm_header_t {
   dscm_net_slot_t* net;               /* DSCM_NET_SLOTS entries */
   volatile uint32_t vblank_count;     /* 0x24: written by the ARM7 VBlank hook */
   void (*reset)(void);                /* 0x28 */
-  uint32_t reserved[5];
+  dscm_list_t* volatile list;         /* 0x2C: published achievement list, 0 until the set is loaded */
+  dscm_notices_t* notices;            /* 0x30 */
+  dscm_journal_t* journal;            /* 0x34: cached-mirror address; the ARM7 reads RAM directly */
+  uint32_t reserved[2];
   volatile uint32_t notify_count;     /* 0x40: unlocks so far; own cache line, cleaned to RAM */
   void* net_ring;                     /* 0x44: dscm_shim.h ring, 0 if none; same line */
   uint32_t reserved2[6];

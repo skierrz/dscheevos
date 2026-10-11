@@ -7,7 +7,7 @@
 	.align 2
 dscm_header:
 	.word 0x56435344            @ DSCM_MAGIC "DSCV"
-	.word 5                     @ DSCM_VERSION (the module test checks it matches)
+	.word 6                     @ DSCM_VERSION (the module test checks it matches)
 	.word __image_size
 	.word init_entry
 	.word vblank_entry
@@ -18,7 +18,12 @@ dscm_header:
 dscm_vblank_count:
 	.word 0                     @ 0x24: bumped by the ARM7 VBlank hook
 	.word reset_entry           @ 0x28
-	.space 20
+	.global dscm_list_ptr
+dscm_list_ptr:
+	.word 0                     @ 0x2C: published achievement list (module.c swaps it)
+	.word dscm_g_notices        @ 0x30
+	.word dscm_g_journal        @ 0x34: written through the uncached mirror
+	.space 8
 	.global dscm_notify_count
 dscm_notify_count:
 	.word 0                     @ 0x40: unlock count for the ARM7 (own cache line)
