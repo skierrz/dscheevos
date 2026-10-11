@@ -30,6 +30,9 @@ static volatile u32 frame;
 static void vblank_irq(void)
 {
 	frame++;
+	/* as the ARM7 VBlank hook does; the module reads it past the cache */
+	((dscm_header_t*)hdr)->vblank_count++;
+	DC_FlushRange((const void*)&hdr->vblank_count, 4);
 	((void (*)(void))hdr->vblank)();
 }
 
@@ -82,21 +85,26 @@ int main(void)
 		(unsigned long)ra(&level), (unsigned long)ra(&coins), (unsigned long)ra(&object_ptr), (unsigned long)ra(&level));
 	const char* login = "{\"Success\":true,\"User\":\"tester\",\"Token\":\"tok\",\"Score\":0,\"Messages\":0}";
 	const char* session = "{\"Success\":true,\"Unlocks\":[],\"HardcoreUnlocks\":[]}";
-	static dscm_boot_t boot;
-	char* pre = (char*)DSCM_PRELOAD;
-	u32 off = 0;
+	/* session file layout: dscm_boot_t, then the responses */
+	dscm_boot_t* boot = (dscm_boot_t*)DSCM_SESSION;
+	memset(boot, 0, sizeof *boot);
+	char* pre = (char*)DSCM_SESSION;
+	u32 off = (sizeof *boot + 3) & ~3;
 	const char* bodies[3] = {login, set, session};
 	int lens[3] = {(int)strlen(login), n, (int)strlen(session)};
-	for (int i = 0; i < 3; i++) { memcpy(pre + off, bodies[i], lens[i]); boot.preload_offset[i] = off; boot.preload_length[i] = lens[i]; off += (lens[i] + 3) & ~3; }
-	boot.size = sizeof boot;
-	strcpy(boot.host, "http://mock"); strcpy(boot.username, "tester"); strcpy(boot.token, "tok");
-	strcpy(boot.game_hash, "00000000000000000000000000000000");
-	boot.hardcore = 1;
-	boot.unix_time = 1700000000;
+	for (int i = 0; i < 3; i++) { memcpy(pre + off, bodies[i], lens[i]); boot->preload_offset[i] = off; boot->preload_length[i] = lens[i]; off += (lens[i] + 3) & ~3; }
+	boot->magic = DSCM_SESSION_MAGIC;
+	boot->size = sizeof *boot;
+	boot->file_size = off;
+	strcpy(boot->rom_path, "sd:/test.nds");
+	strcpy(boot->host, "http://mock"); strcpy(boot->username, "tester"); strcpy(boot->token, "tok");
+	strcpy(boot->game_hash, "00000000000000000000000000000000");
+	boot->hardcore = 1;
+	boot->unix_time = 1700000000;
 	DC_FlushAll();
 
 	/* 3. init */
-	int r = ((int (*)(const dscm_boot_t*))hdr->init)(&boot);
+	int r = ((int (*)(const dscm_boot_t*))hdr->init)(boot);
 	out("init -> %d, active %lu, error %lu, title \"%s\"", r, (unsigned long)hdr->status->active, (unsigned long)hdr->status->error, hdr->status->game_title);
 	if (r != 0) goto end;
 
@@ -105,23 +113,23 @@ int main(void)
 	u32 unlock_frame[5] = {0};
 	while (frame < 600) {
 		u32 f = frame;
-		if (f == 100) level = 3;
-		if (f == 200) coins = 150;
-		if (f == 300) object[5] = 42;
-		((void (*)(void))hdr->idle)();     /* as the OS_Halt hook would */
+		if (f >= 100 && level != 3) level = 3;
+		if (f >= 200 && coins != 150) coins = 150;
+		if (f >= 300 && object[5] != 42) object[5] = 42;
+		((void (*)(void))hdr->halt)();     /* the game's patched OS_Halt: work, then wait for an IRQ */
 		network_layer();
 		for (u32 i = 0; i < hdr->status->unlock_count && i < DSCM_RECENT_MAX; i++) {
 			u32 id = hdr->status->recent[i].id;
 			if (id < 5 && !unlock_frame[id]) unlock_frame[id] = hdr->status->recent[i].frame;
 		}
-		swiWaitForVBlank();
 	}
 	irqClear(IRQ_VBLANK);
 
 	const dscm_status_t* st = hdr->status;
-	out("frames: snapshotted %lu evaluated %lu dropped %lu deferred %lu, eval cost ~%lu lines",
+	out("frames: snapshotted %lu evaluated %lu dropped %lu missed %lu, idle pass ~%lu lines",
 		(unsigned long)st->frames_snapshotted, (unsigned long)st->frames_evaluated, (unsigned long)st->frames_dropped,
-		(unsigned long)st->frames_deferred, (unsigned long)(st->eval_lines / 16));
+		(unsigned long)st->frames_missed,
+		(unsigned long)(st->eval_lines / 16));
 	int fails = 0;
 	struct { int id; u32 from, to; } expect[] = {{1, 100, 104}, {2, 200, 204}, {3, 300, 304}};
 	for (int i = 0; i < 3; i++) {
@@ -135,7 +143,7 @@ int main(void)
 	for (int i = 0; i < award_count; i++) if (answered_awards[i] > 0) hc++;
 	out("%s: %d awards sent, %d hardcore", award_count == 3 && hc == 3 ? "ok" : "FAIL", award_count, hc);
 	if (!(award_count == 3 && hc == 3)) fails++;
-	if (st->frames_dropped) { out("FAIL: frames dropped"); fails++; }
+	if (st->frames_dropped || st->frames_missed) { out("FAIL: frames dropped or missed"); fails++; }
 	out(fails ? "RESULT FAIL" : "RESULT PASS");
 end:
 	out("DONE");

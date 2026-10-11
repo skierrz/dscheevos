@@ -73,6 +73,7 @@ typedef struct dsc_config_t {
   const char* token;             /* login token, never a password */
   int hardcore;                  /* 1: hardcore session */
   uint32_t max_addresses;        /* snapshot capacity, e.g. 4096 */
+  uint32_t snapshot_slots;  /* frames that can wait for evaluation; 0 = 2, max 64 */
 } dsc_config_t;
 
 typedef struct dsc_stats_t {

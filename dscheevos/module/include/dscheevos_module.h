@@ -6,15 +6,21 @@
  * nds-bootstrap's ROM cache):
  *
  *   DSCM_BASE           module image: header, code, data, bss
- *   DSCM_PRELOAD        server responses fetched at session start
+ *   DSCM_SESSION        session file: dscm_boot_t, then server responses
  *   DSCM_HEAP           heap (rcheevos game data, snapshots)
- *   DSCM_STACK_TOP      stack used by dscm_idle (grows down)
+ *   DSCM_IRQ_STACK_TOP  stack for header->vblank (grows down)
+ *   DSCM_STACK_TOP      stack for header->halt (grows down)
  *
- * The loader (before the game boots) copies dscheevos9.bin to DSCM_BASE,
- * fills a dscm_boot_t, and calls header->init(). After that only two
- * calls happen, both from hooks:
- *   header->vblank()  from the ARM9 IPC sync IRQ that the ARM7 VBlank sends
- *   header->idle()    from the game's OS_Halt when it waits for an interrupt
+ * Before the game boots, nds-bootstrap's ARM7 copies dscheevos9.bin to
+ * DSCM_BASE and the session file (written by the DScheevos launcher) to
+ * DSCM_SESSION, then its ARM9 calls header->init(DSCM_SESSION). After that
+ * only hooks call in:
+ *   header->vblank()  from the ARM9 IPC sync IRQ. The ARM7 VBlank handler
+ *                     bumps header->vblank_count, then sends the IRQ. The
+ *                     module snapshots once per new count, so a sync value
+ *                     overwritten by another IPC message loses nothing.
+ *   header->halt()    replaces the game's OS_Halt: runs evaluation work,
+ *                     then waits for an interrupt as OS_Halt did.
  */
 #ifndef DSCHEEVOS_MODULE_H
 #define DSCHEEVOS_MODULE_H
@@ -24,20 +30,23 @@
 #define DSCM_BASE        0x02D80000u
 #define DSCM_SIZE        0x00200000u
 #define DSCM_IMAGE_MAX   0x00040000u
-#define DSCM_PRELOAD     (DSCM_BASE + DSCM_IMAGE_MAX)
-#define DSCM_PRELOAD_MAX 0x00060000u
-#define DSCM_HEAP        (DSCM_PRELOAD + DSCM_PRELOAD_MAX)
+#define DSCM_SESSION     (DSCM_BASE + DSCM_IMAGE_MAX)
+#define DSCM_SESSION_MAX 0x00060000u
+#define DSCM_HEAP        (DSCM_SESSION + DSCM_SESSION_MAX)
 #define DSCM_STACK_SIZE  0x00002000u
 #define DSCM_STACK_TOP   (DSCM_BASE + DSCM_SIZE)
-#define DSCM_HEAP_END    (DSCM_STACK_TOP - DSCM_STACK_SIZE)
+#define DSCM_IRQ_STACK_SIZE 0x00001000u
+#define DSCM_IRQ_STACK_TOP  (DSCM_STACK_TOP - DSCM_STACK_SIZE)
+#define DSCM_HEAP_END    (DSCM_IRQ_STACK_TOP - DSCM_IRQ_STACK_SIZE)
 
 #define DSCM_MAGIC   0x56435344u  /* "DSCV" */
-#define DSCM_VERSION 1u
+#define DSCM_VERSION 2u
+#define DSCM_SESSION_MAGIC 0x53435344u  /* "DSCS" */
 
 /* IPC sync value the ARM7 VBlank handler sends to request a snapshot. */
 #define DSCM_IPC_SYNC_VBLANK 0xA
 
-/* Server responses fetched by the loader at session start. */
+/* Server responses fetched by the launcher at session start. */
 enum {
   DSCM_PRELOAD_LOGIN = 0,      /* r=login2 */
   DSCM_PRELOAD_SET,            /* r=achievementsets */
@@ -77,9 +86,9 @@ typedef struct dscm_status_t {
   volatile uint32_t hardcore;
   volatile uint32_t frames_snapshotted;
   volatile uint32_t frames_evaluated;
-  volatile uint32_t frames_dropped;
-  volatile uint32_t frames_deferred;  /* idle windows too short to evaluate in */
-  volatile uint32_t eval_lines;       /* running estimate of one evaluation's cost, in scanlines (x16) */
+  volatile uint32_t frames_dropped;   /* snapshot taken, no slot free to evaluate it */
+  volatile uint32_t frames_missed;    /* VBlanks that passed with no snapshot (IRQs held off) */
+  volatile uint32_t eval_lines;       /* average wall time of one idle pass, in scanlines (x16) */
   volatile uint32_t unlock_count;     /* total; recent[] holds the last DSCM_RECENT_MAX */
   dscm_unlock_t recent[DSCM_RECENT_MAX];
   volatile uint32_t pending_requests;
@@ -95,17 +104,23 @@ enum {
   DSCM_ERROR_GAME_LOAD,
 };
 
+/* Start of the session file (sd:/_nds/dscheevos/session.bin). The launcher
+ * writes it after going online; nds-bootstrap uses it only for the ROM it
+ * names, then deletes it, so every play session starts online. */
 typedef struct dscm_boot_t {
+  uint32_t magic;                     /* DSCM_SESSION_MAGIC */
   uint32_t size;                      /* sizeof(dscm_boot_t) */
+  uint32_t file_size;                 /* whole session file, <= DSCM_SESSION_MAX */
+  char rom_path[256];                 /* as in nds-bootstrap.ini NDS_PATH */
   char host[64];
   char username[32];
   char token[64];
   char game_hash[33];
   uint8_t hardcore;
   uint8_t reserved[2];
-  uint32_t dtcm_base;                 /* game's DTCM address (CP15) */
+  uint32_t dtcm_base;                 /* 0: read the game's DTCM base from CP15 */
   uint32_t unix_time;                 /* RTC time at boot, for unlock timestamps */
-  uint32_t preload_offset[DSCM_PRELOAD_COUNT];  /* from DSCM_PRELOAD */
+  uint32_t preload_offset[DSCM_PRELOAD_COUNT];  /* from the start of this struct */
   uint32_t preload_length[DSCM_PRELOAD_COUNT];
 } dscm_boot_t;
 
@@ -115,10 +130,11 @@ typedef struct dscm_header_t {
   uint32_t image_size;
   int  (*init)(const dscm_boot_t* boot);
   void (*vblank)(void);
-  void (*idle)(void);
+  void (*halt)(void);                 /* ARM code: the OS_Halt patch jumps here */
   void (*shutdown)(void);
   dscm_status_t* status;
   dscm_net_slot_t* net;               /* DSCM_NET_SLOTS entries */
+  volatile uint32_t vblank_count;     /* written by the ARM7 VBlank hook */
 } dscm_header_t;
 
 #define DSCM_HEADER ((dscm_header_t*)DSCM_BASE)

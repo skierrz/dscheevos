@@ -1,0 +1,4 @@
+{"Success":true,"GameId":14763,"Title":"Kirby Super Star Ultra","ConsoleId":18,"ImageIconUrl":"","RichPresenceGameId":14763,"RichPresencePatch":"","Sets":[{"AchievementSetId":1,"GameId":14763,"Title":null,"Type":"core","ImageIconUrl":"","Achievements":[
+{"ID":9901,"Title":"Pipeline: 300 evaluated frames","Description":"","Flags":3,"Points":1,"MemAddr":"1=1.300.","Author":"t","BadgeName":"0","Created":1,"Modified":1},
+{"ID":9902,"Title":"Never","Description":"","Flags":3,"Points":1,"MemAddr":"0=1","Author":"t","BadgeName":"0","Created":1,"Modified":1}
+],"Leaderboards":[]}]}
