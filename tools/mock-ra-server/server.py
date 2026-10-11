@@ -93,6 +93,8 @@ def main():
     ap.add_argument("--set", required=True, help="achievementsets JSON response")
     ap.add_argument("--hash", help="only serve the set for this ROM hash")
     ap.add_argument("--log", default="events.jsonl")
+    ap.add_argument("--tls-cert", help="serve HTTPS with this certificate (PEM, chain first)")
+    ap.add_argument("--tls-key", help="key for --tls-cert")
     args = ap.parse_args()
 
     with open(args.set) as f:
@@ -120,8 +122,16 @@ def main():
         def log_message(self, fmt, *a):
             pass
 
-    print(f"mock RA server on http://{args.bind}:{args.port}/dorequest.php, log {args.log}")
-    ThreadingHTTPServer((args.bind, args.port), Handler).serve_forever()
+    server = ThreadingHTTPServer((args.bind, args.port), Handler)
+    scheme = "http"
+    if args.tls_cert:
+        import ssl
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(args.tls_cert, args.tls_key)
+        server.socket = ctx.wrap_socket(server.socket, server_side=True)
+        scheme = "https"
+    print(f"mock RA server on {scheme}://{args.bind}:{args.port}/dorequest.php, log {args.log}")
+    server.serve_forever()
 
 
 if __name__ == "__main__":
