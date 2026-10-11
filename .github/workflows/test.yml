@@ -1,0 +1,13 @@
+name: Tests
+on:
+  push:
+  pull_request:
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch rcheevos
+        run: git submodule update --init --depth 1 external/rcheevos
+      - name: Core unit tests
+        run: make -C dscheevos/core test
