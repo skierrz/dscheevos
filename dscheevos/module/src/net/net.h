@@ -14,6 +14,15 @@ typedef struct net_config_t {
   uint32_t ip, netmask, gateway, dns;   /* network byte order */
   const char* host;                     /* "https://retroachievements.org" */
   const char* user_agent;
+  /* the access point, to rejoin it after a drop or a group rekey */
+  uint8_t ap_ssid[32];
+  uint8_t ap_ssid_len;
+  uint8_t ap_bssid[6];
+  uint8_t ap_channel;
+  uint8_t ap_security;                  /* DSCM_AP_* */
+  uint8_t ap_pair_cipher, ap_group_cipher;
+  uint8_t pmk_valid;
+  uint8_t pmk[32];
 } net_config_t;
 
 /* Returns the ring for the module header (0 if the network can't start). */
@@ -26,10 +35,13 @@ uint32_t net_handshake_ms(void);
 
 /* link.c, used by https.c */
 int link_up(void);
+int link_rejoining(void);   /* down, but working on getting back */
+uint32_t link_rejoins(void);  /* associations we started ourselves */
 void link_stir(void);       /* mix event timing into the TLS entropy pool */
 
 /* entropy.c */
 void entropy_stir(const void* data, uint32_t len);
+void entropy_bytes(uint8_t* out, uint32_t len);   /* up to 32 */
 
 /* start.s */
 void dscm_dc_clean(const void* addr, uint32_t len);

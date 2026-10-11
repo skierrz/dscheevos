@@ -79,7 +79,10 @@ game
 ```
 
 - **The ARM7 shim is a dumb pipe:** it polls the chip once per VBlank, moves at most one frame each way, and does no protocol work. It costs at most about 6 scanlines when it moves a frame, under 1 when idle. Errors back it off for a second; after 5 failures in a row it stops.
-- **No Wi-Fi keys leave the chip:** the chip keeps the pairwise and group keys it got at association. The session file carries only the MAC address, IP address, gateway and DNS server.
+- **No Wi-Fi keys on the SD card:** the session file carries the MAC address, IP address, gateway, DNS server, and the access point's name, BSSID, channel and ciphers. To start with, the chip keeps using the keys it got at association.
+- **Rejoining (net/link.c, net/wpa.c):** if the access point drops us, the module waits (1 s, doubling up to 30 s) and joins again with `WMI_CONNECT`. On WPA2 it then runs the 4-way handshake itself. It needs the network's PMK for that, which the console keeps with its saved Wi-Fi settings (DSi slots 4–6 in the firmware flash): nds-bootstrap reads it, read-only, into the session in RAM before the game starts, and the module keeps it in its own RAM only. The launcher's keys are never known to the module, so the first group rekey (often hourly) also costs a rejoin, about a second offline; after that the module answers group rekeys in place. WEP networks and WPA (not WPA2) don't rejoin.
+- **The supplicant** handles only key descriptor version 2 (CCMP pairwise, as the launcher's DSWiFi does), checks every MIC and replay counter, and is tested on the host against a real captured handshake (Wireshark's wpa-Induction sample) and a simulated access point.
+- **In-game menu RAM dump** is hidden during DScheevos sessions: the dump would write the RA login token and the PMK to the SD card.
 - **GPIO_WIFI:** stock nds-bootstrap switches every DS game to the DS-mode Wi-Fi (GPIO_WIFI bit 8), which on DWM-W024 boards turns off the DSi chip. With DScheevos it stays on the DSi chip. CE7 switches to DS-mode Wi-Fi only while the game is using it (POWCNT2 bit 1 and the DS Wi-Fi's clock on), and sending pauses meanwhile.
 - **TLS:** mbedTLS with the launcher's config and root CAs. One keep-alive connection; reconnects resume the TLS session, so only the first handshake does the key exchange. That first handshake measured 5.5 s of wall time in melonDS with Kirby running. The handshake advances one step per idle pass, so achievement evaluation keeps up in between.
 - **Measured in melonDS** (Kirby Super Star Ultra, HTTPS to the mock server):
@@ -87,13 +90,15 @@ game
   - all 3585 frames evaluated, none dropped
   - the in-game menu shows "Online" and the unlocks sent
 
-Not covered by melonDS, and so untested until real hardware: WPA2 (melonDS only offers an open access point), group key rekeying, and real SDIO timing. With WPA2 the access point rekeys the group key from time to time, and the console must answer that itself. The module doesn't do that yet, so a long session on a WPA2 network may lose the connection at the first rekey.
+Also measured in melonDS: the access point dropping the console mid-game (`WIFIDROP` in the runner script), once and twice, including during a send. The module rejoined each time and every unlock still reached the server; the in-game menu counts the rejoins. nds-bootstrap read a WPA2 PMK from the firmware's saved settings into the module (runner `--wpa-ap`), and no copy stayed in the session.
+
+Not covered by melonDS, and so untested until real hardware: the WPA2 handshake against a real access point (melonDS only offers an open one; the supplicant's own tests cover the protocol), group rekeys over the air, and real SDIO timing.
 
 ## What the player sees
 
 - **Unlock.** The DSi's Wi-Fi LED blinks three times. It changes nothing on screen or in the sound, so it can't get in the game's way. The ARM7 reads the module's unlock count at VBlank and drives the LED over I2C, as nds-bootstrap already does for its ROM-read LED. Not on 3DS.
 - **In-game menu (L+DOWN+SELECT).** It has an "Achievements..." page with the game, hardcore or softcore, unlocked/total achievements and points, the unlocks of this session, what is still waiting to be sent, and frames checked/skipped.
-- **Hardcore.** The in-game menu hides the RAM viewer and RAM dump, and the refresh-rate option, whose rates below 60 Hz act as slow motion. nds-bootstrap's front end skips user cheats. AP-fix patches, which games need to run, still apply. nds-bootstrap has no save states.
+- **Hardcore.** The in-game menu hides the RAM viewer and RAM dump (the dump is hidden in softcore too), and the refresh-rate option, whose rates below 60 Hz act as slow motion. nds-bootstrap's front end skips user cheats. AP-fix patches, which games need to run, still apply. nds-bootstrap has no save states.
 
 ## Measured so far
 
@@ -103,10 +108,9 @@ Not covered by melonDS, and so untested until real hardware: WPA2 (melonDS only 
 
 ## Open questions
 
-1. **WPA2 group rekeys and reconnecting.** The chip handles traffic with the keys it got at association. A group rekey needs the console to answer, and so does reconnecting after the access point drops us. Doing that in the module means the 4-way handshake there, with the network key read from the console's own Wi-Fi settings. Until then a session can lose the network at the first rekey (often hourly), and unlocks wait.
-2. **Not enough idle time.** Snapshots queue for up to 1024 frames (17 s), so busy stretches are fine as long as the game idles enough on average. A game that never does would fall behind for good. The answer then is cheaper evaluation (faster read path, cheaper memory layout) or marking the game unsupported.
-3. **Games that never call `OS_Halt`.** Some games busy-wait; they give no idle time at all. Need to find how common this is. DScheevos turns itself off when it finds no `OS_Halt` (the bootstrap log says "DScheevos off: no OS_Halt"). Kirby Super Star Ultra and Pokémon Platinum both have one.
-4. **DSi-enhanced games in DSi mode** use all 16 MB, leaving no free RAM. They run with achievements only in DS mode.
-5. **Homebrew games** (like the homebrew titles with RetroAchievements sets) go through nds-bootstrap's separate homebrew path, not the retail card engine, and wait for VBlank through the BIOS (`swi 0x05`) instead of `OS_Halt`. They need their own hook points.
+1. **Not enough idle time.** Snapshots queue for up to 1024 frames (17 s), so busy stretches are fine as long as the game idles enough on average. A game that never does would fall behind for good. The answer then is cheaper evaluation (faster read path, cheaper memory layout) or marking the game unsupported.
+2. **Games that never call `OS_Halt`.** Some games busy-wait; they give no idle time at all. Need to find how common this is. DScheevos turns itself off when it finds no `OS_Halt` (the bootstrap log says "DScheevos off: no OS_Halt"). Kirby Super Star Ultra and Pokémon Platinum both have one. Some games also have phases without it: during Kirby's attract-mode intro video the game's thread waits in nds-bootstrap's ARM9 card engine (streaming from SD) through the BIOS, so evaluation pauses, and after 17 s of that the queue is full and frames are skipped. Giving the module time in that wait would fix it, if it can be done without slowing the reads.
+3. **DSi-enhanced games in DSi mode** use all 16 MB, leaving no free RAM. They run with achievements only in DS mode.
+4. **Homebrew games** (like the homebrew titles with RetroAchievements sets) go through nds-bootstrap's separate homebrew path, not the retail card engine, and wait for VBlank through the BIOS (`swi 0x05`) instead of `OS_Halt`. They need their own hook points.
 
-Settled since the first draft: WPA2 (the launcher uses the DSi's own Wi-Fi through BlocksDS DSWiFi) and pop-ups (unlocks blink the Wi-Fi LED; details are in the in-game menu, so nothing draws over the game).
+Settled since the first draft: WPA2 (the launcher uses the DSi's own Wi-Fi through BlocksDS DSWiFi; the module rejoins and rekeys itself) and pop-ups (unlocks blink the Wi-Fi LED; details are in the in-game menu, so nothing draws over the game).

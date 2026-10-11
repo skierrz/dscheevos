@@ -9,6 +9,17 @@
 int net_connect(int timeout_frames);
 const char* net_error(void);
 
+/* The access point we joined, as seen in its beacons (no keys). */
+typedef struct net_ap_t {
+  char ssid[32];
+  unsigned char ssid_len;
+  unsigned char bssid[6];
+  unsigned char channel;
+  unsigned char security;               /* dswifi Wifi_ApSecurityType */
+  unsigned char pair_cipher, group_cipher;  /* dswifi Wifi_ApCryptType */
+} net_ap_t;
+int net_current_ap(net_ap_t* out);      /* 0 if found */
+
 typedef struct http_response_t {
   int status;           /* HTTP status, or < 0 on a network error */
   char* body;           /* NUL-terminated, malloc'd; free with http_free */

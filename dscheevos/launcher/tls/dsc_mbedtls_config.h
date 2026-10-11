@@ -18,6 +18,7 @@
 #define MBEDTLS_POLY1305_C
 #define MBEDTLS_CHACHAPOLY_C
 #define MBEDTLS_CIPHER_C
+#define MBEDTLS_NIST_KW_C                  /* module: WPA2 group key unwrap */
 #define MBEDTLS_MD_C
 #define MBEDTLS_SHA1_C
 #define MBEDTLS_SHA224_C

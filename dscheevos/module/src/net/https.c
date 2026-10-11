@@ -29,7 +29,7 @@ extern const char dsc_cacerts[];
 extern const size_t dsc_cacerts_size;
 
 void* link_init(const net_config_t* config);
-void link_service(void);
+void link_service(uint32_t now_ms);
 int link_paused(uint32_t* paused_count);
 
 #define REQUEST_TIMEOUT_MS 25000u
@@ -537,6 +537,7 @@ void* net_init(const net_config_t* config)
   memset(&R, 0, sizeof(R));
   R.slot = -1;
   ring = link_init(config);
+  memset(g_config.pmk, 0, sizeof(g_config.pmk));   /* only the link needs it */
   ip_addr_set_ip4_u32(&dns, config->dns);
   dns_setserver(0, &dns);
   return ring;
@@ -546,14 +547,14 @@ void net_service(uint32_t now_ms)
 {
   uint32_t paused;
   g_now = now_ms;
-  link_service();
+  link_service(now_ms);
 
   if (link_paused(&paused)) {
     g_state = DSCM_NET_STATE_PAUSED;    /* the game uses its own wireless */
     return;
   }
   if (!link_up()) {
-    g_state = DSCM_NET_STATE_OFFLINE;
+    g_state = link_rejoining() ? DSCM_NET_STATE_CONNECTING : DSCM_NET_STATE_OFFLINE;
     if (R.state != R_NONE) fail_request();
     return;
   }

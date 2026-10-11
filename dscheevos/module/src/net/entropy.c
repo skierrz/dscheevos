@@ -10,6 +10,8 @@
 
 #include <string.h>
 
+int mbedtls_hardware_poll(void* data, unsigned char* output, size_t len, size_t* olen);
+
 static mbedtls_sha256_context g_pool;
 static int g_ready;
 
@@ -21,6 +23,15 @@ void entropy_stir(const void* data, uint32_t len)
     g_ready = 1;
   }
   mbedtls_sha256_update(&g_pool, (const unsigned char*)data, len);
+}
+
+void entropy_bytes(uint8_t* out, uint32_t len)
+{
+  static uint32_t counter;
+  size_t n;
+  counter++;
+  entropy_stir(&counter, sizeof(counter));
+  mbedtls_hardware_poll(NULL, out, len, &n);
 }
 
 int mbedtls_hardware_poll(void* data, unsigned char* output, size_t len, size_t* olen)

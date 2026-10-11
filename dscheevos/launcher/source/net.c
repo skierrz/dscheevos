@@ -20,6 +20,42 @@ static const char* g_error = "";
 
 const char* net_error(void) { return g_error; }
 
+static net_ap_t g_ap;
+static int g_ap_valid;
+
+/* dswifi joins the first scanned AP that matches a saved setting; take the
+ * same one, right away, before old beacons age out of the list. */
+static void remember_ap(void)
+{
+  int i, n = Wifi_GetNumAP();
+  for (i = 0; i < n; i++) {
+    Wifi_AccessPoint ap;
+    memset(&ap, 0, sizeof(ap));
+    if (Wifi_GetAPData(i, &ap) != WIFI_RETURN_OK || !(ap.flags & WFLAG_APDATA_CONFIG_IN_WFC))
+      continue;
+    if (ap.ssid_len == 0 || ap.ssid_len > 32)
+      continue;
+    memset(&g_ap, 0, sizeof(g_ap));
+    memcpy(g_ap.ssid, ap.ssid, ap.ssid_len);
+    g_ap.ssid_len = ap.ssid_len;
+    memcpy(g_ap.bssid, ap.bssid, 6);
+    g_ap.channel = ap.channel;
+    g_ap.security = (unsigned char)ap.security_type;
+    g_ap.pair_cipher = (unsigned char)ap.pair_crypt_type;
+    g_ap.group_cipher = (unsigned char)ap.group_crypt_type;
+    g_ap_valid = 1;
+    return;
+  }
+}
+
+int net_current_ap(net_ap_t* out)
+{
+  if (!g_ap_valid)
+    return -1;
+  *out = g_ap;
+  return 0;
+}
+
 int net_connect(int timeout_frames)
 {
   static int initialized;
@@ -34,6 +70,7 @@ int net_connect(int timeout_frames)
   for (i = 0; i < timeout_frames; i++) {
     int status = Wifi_AssocStatus();
     if (status == ASSOCSTATUS_ASSOCIATED) {
+      remember_ap();
       tls_stir();
       return 0;
     }

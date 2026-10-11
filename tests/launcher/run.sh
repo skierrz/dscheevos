@@ -7,7 +7,8 @@
 #   ROM        your own dump of the game
 #   BOOTSTRAP  nds-bootstrap-nightly.nds built from skierrz/nds-bootstrap (dscheevos branch)
 #   RUNNER     melonds-headless from skierrz/melonDS (dscheevos branch)
-# Optional: SCRIPT=file (timed input), WORK=dir (keep files), PORT, LIVE=0 (no sending during play).
+# Optional: SCRIPT=file (timed input), WORK=dir (keep files), PORT, LIVE=0 (no sending during play),
+#   RUNNER_ARGS (extra runner options, e.g. --wpa-ap melonAP:<PMK> for a WPA2 access point).
 # Usage: run.sh SET.json FRAMES [status.py checks, e.g. --expect 9901 --never 9902]
 set -eu
 : "${DSI_FILES:?}" "${ROM:?}" "${BOOTSTRAP:?}" "${RUNNER:?}"
@@ -44,8 +45,9 @@ trap 'kill $mock 2>/dev/null' EXIT
 sleep 1
 
 "$RUNNER" --mode dsi --rom "$sd/_nds/nds-bootstrap-release.nds" --arg sd:/_nds/nds-bootstrap-release.nds \
-  --bios-dir "$DSI_FILES" --nand "$work/nand.bin" --sd "$sd" --net --frames "$frames" ${SCRIPT:+--script "$SCRIPT"} \
-  --screenshot "$work/screen.ppm" --dump-ram "$work/ram.bin" 2>&1 | tail -1
+  --bios-dir "$DSI_FILES" --nand "$work/nand.bin" --sd "$sd" --net --frames "$frames" ${SCRIPT:+--script "$SCRIPT"} ${RUNNER_ARGS:-} \
+  --screenshot "$work/screen.ppm" --dump-ram "$work/ram.bin" > "$work/runner.log" 2>&1 || true
+grep -v "^\[pc\]" "$work/runner.log" | tail -1
 echo "server saw:"; cat "$work/events.jsonl"
 [ -f "$sd/_nds/dscheevos/session.used" ] || { echo "RESULT FAIL: nds-bootstrap didn't use the session"; exit 1; }
 python3 "$repo/tests/bootstrap/status.py" "$work/ram.bin" "$repo/dscheevos/module/build/dscheevos9.map" "$@"

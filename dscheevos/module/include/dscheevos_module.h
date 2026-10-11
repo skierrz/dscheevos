@@ -45,7 +45,7 @@
 #define DSCM_HEAP_END    (DSCM_IRQ_STACK_TOP - DSCM_IRQ_STACK_SIZE)
 
 #define DSCM_MAGIC   0x56435344u  /* "DSCV" */
-#define DSCM_VERSION 4u
+#define DSCM_VERSION 5u
 #define DSCM_SESSION_MAGIC 0x53435344u  /* "DSCS" */
 
 /* IPC sync value the ARM7 VBlank handler sends to request a snapshot. */
@@ -109,6 +109,7 @@ typedef struct dscm_status_t {
   volatile uint32_t net_detail;       /* last error code, 0 if none */
   volatile uint32_t unlocks_sent;     /* award requests the server answered */
   volatile uint32_t tls_handshake_ms; /* last HTTPS handshake, wall time (diagnostics) */
+  volatile uint32_t net_rejoins;      /* times we reassociated after a drop or a group rekey */
 } dscm_status_t;
 
 enum {
@@ -153,7 +154,21 @@ typedef struct dscm_boot_t {
   uint8_t reserved2;
   uint32_t ip, netmask, gateway, dns; /* network byte order */
   uint32_t ca_offset, ca_length;      /* extra trusted CA (PEM), from the start of this struct */
+  /* the access point, so the module can rejoin it (no secrets in the file) */
+  char ap_ssid[32];
+  uint8_t ap_ssid_len;
+  uint8_t ap_bssid[6];
+  uint8_t ap_channel;
+  uint8_t ap_security;                /* DSCM_AP_* */
+  uint8_t ap_pair_cipher;             /* DSCM_CIPHER_* */
+  uint8_t ap_group_cipher;
+  uint8_t pmk_valid;                  /* the two pmk fields are 0 in the file: nds-bootstrap */
+  uint8_t pmk[32];                    /* fills them in RAM from the console's own Wi-Fi settings */
 } dscm_boot_t;
+
+/* dswifi's numbering, which the launcher reads off its connection */
+enum { DSCM_AP_OPEN = 0, DSCM_AP_WEP, DSCM_AP_WPA, DSCM_AP_WPA2 };
+enum { DSCM_CIPHER_NONE = 1, DSCM_CIPHER_WEP, DSCM_CIPHER_TKIP, DSCM_CIPHER_CCMP };
 
 typedef struct dscm_header_t {
   uint32_t magic;
