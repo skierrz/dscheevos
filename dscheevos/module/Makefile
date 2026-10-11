@@ -19,6 +19,8 @@ ARCH     := -march=armv5te -mtune=arm946e-s -mthumb -mthumb-interwork
 CFLAGS   := $(ARCH) -Os -ffunction-sections -fdata-sections -fno-strict-aliasing -Wall \
             -DRC_NO_THREADS -DNDEBUG -Iinclude -I$(CORE)/include -I$(RCHEEVOS)/include -I$(RCHEEVOS)/src \
             -Isrc/net -I$(LWIP)/src/include -I$(TLSCONF) -I$(MBEDTLS)/include '-DMBEDTLS_CONFIG_FILE="dsc_mbedtls_config.h"'
+VERSION  := $(shell cat ../../VERSION)
+CFLAGS   += '-DDSC_VERSION="$(VERSION)"'
 LDFLAGS  := $(ARCH) -nostartfiles -T module.ld -Wl,--gc-sections -Wl,-Map,$(BUILD)/dscheevos9.map
 
 RC_SRC := $(addprefix $(RCHEEVOS)/src/, client/rc_client.c \
@@ -42,7 +44,7 @@ OBJ := $(patsubst %.c,$(BUILD)/%.o,$(notdir $(SRC))) $(patsubst $(RCHEEVOS)/src/
 .PHONY: all clean
 all: $(BUILD)/dscheevos9.bin
 
-$(BUILD)/%.o: src/%.c include/dscheevos_module.h
+$(BUILD)/%.o: src/%.c include/dscheevos_module.h ../../VERSION
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 $(BUILD)/dscheevos.o: $(CORE)/src/dscheevos.c

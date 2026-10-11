@@ -250,7 +250,7 @@ int module_init(const dscm_boot_t* boot)
     nc.pmk_valid = g_boot.pmk_valid;
     memcpy(nc.pmk, g_boot.pmk, 32);
     nc.host = g_boot.host;
-    strcpy(user_agent, "DScheevos/0.1.0 (Nintendo DSi) rcheevos/" RCHEEVOS_VERSION_STRING);
+    strcpy(user_agent, "DScheevos/" DSC_VERSION " (Nintendo DSi) rcheevos/" RCHEEVOS_VERSION_STRING);
     nc.user_agent = user_agent;
     entropy_stir(&g_boot.unix_time, sizeof(g_boot.unix_time));
     ring = net_init(&nc);

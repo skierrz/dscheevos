@@ -14,6 +14,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+      - name: Tag matches VERSION
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          # the version is in both user agents RetroAchievements sees, so a release tag must match it
+          test "$GITHUB_REF_NAME" = "v$(cat VERSION)" || { echo "tag $GITHUB_REF_NAME but VERSION is $(cat VERSION)"; exit 1; }
       - name: nds-bootstrap (DScheevos branch)
         run: |
           gcc -O2 -static external/nds-bootstrap/lzss.c -o "$RUNNER_TEMP/lzss"

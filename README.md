@@ -27,3 +27,7 @@ Design: `docs/architecture.md`. Measurements: `docs/rcheevos-arm9-footprint.md`.
 - `tests/bootstrap`, `tests/launcher`: retail games through nds-bootstrap, and the full launcher chain. These need your own firmware and game dumps, so they run locally.
 
 rcheevos is used unmodified as a submodule.
+
+## Licence
+
+GPL-3.0 (`LICENSE`), the same as nds-bootstrap, which the module runs inside. rcheevos (MIT), lwIP (BSD) and mbedTLS (Apache-2.0) keep their own licences.

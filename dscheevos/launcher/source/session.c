@@ -14,7 +14,6 @@
 #include <string.h>
 #include <time.h>
 
-#define VERSION "0.1.0"
 
 /* replies kept for the session file, in DSCM_PRELOAD_* order */
 static char* g_reply[DSCM_PRELOAD_COUNT];
@@ -86,7 +85,7 @@ static rc_client_t* make_client(const dsc_settings_t* settings)
     rc_client_set_host(client, settings->host);
   rc_client_set_hardcore_enabled(client, settings->hardcore);
   rc_client_get_user_agent_clause(client, clause, sizeof(clause));
-  snprintf(ua, sizeof(ua), "DScheevos/" VERSION " (Nintendo DSi) %s", clause);
+  snprintf(ua, sizeof(ua), "DScheevos/" DSC_VERSION " (Nintendo DSi) %s", clause);
   http_set_user_agent(ua);
   return client;
 }

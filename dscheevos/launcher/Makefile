@@ -9,7 +9,8 @@ SOURCEDIRS    := source rcheevos tls
 INCLUDEDIRS   := ../module/include ../../external/rcheevos/include ../../external/rcheevos/src \
                  tls ../../external/mbedtls/include
 DEFINES       := -DRC_NO_THREADS -DRC_CLIENT_SUPPORTS_HASH -DRC_HASH_NO_DISC -DRC_HASH_NO_ZIP \
-                 -DRC_HASH_NO_ENCRYPTED -DNDEBUG '-DMBEDTLS_CONFIG_FILE="dsc_mbedtls_config.h"'
+                 -DRC_HASH_NO_ENCRYPTED -DNDEBUG '-DMBEDTLS_CONFIG_FILE="dsc_mbedtls_config.h"' \
+                 '-DDSC_VERSION="$(shell cat ../../VERSION)"'
 ARM7ELF       := arm7/build/arm7.elf
 LIBS          := -ldswifi9 -lnds9
 LIBDIRS       := $(BLOCKSDS)/libs/dswifi $(BLOCKSDS)/libs/libnds
