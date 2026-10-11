@@ -1,0 +1,9 @@
+# Dicewars DS: walk the main menu cursor
+300 DOWN 4
+360 DOWN 4
+420 DOWN 4
+480 DOWN 4
+540 UP 4
+600 UP 4
+660 UP 4
+720 DOWN 4

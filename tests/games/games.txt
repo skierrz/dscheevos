@@ -1,0 +1,4 @@
+# name | ROM path inside $DSC_ROMS | RA hash | GameBrew page | frames | checks
+giana    | giana_sisters_ds/giana.nds | 935eb1e7a41545b88042057d564b1d5c | Giana_Sisters_DS | 6200 | --expect 9001@1310-1330 --expect 9002@5240-5260 --expect 9003@1600-1630 --expect 9005@3030-3050 --never 9004
+martian  | the_martian/MartianDS.nds  | 83669fc3ef39bbb918bbf85a8df4b1ec | The_Martian      | 1700 | --expect 9101@655-670 --expect 9102@895-910 --expect 9103@1495-1515 --expect 9104@655-670 --never 9105
+dicewars | dicewars_ds/dicewars.nds   | 3c2971c01fc953a7822434b2cd7d9251 | Dicewars_DS      | 800  | --expect 9201@475-490 --expect 9202@535-550 --expect 9203@595-610 --never 9204 --expect-lb 9250=5
