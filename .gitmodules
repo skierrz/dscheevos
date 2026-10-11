@@ -1,0 +1,4 @@
+[submodule "tools/melonDS"]
+	path = tools/melonDS
+	url = https://github.com/skierrz/melonDS
+	branch = dscheevos
