@@ -1,0 +1,9 @@
+# Giana Sisters DS: get into the first stage, then stand still and let time run out
+200 START 4
+260 A 4
+320 TOUCH 128 96 10
+400 START 4
+460 A 4
+520 TOUCH 128 60 10
+600 A 4
+660 START 4

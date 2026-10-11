@@ -1,0 +1,81 @@
+{
+ "Success": true,
+ "GameId": 38533,
+ "Title": "The Martian (DScheevos test set)",
+ "ConsoleId": 18,
+ "ImageIconUrl": "",
+ "RichPresenceGameId": 38533,
+ "RichPresencePatch": "",
+ "Sets": [
+  {
+   "AchievementSetId": 38533,
+   "GameId": 38533,
+   "Title": null,
+   "Type": "core",
+   "ImageIconUrl": "",
+   "Achievements": [
+    {
+     "ID": 9101,
+     "Title": "Take a Breather",
+     "Description": "Pause the game",
+     "Flags": 3,
+     "Points": 5,
+     "MemAddr": "0xH1955a2=1",
+     "Author": "dscheevos-tests",
+     "BadgeName": "00000",
+     "Created": 1,
+     "Modified": 1
+    },
+    {
+     "ID": 9102,
+     "Title": "Back to It",
+     "Description": "Unpause the game",
+     "Flags": 3,
+     "Points": 5,
+     "MemAddr": "0xH1955a2=0_d0xH1955a2=1",
+     "Author": "dscheevos-tests",
+     "BadgeName": "00000",
+     "Created": 1,
+     "Modified": 1
+    },
+    {
+     "ID": 9103,
+     "Title": "Pause Three Times",
+     "Description": "Pause three times",
+     "Flags": 3,
+     "Points": 5,
+     "MemAddr": "N:0xH1955a2=1_d0xH1955a2=0.3.",
+     "Author": "dscheevos-tests",
+     "BadgeName": "00000",
+     "Created": 1,
+     "Modified": 1
+    },
+    {
+     "ID": 9104,
+     "Title": "Through the Pointer",
+     "Description": "Pause, read through a pointer",
+     "Flags": 3,
+     "Points": 5,
+     "MemAddr": "I:0xX0080c0&33554431_0xH000002=1",
+     "Author": "dscheevos-tests",
+     "BadgeName": "00000",
+     "Created": 1,
+     "Modified": 1
+    },
+    {
+     "ID": 9105,
+     "Title": "Impossible",
+     "Description": "Must never unlock",
+     "Flags": 3,
+     "Points": 5,
+     "MemAddr": "0xH1955a2=2",
+     "Author": "dscheevos-tests",
+     "BadgeName": "00000",
+     "Created": 1,
+     "Modified": 1
+    }
+   ],
+   "Leaderboards": []
+  }
+ ]
+}

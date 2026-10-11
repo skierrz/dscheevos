@@ -1,0 +1,79 @@
+{
+ "Success": true,
+ "GameId": 17821,
+ "Title": "Dicewars DS (DScheevos test set)",
+ "ConsoleId": 18,
+ "ImageIconUrl": "",
+ "RichPresenceGameId": 17821,
+ "RichPresencePatch": "",
+ "Sets": [
+  {
+   "AchievementSetId": 17821,
+   "GameId": 17821,
+   "Title": null,
+   "Type": "core",
+   "ImageIconUrl": "",
+   "Achievements": [
+    {
+     "ID": 9201,
+     "Title": "Explorer",
+     "Description": "Move the cursor to About",
+     "Flags": 3,
+     "Points": 5,
+     "MemAddr": "0xH14d3ac=5",
+     "Author": "dscheevos-tests",
+     "BadgeName": "00000",
+     "Created": 1,
+     "Modified": 1
+    },
+    {
+     "ID": 9202,
+     "Title": "Second Thoughts",
+     "Description": "Move the cursor up",
+     "Flags": 3,
+     "Points": 5,
+     "MemAddr": "0xH14d3ac<d0xH14d3ac_0xH14d3ac!=0",
+     "Author": "dscheevos-tests",
+     "BadgeName": "00000",
+     "Created": 1,
+     "Modified": 1
+    },
+    {
+     "ID": 9203,
+     "Title": "Indecisive",
+     "Description": "Move the cursor six times",
+     "Flags": 3,
+     "Points": 5,
+     "MemAddr": "N:0xH14d3ac!=d0xH14d3ac_N:0xH14d3ac!=0_d0xH14d3ac!=0.6.",
+     "Author": "dscheevos-tests",
+     "BadgeName": "00000",
+     "Created": 1,
+     "Modified": 1
+    },
+    {
+     "ID": 9204,
+     "Title": "Impossible",
+     "Description": "Must never unlock",
+     "Flags": 3,
+     "Points": 5,
+     "MemAddr": "0xH14d3ac=9",
+     "Author": "dscheevos-tests",
+     "BadgeName": "00000",
+     "Created": 1,
+     "Modified": 1
+    }
+   ],
+   "Leaderboards": [
+    {
+     "ID": 9250,
+     "Title": "Menu Run",
+     "Description": "Options to About",
+     "Mem": "STA:0xH14d3ac=3_d0xH14d3ac=2::CAN:0xH14d3ac=1::SUB:0xH14d3ac=5::VAL:0xH14d3ac",
+     "Format": "VALUE",
+     "LowerIsBetter": false,
+     "Hidden": false
+    }
+   ]
+  }
+ ]
+}
