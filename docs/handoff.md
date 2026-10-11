@@ -35,17 +35,17 @@ Practical notes from the cloud runs: a full TWiLight chain run takes 1–3 minut
 
 Set up and checked on an Apple Silicon Mac (macOS 26, Oct 2026). Everything below builds and every check passes.
 
-**Layout** (the owner keeps projects in `~/Developer`, not `~/dev`):
+**Layout** (one workspace folder, here `WS`; the repos never hold the private files):
 
 | Path | What |
 |---|---|
-| `~/Developer/DScheevos/` | planning notes (`ARCHITECTURE.md`, `DESIGN.md`, `TESTING.md`, `research/`), not a git repo |
-| `~/Developer/DScheevos/dscheevos/` | this repo |
-| `~/Developer/DScheevos/nds-bootstrap/` | the fork, `dscheevos-hc-status`, for in-game work (the submodule is a separate checkout) |
-| `~/Developer/DScheevos/private/dsi/` | BIOS, firmware and NAND dumps (`DSI_FILES`) |
-| `~/Developer/DScheevos/private/roms/` | Kirby, Pokemon Platinum, NSMB |
-| `~/Developer/DScheevos/private/homebrew-roms/` | `fetch_roms.py` output (`DSC_ROMS`) |
-| `~/Developer/DScheevos/dscheevos.env` | exports `DSI_FILES`, `ROM_KIRBY`, `ROM_POKEMON`, `ROM_NSMB`, `ROM` (Kirby), `DSC_ROMS`, `RUNNER`, `BOOTSTRAP`, `DSC_GAMETEST`. From the repo: `source ../dscheevos.env` |
+| `WS/` | workspace folder, not a git repo |
+| `WS/dscheevos/` | this repo |
+| `WS/nds-bootstrap/` | the fork, `dscheevos-hc-status`, for in-game work (the submodule is a separate checkout) |
+| `WS/private/dsi/` | BIOS, firmware and NAND dumps (`DSI_FILES`) |
+| `WS/private/roms/` | Kirby, Pokemon Platinum, NSMB |
+| `WS/private/homebrew-roms/` | `fetch_roms.py` output (`DSC_ROMS`) |
+| `WS/dscheevos.env` | exports `DSI_FILES`, `ROM_KIRBY`, `ROM_POKEMON`, `ROM_NSMB`, `ROM` (Kirby), `DSC_ROMS`, `RUNNER`, `BOOTSTRAP`, `DSC_GAMETEST`. From the repo: `source ../dscheevos.env` |
 
 **Homebrew packages** beyond step 3 above: `pkgconf` and `enet` (the runner's CMake looks up libenet with pkg-config), and `sevenzip` for `get-twilight.sh` (it installs `7zz`, which the script accepts).
 
