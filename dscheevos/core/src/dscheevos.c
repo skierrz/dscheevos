@@ -18,7 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define SLOTS 2
+#define MAX_SLOTS 64
 #define TABLES 3              /* current, plus up to two still used by queued snapshots */
 #define MAX_PENDING_HTTP 8
 
@@ -67,7 +67,8 @@ static struct {
   uint32_t* pending_new;       /* addresses missed during evaluation, merged after the frame */
   uint32_t pending_new_count;
 
-  slot_t slots[SLOTS];
+  slot_t slots[MAX_SLOTS];
+  uint32_t slot_count;
   slot_t* evaluating;
   volatile uint32_t frame_counter;
 
@@ -126,7 +127,7 @@ static int table_in_use(const table_t* t)
   int i;
   if (t == S.current)
     return 1;
-  for (i = 0; i < SLOTS; i++)
+  for (i = 0; i < (int)S.slot_count; i++)
     if (S.slots[i].state != SLOT_FREE && S.slots[i].table == t)
       return 1;
   return 0;
@@ -334,6 +335,9 @@ int dsc_init(const dsc_platform_t* platform, const dsc_config_t* config)
   if (!S.config.max_addresses)
     S.config.max_addresses = 4096;
   max = S.config.max_addresses;
+  S.slot_count = S.config.snapshot_slots ? S.config.snapshot_slots : 2;
+  if (S.slot_count > MAX_SLOTS)
+    S.slot_count = MAX_SLOTS;
 
   for (i = 0; i < TABLES; i++) {
     S.tables[i].addresses = (uint32_t*)malloc(max * sizeof(uint32_t));
@@ -341,7 +345,7 @@ int dsc_init(const dsc_platform_t* platform, const dsc_config_t* config)
     if (!S.tables[i].addresses || !S.tables[i].runs)
       return -2;
   }
-  for (i = 0; i < SLOTS; i++) {
+  for (i = 0; i < (int)S.slot_count; i++) {
     S.slots[i].data = (uint8_t*)malloc(max);
     if (!S.slots[i].data)
       return -2;
@@ -390,7 +394,7 @@ void dsc_vblank(void)
     return;
 
   S.frame_counter++;
-  for (i = 0; i < SLOTS; i++) {
+  for (i = 0; i < (int)S.slot_count; i++) {
     if (S.slots[i].state == SLOT_FREE) {
       slot = &S.slots[i];
       break;
@@ -454,7 +458,7 @@ int dsc_idle(void)
   for (;;) {
     slot_t* next = NULL;
     int i;
-    for (i = 0; i < SLOTS; i++)
+    for (i = 0; i < (int)S.slot_count; i++)
       if (S.slots[i].state == SLOT_READY && (!next || S.slots[i].frame < next->frame))
         next = &S.slots[i];
     if (!next)
@@ -520,7 +524,7 @@ void dsc_shutdown(void)
     free(S.tables[i].addresses);
     free(S.tables[i].runs);
   }
-  for (i = 0; i < SLOTS; i++)
+  for (i = 0; i < (int)S.slot_count; i++)
     free(S.slots[i].data);
   for (i = 0; i < MAX_PENDING_HTTP; i++)
     if (S.http[i].used)

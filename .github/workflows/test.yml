@@ -11,6 +11,10 @@ jobs:
         run: git submodule update --init --depth 1 external/rcheevos
       - name: Core unit tests
         run: make -C dscheevos/core test
+      - name: Session file layout matches mksession.py
+        run: |
+          cc -Idscheevos/module/include tools/mksession/layout.c -o layout
+          ./layout | grep -q "^size=$(sed -n 's/^BOOT_SIZE = \([0-9]*\).*/\1/p' tools/mksession/mksession.py) "
   games:
     runs-on: ubuntu-latest
     steps:

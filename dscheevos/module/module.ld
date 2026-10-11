@@ -24,5 +24,6 @@ SECTIONS {
   } > image
   __image_size = __image_end - ORIGIN(image);
   __stack_top = 0x02D80000 + 0x00200000;
+  __irq_stack_top = __stack_top - 0x00002000;
   /DISCARD/ : { *(.comment) *(.note*) }
 }

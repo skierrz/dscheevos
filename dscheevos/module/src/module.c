@@ -9,15 +9,20 @@
 
 #define REG_VCOUNT (*(volatile uint16_t*)0x04000006)
 #define LINES_PER_FRAME 263
-#define VBLANK_LINE 192
 
 dscm_status_t dscm_g_status;   /* referenced by the header in start.s */
 dscm_net_slot_t dscm_g_net[DSCM_NET_SLOTS];
 static void* g_net_handle[DSCM_NET_SLOTS];
 static uint32_t g_net_sequence;
 static dscm_boot_t g_boot;
+static const char* g_session;        /* session file in memory (preloads) */
 static volatile uint32_t g_frames;
+static uint32_t g_last_vblank;
+static uint32_t g_dtcm;
 static int g_initialized;
+
+extern uint32_t dscm_vblank_count_read(void);  /* start.s */
+extern uint32_t dscm_dtcm_base(void);
 
 /* used by the stubs in syscalls.c */
 uint32_t dscm_unix_time(void) { return g_boot.unix_time + g_frames / 60; }
@@ -30,8 +35,8 @@ static uint32_t read_memory(uint32_t address, uint8_t* buffer, uint32_t num_byte
     memcpy(buffer, (const void*)(0x02000000u + address), num_bytes);
     return num_bytes;
   }
-  if (address >= 0x1000000u && address + num_bytes <= 0x1004000u && g_boot.dtcm_base) {
-    memcpy(buffer, (const void*)(g_boot.dtcm_base + (address - 0x1000000u)), num_bytes);
+  if (address >= 0x1000000u && address + num_bytes <= 0x1004000u && g_dtcm) {
+    memcpy(buffer, (const void*)(g_dtcm + (address - 0x1000000u)), num_bytes);
     return num_bytes;
   }
   return 0;
@@ -66,7 +71,7 @@ static void http_send(const dsc_http_request_t* request)
 
   if (preload >= 0) {
     if (g_boot.preload_length[preload]) {
-      const char* body = (const char*)(DSCM_PRELOAD + g_boot.preload_offset[preload]);
+      const char* body = g_session + g_boot.preload_offset[preload];
       dsc_http_done(request->handle, 200, body, g_boot.preload_length[preload]);
     }
     else {
@@ -156,11 +161,25 @@ int module_init(const dscm_boot_t* boot)
   int i;
 
   memset(__bss_start, 0, (size_t)(__bss_end - __bss_start));
-  if (!boot || boot->size != sizeof(dscm_boot_t)) {
+  if (!boot || boot->magic != DSCM_SESSION_MAGIC || boot->size != sizeof(dscm_boot_t)
+      || boot->file_size > DSCM_SESSION_MAX) {
     dscm_g_status.error = DSCM_ERROR_BAD_BOOT;
     return -1;
   }
+  for (i = 0; i < DSCM_PRELOAD_COUNT; i++) {
+    if (boot->preload_offset[i] > boot->file_size || boot->preload_length[i] > boot->file_size - boot->preload_offset[i]) {
+      dscm_g_status.error = DSCM_ERROR_BAD_BOOT;
+      return -1;
+    }
+  }
   g_boot = *boot;
+  g_session = (const char*)boot;
+  g_boot.host[sizeof(g_boot.host) - 1] = '\0';
+  g_boot.username[sizeof(g_boot.username) - 1] = '\0';
+  g_boot.token[sizeof(g_boot.token) - 1] = '\0';
+  g_boot.game_hash[sizeof(g_boot.game_hash) - 1] = '\0';
+  g_dtcm = g_boot.dtcm_base;
+  g_last_vblank = dscm_vblank_count_read();
   dscm_g_status.hardcore = g_boot.hardcore;
 
   memset(&platform, 0, sizeof(platform));
@@ -174,7 +193,8 @@ int module_init(const dscm_boot_t* boot)
   config.username = g_boot.username;
   config.token = g_boot.token;
   config.hardcore = g_boot.hardcore;
-  config.max_addresses = 8192;
+  config.max_addresses = 4096;
+  config.snapshot_slots = 60;   /* ride out a second of frames with no idle time (loading) */
 
   if (dsc_init(&platform, &config) != 0) {
     dscm_g_status.error = DSCM_ERROR_NO_MEMORY;
@@ -189,29 +209,37 @@ int module_init(const dscm_boot_t* boot)
     dsc_idle();
 
   dscm_g_status.active = dsc_is_active();
-  dscm_g_status.eval_lines = 16 * 40;   /* start pessimistic: 40 lines (~2.5 ms) */
   g_initialized = 1;
   return dscm_g_status.active ? 0 : -1;
 }
 
+/* Called on every ARM9 IPC sync IRQ; acts once per ARM7 VBlank. */
 void module_vblank(void)
 {
   dsc_stats_t s;
-  g_frames++;
+  uint32_t count = dscm_vblank_count_read();
+  uint32_t passed = count - g_last_vblank;
+  if (passed == 0)
+    return;   /* another IPC message, not a VBlank */
+  g_last_vblank = count;
+  g_frames += passed;
   if (!g_initialized || !dscm_g_status.active)
     return;
+  if (passed > 1)
+    dscm_g_status.frames_missed += passed - 1;
+  if (!g_boot.dtcm_base)
+    g_dtcm = dscm_dtcm_base();
   dsc_vblank();
   dsc_get_stats(&s);
   dscm_g_status.frames_snapshotted = s.frames_snapshotted;
   dscm_g_status.frames_dropped = s.frames_dropped;
 }
 
-static uint32_t lines_until_vblank(uint32_t line)
-{
-  return line < VBLANK_LINE ? VBLANK_LINE - line : LINES_PER_FRAME - line + VBLANK_LINE;
-}
-
-/* Called on the module's own stack from the idle trampoline. */
+/* Called on the module's own stack from halt_entry, in the game's idle thread.
+ * NitroSDK switches threads when an IRQ returns, so any game thread that wakes
+ * (the main loop at VBlank, a loader thread at a card IRQ) preempts this work
+ * at once; it resumes the next time the game is idle. eval_lines is wall time
+ * between start and end, so it includes any time the game took meanwhile. */
 void module_idle(void)
 {
   dsc_stats_t s;
@@ -225,24 +253,11 @@ void module_idle(void)
   if (s.frames_snapshotted == s.frames_evaluated + s.frames_dropped)
     return; /* nothing waiting */
 
-  /* Only start if the frame's evaluation should finish before the next VBlank,
-   * with a quarter of margin; otherwise wait for a longer idle window. */
   start = REG_VCOUNT;
-  if (lines_until_vblank(start) * 16 < dscm_g_status.eval_lines + dscm_g_status.eval_lines / 4) {
-    dscm_g_status.frames_deferred++;
-    return;
-  }
-
   dsc_idle();
-
   end = REG_VCOUNT;
   used = (end + LINES_PER_FRAME - start) % LINES_PER_FRAME;
-  if (used == 0) used = 1;
-  /* running estimate, biased toward the worst recent cost */
-  if (used * 16 > dscm_g_status.eval_lines)
-    dscm_g_status.eval_lines = used * 16;
-  else
-    dscm_g_status.eval_lines = (dscm_g_status.eval_lines * 7 + used * 16) / 8;
+  dscm_g_status.eval_lines = (dscm_g_status.eval_lines * 7 + used * 16) / 8;
 
   dsc_get_stats(&s);
   dscm_g_status.frames_evaluated = s.frames_evaluated;
