@@ -79,10 +79,10 @@ rc_client raises an unlock inside `do_frame` and hands DScheevos a request to se
 
 ## Open questions
 
-1. **Wi-Fi during play.** Sending unlocks live needs a Wi-Fi driver, and Wi-Fi drivers run on the ARM7, which belongs to the game. Options: run a small driver from nds-bootstrap's ARM7 engine; or keep Wi-Fi only at session start and send unlocks when the session ends (breaks live unlocks); or something else. Games that use local wireless themselves need a separate answer.
-2. **WPA2.** The DS-compatible Wi-Fi does open and WEP networks only. WPA2 needs the DSi's own Wi-Fi chip (the BlocksDS DSWiFi library supports it).
-3. **Not enough idle time.** What to do on games that don't leave room: reduce cost (faster read path, cheaper memory layout), lower the clock budget per frame by spreading work, or mark the game unsupported.
-4. **Games that never call `OS_Halt`.** Some games busy-wait; they give no idle time at all. Need to find how common this is. DScheevos turns itself off when it finds no `OS_Halt` (the bootstrap log says "DScheevos off: no OS_Halt").
-5. **Pop-ups.** Showing an unlock means drawing over a game that owns both screens, all sprites and VRAM.
-6. **DSi-enhanced games in DSi mode** use all 16 MB, leaving no free RAM.
-7. **Homebrew games** (like the homebrew titles with RetroAchievements sets) go through nds-bootstrap's separate homebrew path, not the retail card engine, and wait for VBlank through the BIOS (`swi 0x05`) instead of `OS_Halt`. They need their own hook points.
+1. **Wi-Fi during play.** Sending unlocks live needs Wi-Fi while the game owns the ARM7. Being worked on: keep the DSi's own Wi-Fi chip associated from the launcher, have a small ARM7 shim in nds-bootstrap move frames, and run TCP/IP and TLS in the module's idle time. Games that use local wireless themselves need a separate answer.
+2. **Not enough idle time.** Snapshots queue for up to 1024 frames (17 s), so busy stretches are fine as long as the game idles enough on average. A game that never does would fall behind for good. The answer then is cheaper evaluation (faster read path, cheaper memory layout) or marking the game unsupported.
+3. **Games that never call `OS_Halt`.** Some games busy-wait; they give no idle time at all. Need to find how common this is. DScheevos turns itself off when it finds no `OS_Halt` (the bootstrap log says "DScheevos off: no OS_Halt"). Kirby Super Star Ultra and Pokémon Platinum both have one.
+4. **DSi-enhanced games in DSi mode** use all 16 MB, leaving no free RAM. They run with achievements only in DS mode.
+5. **Homebrew games** (like the homebrew titles with RetroAchievements sets) go through nds-bootstrap's separate homebrew path, not the retail card engine, and wait for VBlank through the BIOS (`swi 0x05`) instead of `OS_Halt`. They need their own hook points.
+
+Settled since the first draft: WPA2 (the launcher uses the DSi's own Wi-Fi through BlocksDS DSWiFi) and pop-ups (unlocks blink the Wi-Fi LED; details are in the in-game menu, so nothing draws over the game).
