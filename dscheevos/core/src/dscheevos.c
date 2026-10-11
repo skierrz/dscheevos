@@ -2,9 +2,14 @@
  * DScheevos core. See dscheevos.h for the model.
  *
  * Snapshot: rcheevos reads game memory through read_memory(). While a
- * snapshot is being evaluated, reads are served from it; any address it
- * doesn't hold is read live once and added to the address table, so the next
- * VBlank captures it too (this covers pointers that just moved).
+ * snapshot is being evaluated, reads are served from it. When the game loads,
+ * the address table gets every address the set reads directly, and the
+ * pointer chains (AddAddress) are copied: each VBlank runs the copies with
+ * rcheevos' own code on live memory and keeps the bytes each pointer lands
+ * on in the snapshot. So a queued frame is evaluated with memory from its
+ * own VBlank, even when a pointer moved. Anything still missing (a chain
+ * that uses Remember/Recall) is read live and added to the table; that read
+ * may be from a later frame, and live_reads counts it.
  *
  * Address tables are immutable once published. dsc_vblank() copies the bytes
  * listed in the current table into the next snapshot as a few runs of
@@ -20,6 +25,8 @@
 
 #include "rc_client.h"
 #include "rc_consoles.h"
+#include "client/rc_client_internal.h"
+#include "runtime/rc_internal.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -44,12 +51,30 @@ typedef struct table_t {
 
 enum { SLOT_FREE, SLOT_FILLING, SLOT_READY, SLOT_EVAL };
 
+/* Bytes a pointer chain landed on at VBlank, stored after the table's bytes. */
+typedef struct target_t {
+  uint32_t address;
+  uint32_t length;
+  uint8_t bytes[4];
+} target_t;
+
+/* Private copies of the set's pointer chains, run at VBlank. */
+typedef struct chains_t {
+  rc_memref_t* direct;         /* pointers the chains start from */
+  uint32_t direct_count;
+  rc_modified_memref_t* mods;  /* chain steps, parents first */
+  uint8_t* kind;               /* per step: how run_chains computes it (STEP_*) */
+  uint32_t mod_count;
+  uint32_t target_count;       /* steps that read memory (one target_t each) */
+} chains_t;
+
 typedef struct slot_t {
   volatile int state;
   uint8_t* data;
   uint32_t offset;            /* in the arena */
   uint32_t size;
   const table_t* table;
+  target_t* targets;          /* chains.target_count of them */
   uint32_t frame;
   volatile uint32_t repeats;  /* later frames whose bytes matched exactly; evaluated from this copy */
 } slot_t;
@@ -69,7 +94,8 @@ static struct {
   dsc_platform_t platform;
   dsc_config_t config;
   rc_client_t* client;
-  int active;
+  volatile int active;         /* set last: dsc_vblank uses the table and chains only after it */
+  chains_t chains;
 
   table_t tables[TABLES];
   table_t* volatile current;   /* read by dsc_vblank */
@@ -210,6 +236,245 @@ static void note_missing(uint32_t address)
     S.pending_new[S.pending_new_count++] = address;
 }
 
+/* ---- pointer chains ---- */
+
+/* Most DS chains are "pointer & 0x1FFFFFF, then + offset and read", on plain
+ * unsigned values. Those steps skip rcheevos' general operand code, which
+ * costs several times more and runs in the VBlank IRQ; the result is the same. */
+enum { STEP_GENERIC, STEP_AND, STEP_READ };
+
+/* Reads a chain step's target live at VBlank and keeps the bytes in the snapshot. */
+typedef struct capture_t {
+  target_t* targets;
+  uint32_t next;
+} capture_t;
+
+static uint32_t RC_CCONV capture_read(uint32_t address, uint8_t* buffer, uint32_t num_bytes, void* ud)
+{
+  capture_t* c = (capture_t*)ud;
+  target_t* g = &c->targets[c->next++];
+  uint32_t n = num_bytes > sizeof(g->bytes) ? 0 : S.platform.read_memory(address, buffer, num_bytes);
+  g->address = address;
+  g->length = n;
+  memcpy(g->bytes, buffer, n);
+  return n;
+}
+
+static uint32_t RC_CCONV live_read(uint32_t address, uint8_t* buffer, uint32_t num_bytes, void* ud)
+{
+  (void)ud;
+  return S.platform.read_memory(address, buffer, num_bytes);
+}
+
+/* At VBlank, after the table's bytes are copied: advance the chain copies one
+ * frame on live memory, as rc_update_memref_values does for the real ones. */
+static void run_chains(target_t* targets)
+{
+  capture_t c;
+  uint32_t i;
+  c.targets = targets;
+  c.next = 0;
+  for (i = 0; i < S.chains.direct_count; i++) {
+    rc_memref_t* m = &S.chains.direct[i];
+    uint8_t b[4];
+    if (m->value.size == RC_MEMSIZE_32_BITS && S.platform.read_memory(m->address, b, 4) == 4)
+      rc_update_memref_value(&m->value, b[0] | (b[1] << 8) | (b[2] << 16) | ((uint32_t)b[3] << 24));
+    else
+      rc_update_memref_value(&m->value, rc_read_memory(m->address, m->value.size, live_read, NULL));
+  }
+  for (i = 0; i < S.chains.mod_count; i++) {
+    rc_modified_memref_t* m = &S.chains.mods[i];
+    uint32_t before = c.next, value;
+    switch (S.chains.kind[i]) {
+      case STEP_AND:
+        value = m->parent.value.memref->value.value & m->modifier.value.num;
+        break;
+      case STEP_READ: {
+        target_t* g = &targets[c.next++];
+        uint32_t n = m->memref.value.size == RC_MEMSIZE_8_BITS ? 1 : m->memref.value.size == RC_MEMSIZE_16_BITS ? 2 : 4;
+        g->address = m->parent.value.memref->value.value + m->modifier.value.num;
+        g->length = S.platform.read_memory(g->address, g->bytes, n);
+        value = g->bytes[0] | (g->bytes[1] << 8) | (g->bytes[2] << 16) | ((uint32_t)g->bytes[3] << 24);  /* unread bytes are 0, as in rc_read_memory */
+        break;
+      }
+      default:
+        value = rc_get_modified_memref_value(m, capture_read, &c);
+        break;
+    }
+#ifdef DSC_CHECK_FAST_STEPS  /* tests: the shortcut must match rcheevos' own code */
+    if (S.chains.kind[i] != STEP_GENERIC && value != rc_get_modified_memref_value(m, live_read, NULL))
+      abort();
+#endif
+    rc_update_memref_value(&m->memref.value, value);
+    if (m->modifier_type == RC_OPERATOR_INDIRECT_READ && c.next == before) {
+      targets[c.next].address = 0;    /* no read happened: keep the slot count fixed */
+      targets[c.next++].length = 0;
+    }
+  }
+}
+
+static void free_chains(void)
+{
+  free(S.chains.direct);
+  free(S.chains.mods);
+  free(S.chains.kind);
+  memset(&S.chains, 0, sizeof(S.chains));
+}
+
+/* STEP_AND or STEP_READ when the step is the plain unsigned shape run_chains
+ * computes itself: parent read as is (no size change, BCD, delta...), and a
+ * constant modifier. */
+static uint8_t step_kind(const rc_modified_memref_t* m)
+{
+  const rc_operand_t* p = &m->parent;
+  if (p->type != RC_OPERAND_ADDRESS || !p->value.memref || p->size != p->value.memref->value.size ||
+      p->value.memref->value.type != RC_VALUE_TYPE_UNSIGNED || m->modifier.type != RC_OPERAND_CONST ||
+      m->memref.value.type != RC_VALUE_TYPE_UNSIGNED)
+    return STEP_GENERIC;
+  if (m->modifier_type == RC_OPERATOR_AND)
+    return STEP_AND;
+  if (m->modifier_type == RC_OPERATOR_INDIRECT_READ &&
+      (m->memref.value.size == RC_MEMSIZE_8_BITS || m->memref.value.size == RC_MEMSIZE_16_BITS || m->memref.value.size == RC_MEMSIZE_32_BITS))
+    return STEP_READ;
+  return STEP_GENERIC;
+}
+
+/* The copy of a memref an operand points at, or NULL if it isn't copied. */
+static rc_memref_t* chain_copy_of(const rc_memref_t* original, rc_memref_t* const* direct_src, rc_modified_memref_t* const* mod_src)
+{
+  uint32_t i;
+  for (i = 0; i < S.chains.direct_count; i++)
+    if (direct_src[i] == original)
+      return &S.chains.direct[i];
+  for (i = 0; i < S.chains.mod_count; i++)
+    if (mod_src[i] == (const rc_modified_memref_t*)original)
+      return &S.chains.mods[i].memref;
+  return NULL;
+}
+
+/* Fill the address table with every address the set reads directly, and copy
+ * the steps of every pointer chain. Runs once the game is loaded, before any
+ * snapshot is taken. */
+static void prepare_snapshots(void)
+{
+  rc_memrefs_t* memrefs = S.client->game->runtime.memrefs;
+  rc_memref_list_t* ml;
+  rc_modified_memref_list_t* mml;
+  rc_modified_memref_t** mods = NULL;
+  rc_memref_t** direct_src = NULL;
+  uint8_t* need = NULL;
+  uint32_t mod_total = 0, i, j, n;
+
+  free_chains();
+  if (!memrefs)
+    return;
+
+  /* every byte read directly, merged into the table (rcheevos has already
+   * disabled achievements whose addresses can't be read) */
+  for (ml = &memrefs->memrefs; ml; ml = ml->next) {
+    for (i = 0; i < ml->count; i++) {
+      const rc_memref_t* m = &ml->items[i];
+      uint32_t bytes = m->value.type == RC_VALUE_TYPE_NONE ? 0 : rc_memref_bytes(m->value.size);
+      for (j = 0; j < bytes && S.pending_new_count < S.config.max_addresses; j++)
+        S.pending_new[S.pending_new_count++] = m->address + j;
+    }
+  }
+  publish_pending_addresses();
+
+  /* chain steps in order, parents first */
+  for (mml = &memrefs->modified_memrefs; mml; mml = mml->next)
+    mod_total += mml->count;
+  if (!mod_total)
+    return;
+  mods = (rc_modified_memref_t**)malloc(mod_total * sizeof(*mods));
+  need = (uint8_t*)calloc(mod_total, 1);
+  direct_src = (rc_memref_t**)malloc(mod_total * 2 * sizeof(*direct_src));
+  S.chains.mods = (rc_modified_memref_t*)malloc(mod_total * sizeof(rc_modified_memref_t));
+  S.chains.kind = (uint8_t*)malloc(mod_total);
+  S.chains.direct = (rc_memref_t*)malloc(mod_total * 2 * sizeof(rc_memref_t));
+  if (!mods || !need || !direct_src || !S.chains.mods || !S.chains.kind || !S.chains.direct)
+    goto fail;
+  n = 0;
+  for (mml = &memrefs->modified_memrefs; mml; mml = mml->next)
+    for (i = 0; i < mml->count; i++)
+      mods[n++] = &mml->items[i];
+
+  /* a step is needed if it reads memory, or a needed step uses it; walk back from the reads */
+  for (i = mod_total; i-- > 0;) {
+    const rc_operand_t* ops[2];
+    if (mods[i]->modifier_type == RC_OPERATOR_INDIRECT_READ)
+      need[i] = 1;
+    if (!need[i])
+      continue;
+    ops[0] = &mods[i]->parent;
+    ops[1] = &mods[i]->modifier;
+    for (j = 0; j < 2; j++) {
+      const rc_operand_t* op = ops[j];
+      uint32_t k;
+      if (!rc_operand_type_is_memref(op->type) || !op->value.memref)
+        continue;
+      if (op->value.memref->value.memref_type == RC_MEMREF_TYPE_MODIFIED_MEMREF) {
+        for (k = 0; k < i; k++)
+          if (mods[k] == (rc_modified_memref_t*)op->value.memref)
+            need[k] = 1;
+      }
+      else if (op->value.memref->value.memref_type == RC_MEMREF_TYPE_MEMREF) {
+        for (k = 0; k < S.chains.direct_count; k++)
+          if (direct_src[k] == op->value.memref)
+            break;
+        if (k == S.chains.direct_count) {
+          direct_src[k] = op->value.memref;
+          S.chains.direct[k] = *op->value.memref;
+          S.chains.direct_count++;
+        }
+      }
+    }
+  }
+
+  /* copy the needed steps, pointing their operands at the copies; a step that
+   * depends on something not copied (Remember/Recall) is left to live reads */
+  for (i = 0; i < mod_total; i++) {
+    rc_modified_memref_t* copy;
+    rc_operand_t* ops[2];
+    int ok = 1;
+    if (!need[i])
+      continue;
+    copy = &S.chains.mods[S.chains.mod_count];
+    *copy = *mods[i];
+    ops[0] = &copy->parent;
+    ops[1] = &copy->modifier;
+    for (j = 0; j < 2; j++) {
+      if (ops[j]->type == RC_OPERAND_RECALL) {
+        ok = 0;
+      }
+      else if (rc_operand_type_is_memref(ops[j]->type) && ops[j]->value.memref) {
+        rc_memref_t* c = chain_copy_of(ops[j]->value.memref, direct_src, mods);
+        if (c)
+          ops[j]->value.memref = c;
+        else
+          ok = 0;
+      }
+    }
+    if (!ok)
+      continue;
+    mods[S.chains.mod_count] = mods[i];  /* reused as "source of copy k" from here on */
+    S.chains.kind[S.chains.mod_count] = step_kind(copy);
+    S.chains.mod_count++;
+    if (copy->modifier_type == RC_OPERATOR_INDIRECT_READ)
+      S.chains.target_count++;
+  }
+  free(mods);
+  free(need);
+  free(direct_src);
+  return;
+
+fail:
+  free(mods);
+  free(need);
+  free(direct_src);
+  free_chains();
+}
+
 /* ---- rcheevos callbacks ---- */
 
 static uint32_t RC_CCONV read_memory(uint32_t address, uint8_t* buffer, uint32_t num_bytes, rc_client_t* client)
@@ -230,14 +495,24 @@ static uint32_t RC_CCONV read_memory(uint32_t address, uint8_t* buffer, uint32_t
       return num_bytes;
     }
     for (i = 0; i < num_bytes; i++) {
-      idx = table_find(t, address + i);
+      uint32_t a = address + i, k;
+      idx = table_find(t, a);
       if (idx >= 0) {
         buffer[i] = slot->data[idx];
+        continue;
+      }
+      for (k = 0; k < S.chains.target_count; k++) {
+        const target_t* g = &slot->targets[k];
+        if (a - g->address < g->length)
+          break;
+      }
+      if (k < S.chains.target_count) {
+        buffer[i] = slot->targets[k].bytes[a - slot->targets[k].address];
       }
       else {
-        if (S.platform.read_memory(address + i, buffer + i, 1) != 1)
+        if (S.platform.read_memory(a, buffer + i, 1) != 1)
           return i;
-        note_missing(address + i);
+        note_missing(a);
         S.stats.live_reads++;
       }
     }
@@ -314,6 +589,7 @@ static void RC_CCONV game_loaded(int result, const char* error_message, rc_clien
   (void)userdata;
   if (result == RC_OK) {
     const rc_client_game_t* game = rc_client_get_game_info(S.client);
+    prepare_snapshots();
     S.active = 1;
     emit(DSC_EVENT_GAME_LOADED, game ? game->id : 0, 0, game ? game->title : NULL, NULL);
   }
@@ -420,14 +696,15 @@ void dsc_vblank(void)
   const table_t* t;
   slot_t* slot;
   int32_t offset;
-  uint32_t i;
+  uint32_t i, size;
 
   if (!S.active)
     return;
 
   S.frame_counter++;
   t = S.current;
-  offset = S.slot_head - S.slot_tail < S.slot_count ? arena_alloc(t->count) : -1;
+  size = ((t->count + 3) & ~3u) + S.chains.target_count * sizeof(target_t);
+  offset = S.slot_head - S.slot_tail < S.slot_count ? arena_alloc(size) : -1;
   if (offset < 0) {
     S.stats.frames_dropped++;
     return;
@@ -436,13 +713,16 @@ void dsc_vblank(void)
   slot = &S.slots[S.slot_head % MAX_SLOTS];
   slot->state = SLOT_FILLING;
   slot->offset = (uint32_t)offset;
-  slot->size = t->count;
+  slot->size = size;
   slot->data = S.arena + offset;
+  slot->targets = (target_t*)(slot->data + ((t->count + 3) & ~3u));
   for (i = 0; i < t->run_count; i++) {
     const run_t* r = &t->runs[i];
     if (S.platform.read_memory(r->address, slot->data + r->offset, r->length) != r->length)
       memset(slot->data + r->offset, 0, r->length);
   }
+  memset(slot->data + t->count, 0, size - t->count);  /* padding and targets: compared for repeats */
+  run_chains(slot->targets);
   slot->table = t;
   slot->frame = S.frame_counter;
   S.stats.frames_snapshotted++;
@@ -452,7 +732,7 @@ void dsc_vblank(void)
    * evaluated as its own frame, so nothing is lost. */
   if (S.slot_head != S.slot_tail) {
     slot_t* prev = &S.slots[(S.slot_head - 1) % MAX_SLOTS];
-    if (prev->state == SLOT_READY && prev->table == t && memcmp(prev->data, slot->data, t->count) == 0) {
+    if (prev->state == SLOT_READY && prev->table == t && memcmp(prev->data, slot->data, size) == 0) {
       prev->repeats++;
       slot->state = SLOT_FREE;
       S.stats.frames_repeated++;
@@ -461,7 +741,7 @@ void dsc_vblank(void)
   }
 
   slot->repeats = 0;
-  S.arena_head = (uint32_t)offset + t->count;
+  S.arena_head = (uint32_t)offset + size;
   slot->state = SLOT_READY;
   S.slot_head++;    /* publish last */
 }
@@ -605,5 +885,6 @@ void dsc_shutdown(void)
     if (S.http[i].used)
       free(S.http[i].body);
   free(S.pending_new);
+  free_chains();
   memset(&S, 0, sizeof(S));
 }

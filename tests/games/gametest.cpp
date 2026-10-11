@@ -91,7 +91,10 @@ static void http_send(const dsc_http_request_t* req)
     else if (r == "awardachievement")
     {
         int id = std::atoi(param(post, "a").c_str());
-        g_awards.push_back({id, param(post, "h") == "1", g_frame});
+        // the frame being evaluated, which trails g_frame when idle is held back (--idle-every)
+        dsc_stats_t st;
+        dsc_get_stats(&st);
+        g_awards.push_back({id, param(post, "h") == "1", g_frame + 1 - (st.frames_snapshotted - st.frames_evaluated)});
         body = "{\"Success\":true,\"Score\":1,\"SoftcoreScore\":0,\"AchievementID\":" + std::to_string(id) + ",\"AchievementsRemaining\":1}";
     }
     else if (r == "submitlbentry")
@@ -195,7 +198,7 @@ static std::string read_text(const std::string& p)
 int main(int argc, char** argv)
 {
     std::string rom, set, script, dumpdir, shot;
-    uint32_t frames = 3600;
+    uint32_t frames = 3600, idle_every = 1;
     bool hardcore = true;
     struct Expect { int id; uint32_t from, to; };
     std::vector<Expect> expect;  // id unlocked within [from, to]
@@ -232,9 +235,10 @@ int main(int argc, char** argv)
         else if (a == "--dump-dir") dumpdir = next();
         else if (a == "--screenshot") shot = next();
         else if (a == "--verbose") g_verbose = true;
+        else if (a == "--idle-every") idle_every = std::stoul(next());
         else { std::fprintf(stderr, "unknown option %s\n", a.c_str()); return 2; }
     }
-    if (rom.empty()) { std::fprintf(stderr, "usage: dsc-gametest --rom X.nds [--set S.json] [--script I.txt] [--frames N] [--expect ID[@[FROM-]TO]] [--expect-lb ID=SCORE] [--never ID] [--dump F1,F2 --dump-dir D] [--softcore]\n"); return 2; }
+    if (rom.empty()) { std::fprintf(stderr, "usage: dsc-gametest --rom X.nds [--set S.json] [--script I.txt] [--frames N] [--expect ID[@[FROM-]TO]] [--expect-lb ID=SCORE] [--never ID] [--dump F1,F2 --dump-dir D] [--softcore] [--idle-every N]\n"); return 2; }
 
     NDSArgs args;
     args.JIT = std::nullopt;
@@ -257,9 +261,10 @@ int main(int argc, char** argv)
         // the mock serves the set for any hash; the real hash is checked by the hash tests
         std::snprintf(hash, sizeof hash, "%s", "00000000000000000000000000000000");
         dsc_platform_t p = {read_memory, millis, http_send, on_event, on_log};
-        dsc_config_t c = {"http://mock", "tester", "tok", hardcore ? 1 : 0, 8192};
+        dsc_config_t c = {"http://mock", "tester", "tok", hardcore ? 1 : 0, 8192, idle_every > 1 ? 1024u : 0u, 0};
         if (dsc_init(&p, &c) != 0) { std::fprintf(stderr, "dsc_init failed\n"); return 2; }
         dsc_begin_session(hash);
+        dsc_idle();  // the mock answers at once: login, set and session are done before frame 0
     }
     rc_runtime_t ref;
     rc_runtime_init(&ref);
@@ -288,7 +293,9 @@ int main(int argc, char** argv)
         if (!set.empty())
         {
             dsc_vblank();
-            dsc_idle();
+            // --idle-every N: idle time only every Nth frame, so frames queue up as in a long load
+            if ((g_frame + 1) % idle_every == 0 || g_frame + 1 == frames)
+                dsc_idle();
             rc_runtime_do_frame(&ref, [](const rc_runtime_event_t* e) { ref_event(e); }, ref_peek, nullptr, nullptr);
         }
         for (auto d : dumps)

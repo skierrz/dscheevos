@@ -28,7 +28,7 @@ $(BUILD)/rc/%.o: $(RCHEEVOS)/src/%.c
 
 $(BUILD)/test_core: tests/test_core.c src/dscheevos.c include/dscheevos.h $(RC_OBJ)
 	@mkdir -p $(BUILD)
-	$(CC) $(CFLAGS) $(DEFS) $(INCLUDES) tests/test_core.c src/dscheevos.c $(RC_OBJ) -lm -o $@
+	$(CC) $(CFLAGS) $(DEFS) -DDSC_CHECK_FAST_STEPS $(INCLUDES) tests/test_core.c src/dscheevos.c $(RC_OBJ) -lm -o $@
 
 clean:
 	rm -rf $(BUILD)

@@ -152,28 +152,72 @@ static void test_session_loads_hardcore(void)
   dsc_shutdown();
 }
 
-static void test_addresses_learned_then_snapshotted(void)
+static void test_set_addresses_snapshotted_from_the_start(void)
 {
   dsc_stats_t s;
   start(1);
-  frames(3);
   dsc_get_stats(&s);
-  CHECK(s.addresses >= 1 + 4 + 1 + 1); /* byte, pointer (4), pointer target, DTCM byte */
-  {
-    uint32_t live = s.live_reads;
-    frames(5);
-    dsc_get_stats(&s);
-    CHECK(s.live_reads == live);      /* everything now comes from snapshots */
-    CHECK(s.frames_evaluated == 8);
-    CHECK(s.frames_dropped == 0);
+  CHECK(s.addresses == 1 + 1 + 4 + 1); /* bytes 0x10 and 0x20, pointer (4), DTCM byte: known at load */
+  frames(8);
+  dsc_get_stats(&s);
+  CHECK(s.live_reads == 0);            /* everything comes from snapshots */
+  CHECK(s.frames_evaluated == 8);
+  CHECK(s.frames_dropped == 0);
+  dsc_shutdown();
+}
+
+static void test_first_queued_frames_use_their_own_memory(void)
+{
+  int i;
+  start_with(1, 1024, 0);
+  for (i = 0; i < 60; i++) {   /* the game loads right after the session starts: no idle time */
+    ram[0x10] = (i == 20) ? 5 : 0;
+    dsc_vblank();
   }
+  dsc_idle();
+  CHECK(was_unlocked(1001));   /* true only at VBlank 20, before any frame was evaluated */
+  dsc_shutdown();
+}
+
+static void test_queued_frames_follow_moved_pointers(void)
+{
+  dsc_stats_t s;
+  int i;
+  start_with(1, 1024, 0);
+  frames(3);
+  put32(0x100, 0x02000040);    /* pointer moves; its target 0x44 is 7 at this VBlank only */
+  ram[0x44] = 7;
+  dsc_vblank();
+  ram[0x44] = 0;
+  for (i = 0; i < 30; i++)     /* still no idle time */
+    dsc_vblank();
+  dsc_idle();
+  CHECK(was_unlocked(1002));
+  dsc_get_stats(&s);
+  CHECK(s.live_reads == 0);
+  dsc_shutdown();
+}
+
+static void test_queued_frames_ignore_later_memory(void)
+{
+  int i;
+  start_with(1, 1024, 0);
+  frames(3);
+  put32(0x100, 0x02000040);    /* pointer moves to 0x40 (target 0x44 is 0) ... */
+  dsc_vblank();
+  put32(0x100, 0x02000020);    /* ... and back before the next VBlank */
+  ram[0x44] = 7;               /* 0x44 becomes 7 once nothing points at it */
+  for (i = 0; i < 30; i++)
+    dsc_vblank();
+  dsc_idle();
+  CHECK(!was_unlocked(1002));  /* a later value must never leak into an earlier frame */
   dsc_shutdown();
 }
 
 static void test_evaluates_frozen_snapshot(void)
 {
   start(1);
-  frames(3);                 /* learn addresses, all conditions false */
+  frames(3);                 /* all conditions false */
   ram[0x10] = 5;             /* true at VBlank ... */
   frame(clear_byte);         /* ... but the game clears it before idle time */
   CHECK(was_unlocked(1001)); /* evaluation saw the VBlank value */
@@ -198,16 +242,10 @@ static void test_pointer_chain_follows_moved_pointer(void)
   frames(3);
   put32(0x100, 0x02000040);  /* pointer moves to 0x40; target +4 = 0x44 */
   ram[0x44] = 7;
-  frame(NULL);               /* new target read live once */
+  frame(NULL);               /* the new target is captured at VBlank */
   dsc_get_stats(&s);
-  CHECK(s.live_reads > 0);
+  CHECK(s.live_reads == 0);
   CHECK(was_unlocked(1002));
-  {
-    uint32_t live = s.live_reads;
-    frames(2);
-    dsc_get_stats(&s);
-    CHECK(s.live_reads == live); /* 0x44 is captured at VBlank from now on */
-  }
   dsc_shutdown();
 }
 
@@ -264,7 +302,7 @@ static void test_long_stretch_without_idle_is_queued(void)
   dsc_stats_t s;
   int i;
   start_with(1, 1024, 0);
-  frames(3);                 /* learn the addresses */
+  frames(3);
   for (i = 0; i < 600; i++) {   /* ten seconds of VBlanks with no idle time */
     ram[0x10] = (i == 300) ? 5 : 0;
     dsc_vblank();
@@ -283,11 +321,11 @@ static void test_snapshot_arena_wraps(void)
   dsc_stats_t s;
   uint32_t per_frame;
   int i;
-  start_with(1, 1024, 64);   /* a few frames' worth: the ring wraps many times */
+  start_with(1, 1024, 128);  /* a few frames' worth: the ring wraps many times */
   frames(3);
   dsc_get_stats(&s);
-  per_frame = s.addresses;
-  CHECK(per_frame > 0 && per_frame * 4 < 64);
+  per_frame = ((s.addresses + 3) & ~3u) + 12;  /* table bytes, then the pointer target */
+  CHECK(per_frame * 4 < 128);
   for (i = 0; i < 400; i++) {
     ram[0x10] = (i == 333) ? 5 : 0;
     dsc_vblank();
@@ -297,7 +335,7 @@ static void test_snapshot_arena_wraps(void)
   dsc_get_stats(&s);
   CHECK(s.frames_dropped == 0);
   CHECK(was_unlocked(1001));
-  for (i = 0; i < 20; i++) {  /* more than 64 bytes of changing frames queued: drops, reported */
+  for (i = 0; i < 20; i++) {  /* more than 128 bytes of changing frames queued: drops, reported */
     ram[0x20] = (uint8_t)(i + 10);
     dsc_vblank();
   }
@@ -312,7 +350,7 @@ static void test_unchanged_frames_queue_as_repeats(void)
 {
   dsc_stats_t s;
   int i;
-  start_with(1, 4, 64);      /* room for only a few distinct frames */
+  start_with(1, 4, 128);     /* room for only a few distinct frames */
   frames(3);
   ram[0x20] = 3;
   for (i = 0; i < 99; i++)   /* a cutscene: no idle time, nothing watched changes */
@@ -370,7 +408,10 @@ static void test_unlock_retried_when_server_down(void)
 int main(void)
 {
   RUN(test_session_loads_hardcore);
-  RUN(test_addresses_learned_then_snapshotted);
+  RUN(test_set_addresses_snapshotted_from_the_start);
+  RUN(test_first_queued_frames_use_their_own_memory);
+  RUN(test_queued_frames_follow_moved_pointers);
+  RUN(test_queued_frames_ignore_later_memory);
   RUN(test_evaluates_frozen_snapshot);
   RUN(test_ignores_changes_after_vblank);
   RUN(test_pointer_chain_follows_moved_pointer);

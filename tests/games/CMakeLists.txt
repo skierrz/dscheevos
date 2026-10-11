@@ -20,7 +20,7 @@ file(GLOB RC_SRC
   ${RCHEEVOS}/src/util/*.c)
 add_library(dscheevos STATIC ${REPO}/dscheevos/core/src/dscheevos.c ${RC_SRC})
 target_include_directories(dscheevos PUBLIC ${REPO}/dscheevos/core/include ${RCHEEVOS}/include PRIVATE ${RCHEEVOS}/src)
-target_compile_definitions(dscheevos PRIVATE RC_NO_THREADS)
+target_compile_definitions(dscheevos PRIVATE RC_NO_THREADS DSC_CHECK_FAST_STEPS)
 
 add_executable(dsc-gametest gametest.cpp ${MELONDS_DIR}/tools/dscheevos/headless/platform.cpp)
 target_link_libraries(dsc-gametest PRIVATE core dscheevos pthread m)
