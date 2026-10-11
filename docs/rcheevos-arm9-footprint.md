@@ -181,13 +181,7 @@ Nothing needs threads, signals, sockets or dynamic loading. Networking stays on 
 
 ## 4. Call graph from `rc_client_do_frame`
 
-The plan called for REA (`npx rea-agents setup`) driving Ghidra. That didn't work in this environment:
-
-- REA 6.3.0 needs Ghidra 12.1.x already installed (`GHIDRA_INSTALL_DIR`); it doesn't install Ghidra itself.
-- The session's network policy blocked Ghidra's release download from github.com (HTTP 403), and neither conda-forge nor SourceForge offered a reachable copy.
-- `rea-agents setup --dry-run` reports the only change it would make here is an MCP entry in `~/.claude.json`, and its doctor confirms no analysis engine is available. I left setup unapplied.
-
-Instead, the same questions were answered from the linked ELF: `objdump` disassembly for the call graph (catches every direct `bl`/`blx`, including into newlib and libgcc), DWARF `DW_TAG_inlined_subroutine` records for inlining, and indirect `blx rN` sites for callbacks. Ghidra would add decompiled views but nothing these questions need. Rerun with REA once Ghidra can be installed.
+Ghidra wasn't available, so the call graph comes from the linked ELF: `objdump` disassembly for calls (catches every direct `bl`/`blx`, including into newlib and libgcc), DWARF `DW_TAG_inlined_subroutine` records for inlining, and indirect `blx rN` sites for callbacks.
 
 ### What `do_frame` reaches
 
