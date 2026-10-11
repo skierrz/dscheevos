@@ -57,3 +57,34 @@ jobs:
           path: |
             dscheevos/module/build/dscheevos9.bin
             tests/module/out/module-test.nds
+  launcher:
+    runs-on: ubuntu-latest
+    container: skylyrac/blocksds:slim-v1.24.0
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch submodules
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git submodule update --init --depth 1 external/rcheevos external/mbedtls
+      - name: Build the launcher
+        run: make -C dscheevos/launcher
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dscheevos-launcher
+          path: dscheevos/launcher/dscheevos-launcher.nds
+  chainload:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch nds-bootloader
+        run: git submodule update --init --depth 1 external/nds-bootloader
+      - name: Build load.bin (devkitARM, libnds 2 / calico)
+        run: docker run --rm -v "$PWD:/src" -w /src devkitpro/devkitarm:20260610 make -C dscheevos/launcher/loader
+      - name: Build chainload test programs (BlocksDS)
+        run: docker run --rm -v "$PWD:/src" -w /src skylyrac/blocksds:slim-v1.24.0 make -C tests/chainload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chainload
+          path: |
+            dscheevos/launcher/loader/out/load.bin
+            tests/chainload/out/*.nds
