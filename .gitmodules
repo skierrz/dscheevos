@@ -11,3 +11,7 @@
 [submodule "external/nds-bootloader"]
 	path = external/nds-bootloader
 	url = https://github.com/devkitPro/nds-bootloader
+[submodule "external/nds-bootstrap"]
+	path = external/nds-bootstrap
+	url = https://github.com/skierrz/nds-bootstrap
+	branch = dscheevos
