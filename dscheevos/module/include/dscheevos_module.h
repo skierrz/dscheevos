@@ -21,6 +21,10 @@
  *                     overwritten by another IPC message loses nothing.
  *   header->halt()    replaces the game's OS_Halt: runs evaluation work,
  *                     then waits for an interrupt as OS_Halt did.
+ *   header->reset()   from nds-bootstrap's game reset (in-game menu, soft
+ *                     reset), IRQs off: achievement state resets in idle.
+ * The ARM7 also reads header->notify_count (kept in RAM, past the ARM9's
+ * cache) to signal unlocks with the Wi-Fi LED.
  */
 #ifndef DSCHEEVOS_MODULE_H
 #define DSCHEEVOS_MODULE_H
@@ -40,7 +44,7 @@
 #define DSCM_HEAP_END    (DSCM_IRQ_STACK_TOP - DSCM_IRQ_STACK_SIZE)
 
 #define DSCM_MAGIC   0x56435344u  /* "DSCV" */
-#define DSCM_VERSION 2u
+#define DSCM_VERSION 3u
 #define DSCM_SESSION_MAGIC 0x53435344u  /* "DSCS" */
 
 /* IPC sync value the ARM7 VBlank handler sends to request a snapshot. */
@@ -94,6 +98,11 @@ typedef struct dscm_status_t {
   volatile uint32_t pending_requests;
   volatile uint32_t error;            /* nonzero: DScheevos stopped (see dscm_error_t) */
   char game_title[48];
+  /* the core set, for the in-game menu */
+  volatile uint32_t achievements;
+  volatile uint32_t achievements_unlocked;
+  volatile uint32_t points;
+  volatile uint32_t points_unlocked;
 } dscm_status_t;
 
 enum {
@@ -134,7 +143,11 @@ typedef struct dscm_header_t {
   void (*shutdown)(void);
   dscm_status_t* status;
   dscm_net_slot_t* net;               /* DSCM_NET_SLOTS entries */
-  volatile uint32_t vblank_count;     /* written by the ARM7 VBlank hook */
+  volatile uint32_t vblank_count;     /* 0x24: written by the ARM7 VBlank hook */
+  void (*reset)(void);                /* 0x28 */
+  uint32_t reserved[5];
+  volatile uint32_t notify_count;     /* 0x40: unlocks so far; own cache line, cleaned to RAM */
+  uint32_t reserved2[7];
 } dscm_header_t;
 
 #define DSCM_HEADER ((dscm_header_t*)DSCM_BASE)

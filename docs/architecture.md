@@ -44,7 +44,8 @@ ARM9 idle: the game's idle thread calls OS_Halt (SDK wait for interrupt)
 - **A counter, not just the sync value.** Other nds-bootstrap messages share the IPC sync register, so the ARM7 also bumps a counter in the module header. The ARM9 reads it past the data cache; a frame whose IRQ was overwritten is still snapshotted on the next IPC IRQ. VBlanks that pass with no IPC IRQ at all (ARM9 interrupts off for a whole frame) are counted as `frames_missed`.
 - **What gets copied.** Not all 4 MB. DScheevos records the addresses rcheevos reads and copies those runs. Pointer chains are followed in the same VBlank pass so the target matches the pointer of that frame.
 - **Work in idle time only.** `OS_Halt` runs in NitroSDK's idle thread, the lowest priority. NitroSDK switches threads when an IRQ returns, so the moment a game thread wakes (VBlank, card, sound) it takes the CPU back and DScheevos' work pauses mid-frame. It never delays the game.
-- **Slots.** 60 snapshot slots (one second) let evaluation catch up after loading screens or other stretches with no idle time. In Kirby Super Star Ultra the boot sequence needed more than the first design's 2 slots. If all 60 fill, the frame is dropped and counted as `frames_dropped`; hit counts would then differ from RetroArch's, so this is reported.
+- **A queue, not a fixed pair of buffers.** Snapshots wait in a ring (up to 1024 frames, sharing 256 KB). Each frame takes only the bytes the set watches, typically a few hundred. Games can go seconds without idle time: Kirby Super Star Ultra gives none while it formats a new save. Evaluation catches up afterwards, in order. Only if the ring fills is a frame dropped and counted as `frames_dropped`. Hit counts would then differ from RetroArch's, so the in-game menu shows it.
+- **Resets.** nds-bootstrap's reset (the in-game menu's "Reset Game", or a soft reset) calls `header->reset`. Achievement state resets in the next idle pass, as an emulator calls `rc_client_reset`. Frames queued from before the reset are discarded.
 
 ## Memory
 
@@ -62,7 +63,13 @@ It runs through the cached `0x02xxxxxx` mirror; uncached access would make rchee
 
 ## Unlocks during play
 
-rc_client raises an unlock inside `do_frame` and hands DScheevos a request to send. DScheevos queues it; the network layer sends it from idle time, never inside an interrupt.
+rc_client raises an unlock inside `do_frame` and hands DScheevos a request to send. DScheevos queues it; the network layer sends it from idle time, never inside an interrupt. (Sending during play is still being built: see open question 1.)
+
+## What the player sees
+
+- **Unlock.** The DSi's Wi-Fi LED blinks three times. It changes nothing on screen or in the sound, so it can't get in the game's way. The ARM7 reads the module's unlock count at VBlank and drives the LED over I2C, as nds-bootstrap already does for its ROM-read LED. Not on 3DS.
+- **In-game menu (L+DOWN+SELECT).** It has an "Achievements..." page with the game, hardcore or softcore, unlocked/total achievements and points, the unlocks of this session, what is still waiting to be sent, and frames checked/skipped.
+- **Hardcore.** The in-game menu hides the RAM viewer and RAM dump, and the refresh-rate option, whose rates below 60 Hz act as slow motion. nds-bootstrap's front end skips user cheats. AP-fix patches, which games need to run, still apply. nds-bootstrap has no save states.
 
 ## Measured so far
 
