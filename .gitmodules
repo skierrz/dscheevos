@@ -2,3 +2,6 @@
 	path = tools/melonDS
 	url = https://github.com/skierrz/melonDS
 	branch = dscheevos
+[submodule "external/rcheevos"]
+	path = external/rcheevos
+	url = https://github.com/RetroAchievements/rcheevos
