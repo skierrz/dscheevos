@@ -128,6 +128,24 @@ int session_hash_rom(const char* rom_path, char hash[33])
   return ok;
 }
 
+/* RetroAchievements adds a warning achievement (ID 101000001 and up) when it
+ * doesn't recognise the client, and files hardcore unlocks as softcore. */
+static int hardcore_refused(rc_client_t* client)
+{
+  rc_client_achievement_list_t* list = rc_client_create_achievement_list(client,
+    RC_CLIENT_ACHIEVEMENT_CATEGORY_PROMOTED, RC_CLIENT_ACHIEVEMENT_LIST_GROUPING_LOCK_STATE);
+  uint32_t b, i;
+  int found = 0;
+  if (!list)
+    return 0;
+  for (b = 0; b < list->num_buckets && !found; b++)
+    for (i = 0; i < list->buckets[b].num_achievements; i++)
+      if (list->buckets[b].achievements[i]->id >= 101000001u)
+        found = 1;
+  rc_client_destroy_achievement_list(list);
+  return found;
+}
+
 int session_start(const dsc_settings_t* settings, const char* rom_path, const char* hash,
                   session_info_t* info, const char** error)
 {
@@ -170,6 +188,7 @@ int session_start(const dsc_settings_t* settings, const char* rom_path, const ch
     info->unlocked = summary.num_unlocked_achievements;
     info->points_total = summary.points_available;
     info->points_unlocked = summary.points_unlocked;
+    info->hardcore_refused = settings->hardcore && hardcore_refused(client);
   }
   rc_client_destroy(client);
 

@@ -95,6 +95,7 @@ static struct {
   dsc_config_t config;
   rc_client_t* client;
   volatile int active;         /* set last: dsc_vblank uses the table and chains only after it */
+  int hardcore_refused;
   chains_t chains;
 
   table_t tables[TABLES];
@@ -235,6 +236,8 @@ static void note_missing(uint32_t address)
   if (S.pending_new_count < S.config.max_addresses)
     S.pending_new[S.pending_new_count++] = address;
 }
+
+static int hardcore_refused(rc_client_t* client);
 
 /* ---- pointer chains ---- */
 
@@ -567,6 +570,8 @@ static void RC_CCONV event_handler(const rc_client_event_t* event, rc_client_t* 
   (void)client;
   switch (event->type) {
     case RC_CLIENT_EVENT_ACHIEVEMENT_TRIGGERED:
+      if (event->achievement->id >= 101000001u)
+        break;    /* the server's "unsupported emulator" warning, not an unlock (see hardcore_refused) */
       emit(DSC_EVENT_UNLOCK, event->achievement->id, event->achievement->points, event->achievement->title, event->achievement->description);
       break;
     case RC_CLIENT_EVENT_LEADERBOARD_SUBMITTED:
@@ -590,6 +595,7 @@ static void RC_CCONV game_loaded(int result, const char* error_message, rc_clien
   if (result == RC_OK) {
     const rc_client_game_t* game = rc_client_get_game_info(S.client);
     prepare_snapshots();
+    S.hardcore_refused = S.config.hardcore && hardcore_refused(S.client);
     S.active = 1;
     emit(DSC_EVENT_GAME_LOADED, game ? game->id : 0, 0, game ? game->title : NULL, NULL);
   }
@@ -853,6 +859,25 @@ void dsc_reset(void)
     rc_client_reset(S.client);
 }
 
+/* RetroAchievements adds a warning achievement (ID 101000001 and up) to the
+ * set when it doesn't recognise the client; it then files hardcore unlocks
+ * as softcore. rc_client never submits it and leaves it out of the totals. */
+static int hardcore_refused(rc_client_t* client)
+{
+  rc_client_achievement_list_t* list = rc_client_create_achievement_list(client,
+    RC_CLIENT_ACHIEVEMENT_CATEGORY_PROMOTED, RC_CLIENT_ACHIEVEMENT_LIST_GROUPING_LOCK_STATE);
+  uint32_t b, i;
+  int found = 0;
+  if (!list)
+    return 0;
+  for (b = 0; b < list->num_buckets && !found; b++)
+    for (i = 0; i < list->buckets[b].num_achievements; i++)
+      if (list->buckets[b].achievements[i]->id >= 101000001u)
+        found = 1;
+  rc_client_destroy_achievement_list(list);
+  return found;
+}
+
 void dsc_get_progress(dsc_progress_t* progress)
 {
   rc_client_user_game_summary_t summary;
@@ -864,6 +889,7 @@ void dsc_get_progress(dsc_progress_t* progress)
   progress->unlocked = summary.num_unlocked_achievements;
   progress->points = summary.points_available;
   progress->points_unlocked = summary.points_unlocked;
+  progress->hardcore_refused = S.hardcore_refused;
 }
 
 void dsc_shutdown(void)

@@ -46,7 +46,9 @@ Playing
 - Settings: press A on the game in TWiLight Menu++, then hold SELECT.
   You can turn achievements off, switch hardcore on or off, or log out.
 
-Hardcore (on by default) follows RetroAchievements' rules. While a
+Hardcore (on by default) follows RetroAchievements' rules. RetroAchievements
+hasn't approved DScheevos yet, so it counts your hardcore unlocks as softcore.
+The launcher and the in-game menu say so ("Rules on, RA counts as softcore"). While a
 hardcore session runs, nds-bootstrap's cheats, RAM viewer, RAM dump and
 the slow-motion refresh rates are off. RAM dump is off in softcore too,
 since the dump would hold your login token.

@@ -299,6 +299,8 @@ static void update_progress(void)
   dscm_g_status.achievements_unlocked = p.unlocked;
   dscm_g_status.points = p.points;
   dscm_g_status.points_unlocked = p.points_unlocked;
+  if (p.hardcore_refused)
+    dscm_g_status.hardcore = DSCM_HARDCORE_REFUSED;
   g_progress_stale = 0;
 }
 

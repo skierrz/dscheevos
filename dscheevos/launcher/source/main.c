@@ -185,8 +185,9 @@ int main(int argc, char** argv)
       snprintf(line, sizeof(line), "%u/%u achievements, %u/%u pts", info.unlocked, info.achievements,
                info.points_unlocked, info.points_total);
       ui_header(info.game_title, line);
-      ui_status("%s%s (%u pts)", settings.hardcore ? "\x1b[31;1mHARDCORE\x1b[39;0m  " : "Softcore  ",
-                info.display_name, info.score);
+      ui_status("%s%s (%u pts)%s", settings.hardcore ? "\x1b[31;1mHARDCORE\x1b[39;0m  " : "Softcore  ",
+                info.display_name, info.score,
+                !settings.hardcore ? "" : info.hardcore_refused ? "\n Rules on, RA counts as softcore" : "\n Not yet confirmed by RA");
       if (!session_write(&settings, rom_path, hash)) {
         if (ui_choose("Couldn't write the session file.", "Try again", "Play without achievements") == 'B')
           boot_game(0);

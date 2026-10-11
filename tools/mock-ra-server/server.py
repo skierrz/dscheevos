@@ -10,7 +10,13 @@ JSON-lines log, and state lives in memory, so restarting resets everything.
 
 --set takes an achievementsets response (as the real server returns it). The
 set is served for any hash; pass --hash to only accept one.
+
+Like the real server with a client it doesn't recognise, it adds the
+"unsupported emulator" warning achievement to the set and files hardcore
+unlocks as softcore (logged as counted_hardcore false). Pass --known-client
+for a client RetroAchievements has approved.
 """
+import copy
 import argparse
 import json
 import time
@@ -21,8 +27,9 @@ TOKEN = "MockToken"
 
 
 class State:
-    def __init__(self, set_json, only_hash, log_path):
-        self.set_json = set_json
+    def __init__(self, set_json, only_hash, log_path, known_client):
+        self.known_client = known_client
+        self.set_json = set_json if known_client else with_warning(set_json)
         self.only_hash = only_hash.lower() if only_hash else None
         self.log_path = log_path
         self.unlocks = {}      # achievement id -> (hardcore, time)
@@ -32,6 +39,19 @@ class State:
         event["t"] = round(time.time(), 3)
         with open(self.log_path, "a") as f:
             f.write(json.dumps(event) + "\n")
+
+
+# What retroachievements.org adds for a client it doesn't recognise (as in rcheevos' tests)
+WARNING = {"ID": 101000001, "Title": "Warning: Unsupported Emulator",
+           "Description": "Hardcore unlocks cannot be earned using this emulator.", "Flags": 3, "Points": 0,
+           "MemAddr": "1=1.300.", "Author": "", "BadgeName": "00000", "Created": 0, "Modified": 0}
+
+
+def with_warning(set_json):
+    s = copy.deepcopy(set_json)
+    if s.get("Sets"):
+        s["Sets"][0].setdefault("Achievements", []).append(dict(WARNING))
+    return s
 
 
 def ok(**fields):
@@ -70,8 +90,10 @@ def handle(state, p):
     if r == "awardachievement":
         aid = p.get("a", "0")
         hardcore = p.get("h") == "1"
-        state.log({"event": "unlock", "achievement": int(aid), "hardcore": hardcore, "validation": p.get("v")})
-        state.unlocks[aid] = (hardcore or state.unlocks.get(aid, (False, 0))[0], int(time.time()))
+        counted = hardcore and state.known_client
+        state.log({"event": "unlock", "achievement": int(aid), "hardcore": hardcore, "counted_hardcore": counted,
+                   "validation": p.get("v")})
+        state.unlocks[aid] = (counted or state.unlocks.get(aid, (False, 0))[0], int(time.time()))
         return ok(Score=0, SoftcoreScore=0, AchievementID=int(aid), AchievementsRemaining=0)
 
     if r == "submitlbentry":
@@ -93,12 +115,14 @@ def main():
     ap.add_argument("--set", required=True, help="achievementsets JSON response")
     ap.add_argument("--hash", help="only serve the set for this ROM hash")
     ap.add_argument("--log", default="events.jsonl")
+    ap.add_argument("--known-client", action="store_true",
+                    help="act as for an approved client: no warning achievement, hardcore unlocks count")
     ap.add_argument("--tls-cert", help="serve HTTPS with this certificate (PEM, chain first)")
     ap.add_argument("--tls-key", help="key for --tls-cert")
     args = ap.parse_args()
 
     with open(args.set) as f:
-        state = State(json.load(f), args.hash, args.log)
+        state = State(json.load(f), args.hash, args.log, args.known_client)
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"   # keep-alive, like the real server

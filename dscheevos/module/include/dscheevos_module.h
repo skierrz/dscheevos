@@ -86,9 +86,11 @@ typedef struct dscm_unlock_t {
   char title[48];
 } dscm_unlock_t;
 
+#define DSCM_HARDCORE_REFUSED 2
+
 typedef struct dscm_status_t {
   volatile uint32_t active;          /* set loaded, frames being evaluated */
-  volatile uint32_t hardcore;
+  volatile uint32_t hardcore;        /* 0 softcore, 1 hardcore, DSCM_HARDCORE_REFUSED: hardcore rules, but the server files unlocks as softcore */
   volatile uint32_t frames_snapshotted;
   volatile uint32_t frames_evaluated;
   volatile uint32_t frames_dropped;   /* snapshot taken, no slot free to evaluate it */

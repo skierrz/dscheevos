@@ -14,6 +14,7 @@ typedef struct session_info_t {
   unsigned points_unlocked;
   char display_name[32];
   unsigned score;
+  int hardcore_refused;   /* the server sent its "unsupported emulator" warning: hardcore unlocks count as softcore */
 } session_info_t;
 
 enum {

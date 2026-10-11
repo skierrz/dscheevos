@@ -34,15 +34,21 @@ static void put32(uint32_t a, uint32_t v) { memcpy(&ram[a], &v, 4); }
 static uint32_t millis(void) { return now_ms; }
 
 /* ---- fake server ---- */
-static const char* set_json =
-  "{\"Success\":true,\"GameId\":77,\"Title\":\"Test Game\",\"ConsoleId\":18,\"ImageIconUrl\":\"\","
-  "\"RichPresenceGameId\":77,\"RichPresencePatch\":\"\",\"Sets\":[{\"AchievementSetId\":7,\"GameId\":77,"
+#define SET_HEAD \
+  "{\"Success\":true,\"GameId\":77,\"Title\":\"Test Game\",\"ConsoleId\":18,\"ImageIconUrl\":\"\"," \
+  "\"RichPresenceGameId\":77,\"RichPresencePatch\":\"\",\"Sets\":[{\"AchievementSetId\":7,\"GameId\":77," \
   "\"Title\":null,\"Type\":\"core\",\"ImageIconUrl\":\"\",\"Achievements\":["
-  "{\"ID\":1001,\"Title\":\"Byte\",\"Description\":\"byte 0x10 is 5\",\"Flags\":3,\"Points\":5,\"MemAddr\":\"0xH000010=5\",\"Author\":\"t\",\"BadgeName\":\"1\",\"Created\":1,\"Modified\":1},"
-  "{\"ID\":1002,\"Title\":\"Pointer\",\"Description\":\"pointer target +4 is 7\",\"Flags\":3,\"Points\":10,\"MemAddr\":\"I:0xX000100&33554431_0xH000004=7\",\"Author\":\"t\",\"BadgeName\":\"2\",\"Created\":1,\"Modified\":1},"
-  "{\"ID\":1003,\"Title\":\"DTCM\",\"Description\":\"DTCM byte 0x10 is 9\",\"Flags\":3,\"Points\":25,\"MemAddr\":\"0xH1000010=9\",\"Author\":\"t\",\"BadgeName\":\"3\",\"Created\":1,\"Modified\":1},"
+#define SET_ACHIEVEMENTS \
+"{\"ID\":1001,\"Title\":\"Byte\",\"Description\":\"byte 0x10 is 5\",\"Flags\":3,\"Points\":5,\"MemAddr\":\"0xH000010=5\",\"Author\":\"t\",\"BadgeName\":\"1\",\"Created\":1,\"Modified\":1}," \
+  "{\"ID\":1002,\"Title\":\"Pointer\",\"Description\":\"pointer target +4 is 7\",\"Flags\":3,\"Points\":10,\"MemAddr\":\"I:0xX000100&33554431_0xH000004=7\",\"Author\":\"t\",\"BadgeName\":\"2\",\"Created\":1,\"Modified\":1}," \
+  "{\"ID\":1003,\"Title\":\"DTCM\",\"Description\":\"DTCM byte 0x10 is 9\",\"Flags\":3,\"Points\":25,\"MemAddr\":\"0xH1000010=9\",\"Author\":\"t\",\"BadgeName\":\"3\",\"Created\":1,\"Modified\":1}," \
   "{\"ID\":1004,\"Title\":\"Steady\",\"Description\":\"byte 0x20 is 3 for 100 frames\",\"Flags\":3,\"Points\":1,\"MemAddr\":\"0xH000020=3.100.\",\"Author\":\"t\",\"BadgeName\":\"4\",\"Created\":1,\"Modified\":1}"
-  "],\"Leaderboards\":[]}]}";
+#define SET_TAIL "],\"Leaderboards\":[]}]}"
+/* what retroachievements.org adds for a client it doesn't recognise */
+#define SET_WARNING ",{\"ID\":101000001,\"Title\":\"Warning: Unsupported Emulator\",\"Description\":\"Hardcore unlocks cannot be earned using this emulator.\",\"Flags\":3,\"Points\":0,\"MemAddr\":\"1=1.300.\",\"Author\":\"\",\"BadgeName\":\"00000\",\"Created\":1,\"Modified\":1}"
+static const char* set_json = SET_HEAD SET_ACHIEVEMENTS SET_TAIL;
+static const char* set_json_warning = SET_HEAD SET_ACHIEVEMENTS SET_WARNING SET_TAIL;
+static int serve_warning;
 
 static int server_down;
 static int awards[8], award_hardcore[8], award_count;
@@ -80,7 +86,7 @@ static void http_send(const dsc_http_request_t* req)
   }
   param(post, "r", r, sizeof r);
   if (!strcmp(r, "login2")) body = "{\"Success\":true,\"User\":\"tester\",\"Token\":\"tok\",\"Score\":0,\"Messages\":0}";
-  else if (!strcmp(r, "achievementsets")) body = set_json;
+  else if (!strcmp(r, "achievementsets")) body = serve_warning ? set_json_warning : set_json;
   else if (!strcmp(r, "startsession")) {
     hardcore_session = param(post, "h", v, sizeof v) && !strcmp(v, "1");
     body = "{\"Success\":true,\"Unlocks\":[],\"HardcoreUnlocks\":[]}";
@@ -367,6 +373,31 @@ static void test_unchanged_frames_queue_as_repeats(void)
   dsc_shutdown();
 }
 
+static void test_unsupported_client_warning(void)
+{
+  dsc_progress_t p;
+  start(1);
+  dsc_get_progress(&p);
+  CHECK(!p.hardcore_refused);    /* no warning in the set */
+  dsc_shutdown();
+
+  serve_warning = 1;
+  start(1);
+  dsc_get_progress(&p);
+  CHECK(p.hardcore_refused);     /* the server will file hardcore unlocks as softcore */
+  CHECK(p.achievements == 4);    /* the warning isn't one of the game's achievements */
+  frames(310);                   /* its condition is true for 300 frames */
+  CHECK(unlock_count == 0);      /* never shown as an unlock ... */
+  CHECK(award_count == 0);       /* ... nor sent */
+  dsc_shutdown();
+
+  start(0);
+  dsc_get_progress(&p);
+  CHECK(!p.hardcore_refused);    /* softcore: nothing to refuse */
+  serve_warning = 0;
+  dsc_shutdown();
+}
+
 static void test_reset_and_progress(void)
 {
   dsc_progress_t p;
@@ -422,6 +453,7 @@ int main(void)
   RUN(test_long_stretch_without_idle_is_queued);
   RUN(test_snapshot_arena_wraps);
   RUN(test_unchanged_frames_queue_as_repeats);
+  RUN(test_unsupported_client_warning);
   RUN(test_reset_and_progress);
   RUN(test_unlock_retried_when_server_down);
   printf("%d checks, %d failed\n", checks, failures);

@@ -2,7 +2,13 @@
 
 DScheevos has to meet every point of RetroAchievements' [Hardcore Compliance Requirements](https://docs.retroachievements.org/general/hardcore-compliance-requirements.html) before RA will count its hardcore unlocks. This page goes through the list point by point: what DScheevos does today, where in the code, and what is still missing.
 
-Until RA approves the client, the server files every unlock as softcore, even with `h=1`. Another nds-bootstrap fork measured this on a real account ([nds-bootstrap-ra v0.1.0 notes](https://github.com/Bakkerrrs/retroachievements-ds-on-3ds/blob/main/RELEASE-v0.1.0.md)). No code change gets around it; approval does.
+Until RA approves the client, the server files every unlock as softcore, even with `h=1`: "If a User-Agent header is not provided, not recognized," the server will "turn hardcore unlock requests into softcore unlock requests", and clients must "contact RAdmin" to be "validated for hardcore support" ([rcheevos rc_client integration guide](https://github.com/RetroAchievements/rcheevos/wiki/rc_client-integration)). Another nds-bootstrap fork measured this on a real account ([nds-bootstrap-ra v0.1.0 notes](https://github.com/Bakkerrrs/retroachievements-ds-on-3ds/blob/main/RELEASE-v0.1.0.md)). No code change gets around it; approval does.
+
+**How DScheevos shows this.** The server marks an unrecognised client by adding a warning achievement (ID 101000001 and up, "Warning: Unsupported Emulator") to the set. The launcher and the module look for it when the set loads. Hardcore then shows as "Rules on, RA counts as softcore" in the launcher and the in-game menu; without the warning it shows "Not yet confirmed by RA", since we haven't yet seen the server count one of our hardcore unlocks. The hardcore lockouts stay on either way. The warning is never shown or counted as an unlock. The mock server (`tools/mock-ra-server`) adds the warning and files hardcore unlocks as softcore unless run with `--known-client`.
+
+**Testing against the real server** (needs a test account):
+- rc_client's spectator mode (`rc_client_set_spectator_mode_enabled`) evaluates and shows unlocks but sends none: use it for bench runs on a real account.
+- To check how the server files an unlock, earn one for real, then read the account's game page; reset the game's progress there afterwards (RA's FAQ: hover the percentage on the game page, or use the settings page; achievements can also be reset one by one).
 
 Status: **done**, **partial**, **missing**, or **n/a** (the feature doesn't exist on DS hardware or in nds-bootstrap).
 
@@ -74,6 +80,12 @@ Status: **done**, **partial**, **missing**, or **n/a** (the feature doesn't exis
 | Undisclosed use of another client's user agent | never happened (C) |
 | Non-commercial cores with commercialization | none shipped, no commercialization |
 | Privacy policy with placeholders or contradictions | policy still to write (F) |
+
+## Targets
+
+1. **DSi / DSi XL** (DS games in DS mode): the first target.
+2. **3DS**: second. There, the DS picture passes through TwlBg (the 3DS program that scales it), which can be patched (TWPatch does). Drawing the overlay there touches nothing the game uses and has room for badge images, so the 3DS version can look closer to RetroArch's.
+3. **DS via flashcard** (B4DS mode): later, and a separate design rather than a setting: 4 MB RAM and no DSi extra RAM for the module, no WPA2 Wi-Fi, and nds-bootstrap's DScheevos hook refuses flashcards today (`arm9/source/dscheevos_session.c`).
 
 ## What's left, in order
 

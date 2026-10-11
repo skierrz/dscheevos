@@ -94,6 +94,7 @@ typedef struct dsc_progress_t {
   uint32_t unlocked;
   uint32_t points;
   uint32_t points_unlocked;
+  int hardcore_refused;          /* the server sent its "unsupported emulator" warning: it files hardcore unlocks as softcore */
 } dsc_progress_t;
 
 /* Set up the core. Returns 0 on success. */
