@@ -29,7 +29,7 @@ The dscheevos branches are stacked: #12 must merge first (or rebase the stack on
 5. Private files, never in git. Put them in one folder (e.g. `~/dsi-private`) and point `DSI_FILES` at it: `biosnds7.bin`, `biosnds9.bin`, `biosdsi7.bin`, `biosdsi9.bin`, `dsfirmware.bin`, `dsifirmware.bin`, `dsinand.bin` (your own dumps). ROMs: Kirby Super Star Ultra (USA), Pokemon Platinum (USA, Rev 1), New Super Mario Bros. (USA) from your Drive folder. TWiLight Menu++ downloads itself (`tests/twilight/get-twilight.sh`).
 
 Checks that should pass before you change anything:
-- `make -C dscheevos/core test`: 130 checks
+- `make -C dscheevos/core test`: 1763 checks
 - `tests/games/run.sh` (homebrew ROMs via `tests/games/fetch_roms.py`): all pass, idle every frame and every 600 frames
 - `tests/twilight/run.sh tests/bootstrap/sets/pipeline.json 4000 --expect 9901 --never 9902` with `DSI_FILES`, `ROM`, `BOOTSTRAP` (nds-bootstrap built from `external/nds-bootstrap`), `RUNNER`: RESULT PASS, `'hardcore': 2`
 
@@ -72,7 +72,7 @@ release/package.sh "$PWD/out/dscheevos" "$(git describe --tags --always)"
 
 | Check | Result |
 |---|---|
-| `make -C dscheevos/core test` | 130 checks, 0 failed |
+| `make -C dscheevos/core test` | 1763 checks, 0 failed |
 | `make -C dscheevos/module/tests test`, session layout (as in `test.yml`) | 54 checks, 0 failed; layout OK |
 | `tests/games/run.sh` | ALL GAME TESTS PASSED (2m40s) |
 | module test ROM: `$RUNNER --mode dsi --rom tests/module/out/module-test.nds --bios-dir "$DSI_FILES" --nand COPY --frames 3000 --until RESULT` | RESULT PASS |
@@ -94,17 +94,18 @@ Done on `features` (Oct 2026): offline queue, full achievement list, rich presen
 1. **Notices drawn during play** (compliance A and E): needs the owner's decision first; the LED cues and the placard are the safe part, already built. The LED cue style (dark pulses on a lit LED) is not signed off yet. `docs/overlay-research.md` has the options, evidence from melonDS experiments, the decisions, the questions for RetroAchievements and the hardware tests. The module already produces the notices (`dscm_notices_t`); only the display is missing.
 2. **Ask RA** (RAdmin) about approving a hardware client: the questions are in `docs/overlay-research.md`. Their FAQ says manual unlocks aren't given for "original hardware", which hints at how they see hardware clients today.
 3. **Bench run on a real test account** in melonDS: `tests/real/run.sh` (spectator by default; `tests/real/README.md`).
-4. **VBlank cost**: about 11.6k instructions per frame for the typical synthetic set, 17k when a queued frame is compared for a repeat (qemu count, `tests/perf`), down from 120k/133k. The module gives the core `platform.memory_map`, so the copy reads main RAM and DTCM directly. Next: melonDS's cache model, since each snapshot still touches hundreds of cache lines.
+4. **VBlank cost**: the snapshot is now taken when the game halts (idle time, IRQs masked in short chunks); the VBlank IRQ only queues it, about 60 instructions (qemu, `tests/perf`; it was 120k). melonDS A/B: lag equal to stock in Kirby and Pokemon (`tests/perf/AB.md`). Still open: evaluation of the synthetic typical set needs about a frame of CPU per frame, so busy games drop frames (Phase 4, evaluation speed); real sets may be lighter. Next: evaluation speed, then a hardware timing run.
 5. **Hardware test** with the DSi: watch the router's client list at boot, +5, +15 and +30 minutes into a game (another fork lost Wi-Fi seconds after boot on 3DS); open the in-game menu after unlocks with the server unreachable and check `pending.bin` is sent at the next start; the overlay hardware tests in `docs/overlay-research.md`.
-6. **First public release**: starts RA's 6-month clock.
+6. **rcheevos bug to report upstream** (v12.5.0 and master): `rc_client_unload_game` clears `client->game` and then raises a pending mastery event, which dereferences it. Mastery is pending from the server's answer to the last unlock until the next frame, so quitting right then crashed. The core marks a pending mastery as shown before unloading (`dsc_shutdown`); `test_shutdown_right_after_mastery` covers it.
+7. **First public release**: starts RA's 6-month clock.
 
-## End-to-end checks on `features`
+## End-to-end checks on `perf`
 
 All with the env file sourced, one at a time, WORK deleted after each. Results from the last run (Oct 2026): all pass.
 
 | Check | Command |
 |---|---|
-| Core | `make -C dscheevos/core test` (515 checks) |
+| Core | `make -C dscheevos/core test` (1763 checks: every snapshot test twice, copy in the IRQ and at halt) |
 | Module test ROM | as in "Local setup"; checks list, notices, journal |
 | Offline queue | `MOCK_ARGS="--fail-awards --known-client" SCRIPT=<open and close the menu at 4500/4800: lines "4500 0x284 20", "4800 0x2 5"> tests/launcher/run.sh tests/bootstrap/sets/live.json 5200 --expect-journal-unsent 4`, then with the same WORK: `MOCK_ARGS=--known-client tests/launcher/run.sh tests/bootstrap/sets/live.json 2600` (launcher.log: "pending: sent 4 unlocks"; no unlock twice; `offset` > 0 for the earlier unlocks: melonDS runs faster than real time, so the last ones can be stamped ahead of the host clock and are sent with 0) |
 | Still offline at the next start | the first run twice, then the normal one: the second sets the old journal aside in `unsent/`, the third sends all 8 |

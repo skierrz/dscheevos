@@ -54,6 +54,7 @@ typedef struct shim_stats_t {
   uint32_t lines_idle_max, lines_busy_max, lines_busy_sum;
   uint32_t paused_ntr_wifi;        /* VBlanks skipped: the game was using its NTR (DS) Wi-Fi */
   uint32_t ntr_powcnt2, ntr_power_us;  /* last seen POWCNT2 and W_POWER_US (diagnostics) */
+  uint32_t paused_card_read;       /* VBlanks skipped: the card engine had an SD read in flight */
 } shim_stats_t;
 
 typedef struct shim_shared_t {

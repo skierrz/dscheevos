@@ -6,6 +6,12 @@
  *
  *   dsc_vblank()  at VBlank, in interrupt context: copies the game RAM the
  *                 achievement set needs into a snapshot. Short and bounded.
+ *                 With capture_at_halt, the copy is made by dsc_capture()
+ *                 when the game halts, and dsc_vblank() only queues it.
+ *   dsc_capture() (capture_at_halt only) when the game has finished its
+ *                 frame and halts, with interrupts disabled: copies the game
+ *                 RAM for the next dsc_vblank(). Stops early if
+ *                 interrupt_pending() says an interrupt is waiting.
  *   dsc_idle()    when the game is idle: evaluates waiting snapshots with
  *                 rcheevos and finishes server replies. Can be interrupted.
  *   dsc_http_done()  when a request the core asked for has an answer.
@@ -94,6 +100,11 @@ typedef struct dsc_platform_t {
    * fails. May be NULL: the snapshot then reads through read_memory(),
    * which costs more. */
   void (*memory_map)(const uint8_t** main_ram, const uint8_t** dtcm);
+  /* capture_at_halt: polled every few words while dsc_capture() copies with
+   * interrupts masked. Lets any waiting interrupt run (dsc_vblank() may run
+   * then) and returns nonzero if the copy must start over: game code may
+   * have run meanwhile. May be NULL. */
+  int (*interrupt_pending)(void);
 } dsc_platform_t;
 
 typedef struct dsc_config_t {
@@ -105,6 +116,8 @@ typedef struct dsc_config_t {
   uint32_t snapshot_slots;       /* most frames that can wait for evaluation; 0 = 2, max 1024 */
   uint32_t snapshot_bytes;       /* memory for queued snapshots; 0 = snapshot_slots * max_addresses * 4 */
   int spectator;                 /* 1: rc_client spectator mode, nothing is sent or journaled */
+  int capture_at_halt;           /* 1: dsc_capture() takes the snapshot, dsc_vblank() queues it */
+  uint32_t idle_max_frames;      /* frames one dsc_idle() call evaluates at most; 0 = all queued when it starts */
 } dsc_config_t;
 
 typedef struct dsc_stats_t {
@@ -118,6 +131,10 @@ typedef struct dsc_stats_t {
   uint32_t pending_requests;
   uint32_t journal_lost;         /* unsent journal entries overwritten because it was full */
   uint32_t list_builds;          /* achievement lists published */
+  /* capture_at_halt */
+  uint32_t captures;             /* dsc_capture() calls that finished a copy */
+  uint32_t captures_stopped;     /* ... that stopped for an interrupt */
+  uint32_t frames_stale;         /* VBlanks with no capture since the one before: evaluated with the last copy */
 } dsc_stats_t;
 
 /* Progress in the loaded game's core set (for menus). */
@@ -141,6 +158,11 @@ int dsc_is_active(void);
 
 /* VBlank, interrupt context. */
 void dsc_vblank(void);
+
+/* capture_at_halt: the game halted, interrupts disabled. Returns 0 if the
+ * snapshot is ready for the next dsc_vblank(), 1 if it stopped for an
+ * interrupt (call again at the next halt), -1 if nothing was taken. */
+int dsc_capture(void);
 
 /* Idle time. Returns the number of frames evaluated. */
 int dsc_idle(void);

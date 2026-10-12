@@ -2,10 +2,12 @@
 #   python3 report.py <out dir> <sets> [--gate limits.txt]
 import bisect, collections, os, subprocess, sys
 
-PHASES = [("mark_vblank", "dsc_vblank, queue empty"),
+PHASES = [("mark_capture", "dsc_capture (at halt)"),
+          ("mark_vblank", "dsc_vblank, queue empty"),
           ("mark_vblank_queued", "dsc_vblank, frame queued"),
           ("mark_idle", "dsc_idle, 1 frame")]
 VBLANK = ("mark_vblank", "mark_vblank_queued")
+CAPTURE = ("mark_capture",)
 
 
 def functions(elf):
@@ -61,12 +63,15 @@ def main():
         measured[(s, "vblank_max")] = max(vb)
         measured[(s, "vblank_median")] = median(vb)
         measured[(s, "idle_median")] = median(calls["mark_idle"]) if calls.get("mark_idle") else 0
+        cap = calls.get("mark_capture") or [0]
+        measured[(s, "capture_max")] = max(cap)
+        measured[(s, "capture_median")] = median(cap)
         fn = functions(os.path.join(out, "perf-%s.elf" % s))
         agg = collections.Counter()
         for (ph, pc), n in blocks.items():
-            if ph in VBLANK:
+            if ph in CAPTURE:
                 agg[fn(pc)] += n
-        measured[(s, "breakdown")] = (agg, len(vb))
+        measured[(s, "breakdown")] = (agg, len(cap))
     print()
     print("%-8s %-26s %6s %10s %10s" % ("set", "call", "calls", "median", "max"))
     for r in rows:
@@ -74,7 +79,7 @@ def main():
     for s in sets:
         agg, n = measured[(s, "breakdown")]
         total = sum(agg.values()) or 1
-        print("\ndsc_vblank by function, %s set (mean per call, own instructions):" % s)
+        print("\ndsc_capture by function, %s set (mean per call, own instructions):" % s)
         top = agg.most_common(12)
         for name, v in top:
             print("  %8d  %5.1f%%  %s" % (v // n, 100.0 * v / total, name))

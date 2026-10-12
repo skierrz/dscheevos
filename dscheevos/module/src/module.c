@@ -89,6 +89,38 @@ static void memory_map(const uint8_t** main_ram, const uint8_t** dtcm)
   *dtcm = g_dtcm ? (const uint8_t*)g_dtcm : NULL;
 }
 
+extern uint32_t dscm_irq_off(void);
+extern void dscm_irq_restore(uint32_t cpsr);
+extern void dscm_wfi(void);
+
+/* dsc_capture copies with IRQs masked and calls this every few words. IF
+ * latches requests while CPSR.I masks them: a waiting IRQ runs here at
+ * once, so the game sees at most a few words' delay, and the copy goes on.
+ * If two lines or more went by, a game thread probably ran (the IRQ woke
+ * it): start over. The core also starts over if the IRQ was a VBlank. */
+#define REG_IE (*(volatile uint32_t*)0x04000210)
+#define REG_IF (*(volatile uint32_t*)0x04000214)
+static uint32_t g_capture_cpsr;   /* CPSR with IRQs on, from the caller of capture() */
+static int interrupt_pending(void)
+{
+  uint32_t before;
+  if (!(REG_IE & REG_IF))
+    return 0;
+  before = REG_VCOUNT;
+  dscm_irq_restore(g_capture_cpsr);
+  dscm_irq_off();
+  return lines_between(before, REG_VCOUNT) >= 2;
+}
+
+/* A snapshot when the game halts. Returns with IRQs still masked, and the
+ * CPSR to put back: the caller may halt first. */
+static uint32_t capture(void)
+{
+  g_capture_cpsr = dscm_irq_off();
+  dsc_capture();
+  return g_capture_cpsr;
+}
+
 static uint32_t millis(void)
 {
   return (uint32_t)(((uint64_t)g_frames * 1000u) / 60u);
@@ -294,6 +326,7 @@ int module_init(const dscm_boot_t* boot)
   memset(&platform, 0, sizeof(platform));
   platform.read_memory = read_memory;
   platform.memory_map = memory_map;
+  platform.interrupt_pending = interrupt_pending;
   platform.millis = millis;
   platform.http_send = http_send;
   platform.event = on_event;
@@ -312,6 +345,8 @@ int module_init(const dscm_boot_t* boot)
   config.max_addresses = 4096;
   config.snapshot_slots = 1024;          /* ~17 s of frames with no idle time (loading, save writes) */
   config.snapshot_bytes = 256 * 1024;    /* shared by queued frames: a few hundred bytes each, typically */
+  config.capture_at_halt = 1;            /* snapshot when the game halts, not in its VBlank interrupt */
+  config.idle_max_frames = 4;            /* then the network and a fresh snapshot get their turn */
 
   if (dsc_init(&platform, &config) != 0) {
     dscm_g_status.error = DSCM_ERROR_NO_MEMORY;
@@ -374,7 +409,6 @@ int module_init(const dscm_boot_t* boot)
 /* Called on every ARM9 IPC sync IRQ; acts once per ARM7 VBlank. */
 void module_vblank(void)
 {
-  dsc_stats_t s;
   uint32_t start = REG_VCOUNT;
   uint32_t count = dscm_vblank_count_read();
   uint32_t passed = count - g_last_vblank;
@@ -389,10 +423,7 @@ void module_vblank(void)
     dscm_g_status.frames_missed += passed - 1;
   if (!g_boot.dtcm_base)
     g_dtcm = dscm_dtcm_base();
-  dsc_vblank();
-  dsc_get_stats(&s);
-  dscm_g_status.frames_snapshotted = s.frames_snapshotted;
-  dscm_g_status.frames_dropped = s.frames_dropped;
+  dsc_vblank();   /* the counters reach the status in idle time (publish_stats) */
 
   /* Idle time of the frame that ends here. A pass still running was
    * preempted by this IRQ: count it up to here; the game runs next. */
@@ -419,6 +450,27 @@ void module_vblank(void)
     dscm_g_status.irq_lines_max = lines;
   dscm_g_status.irq_lines_total += lines;
   dscm_g_status.timed_frames++;
+}
+
+/* Frames queued and not evaluated yet (dropped ones were never queued). */
+static uint32_t backlog(void)
+{
+  dsc_stats_t s;
+  dsc_get_stats(&s);
+  return s.frames_snapshotted - s.frames_evaluated - s.frames_discarded;
+}
+
+/* The core's counters for the status (and the in-game menu). */
+static void publish_stats(void)
+{
+  dsc_stats_t s;
+  dsc_get_stats(&s);
+  dscm_g_status.frames_snapshotted = s.frames_snapshotted;
+  dscm_g_status.frames_dropped = s.frames_dropped;
+  dscm_g_status.frames_evaluated = s.frames_evaluated;
+  dscm_g_status.captures = s.captures;
+  dscm_g_status.captures_stopped = s.captures_stopped;
+  dscm_g_status.frames_stale = s.frames_stale;
 }
 
 static void update_progress(void)
@@ -451,14 +503,21 @@ void module_reset(void)
  * Returns nonzero when the pass took a scanline or more: an IRQ may have come
  * and gone meanwhile, so halt_entry returns to the game's loop instead of
  * waiting for the next one. */
-int module_idle(void)
+int module_idle(int idle_loop)
 {
-  dsc_stats_t s;
   uint32_t start, end, used;
 
   start = REG_VCOUNT;
   if (!g_initialized || !dscm_g_status.active)
     return 0;
+  /* A game thread that halts until its IRQ comes (while (!flag) OS_Halt())
+   * is waiting for its own frame: any work here would delay the game. Only
+   * the idle thread's loop is free time. */
+  if (!idle_loop) {
+    dscm_g_status.halts_other++;
+    return 0;
+  }
+  dscm_g_status.halts_idle++;
   g_idle_start = start;
   g_idle_open = 1;
   g_idle_ran = 1;
@@ -471,15 +530,16 @@ int module_idle(void)
   if (g_progress_stale)
     update_progress();
 
-  dsc_get_stats(&s);
-  if (s.frames_snapshotted != s.frames_evaluated + s.frames_dropped + s.frames_discarded) {
+  if (backlog()) {
+    /* Evaluation may take the rest of the frame: copy the memory the game
+     * halted with first, so the next VBlank has it even if the copy before
+     * the halt below comes too late. */
+    dscm_irq_restore(capture());
     start = REG_VCOUNT;
     dsc_idle();
     end = REG_VCOUNT;
     used = lines_between(start, end);
     dscm_g_status.eval_lines = (dscm_g_status.eval_lines * 7 + used * 16) / 8;
-    dsc_get_stats(&s);
-    dscm_g_status.frames_evaluated = s.frames_evaluated;
   }
   else {
     dsc_idle();   /* rcheevos' own timers: retries, pings */
@@ -496,12 +556,27 @@ int module_idle(void)
     dscm_g_status.net_rejoins = link_rejoins();
     poll_network();
   }
-  g_idle_ran = 1;
-  start = g_idle_start;
-  if (!dscm_take(&g_idle_open))
-    return 1;   /* a VBlank came meanwhile and counted the pass */
-  g_idle_lines += lines_since(start);
-  return REG_VCOUNT != start;
+  /* Last, the snapshot and the halt, with IRQs masked from one to the
+   * other: the idle thread runs only when every game thread is blocked, so
+   * this is the game's memory when it stopped, and no game code can run
+   * between the copy and the halt. The CPU wakes from the halt when an IRQ
+   * is requested (IE & IF), masked or not; the IRQ is taken when the mask
+   * is lifted. The copy stops at once if an IRQ is already waiting, and the
+   * halt then returns at once too.
+   * It halts even with frames still waiting: the next IRQ brings the next
+   * pass. In melonDS, an idle loop that never halted stalled Kirby Super
+   * Star Ultra's streaming for a minute (tests/perf/AB.md). */
+  {
+    uint32_t cpsr = capture();
+    publish_stats();
+    g_idle_ran = 1;
+    start = g_idle_start;
+    if (dscm_take(&g_idle_open))
+      g_idle_lines += lines_since(start);   /* else a VBlank came meanwhile and counted the pass */
+    dscm_wfi();
+    dscm_irq_restore(cpsr);
+    return 1;   /* halted here */
+  }
 }
 
 void module_shutdown(void)

@@ -105,3 +105,21 @@ Same setup, module with the copy program and `platform.memory_map` (reads main R
 | ARM9 busy | 59.5% | 99.9% | 9.0% | 98.9% |
 
 The snapshot is about 12k instructions (qemu) but about 108k cycles here: with the cache model on, the scattered reads miss the data cache, so memory latency now dominates. It is still about 100 times the 0.1% budget, inside the game's interrupt. Kirby's lag matches stock; Pokemon's is 5 intervals over (it was 28 before). The next step takes the copy out of the interrupt (snapshot when the game halts).
+
+### Snapshot when the game halts (perf branch, Phase 1)
+
+The module copies at the halt (`dsc_capture`, IRQs masked in chunks of 16 words or chain steps, letting any waiting IRQ run in between) and the VBlank IRQ only queues the copy. Each idle pass evaluates at most 4 frames, then the network, then copies again and halts. Same setup as above, network live (hardcore).
+
+| | Kirby off | Kirby on | Pokemon off | Pokemon on |
+|---|---|---|---|---|
+| lag intervals | 1808 (30.13%) | 1798 (29.97%) | 49 (0.82%) | 49 (0.82%) |
+| longest lag run | 7 | 7 | 20 | 20 |
+| module VBlank call, avg / max | 0 | 2,752 / 4,066 (0.25% / 0.36%) | 0 | 3,081 / 3,882 (0.28% / 0.35%) |
+| unlocks the mock server got | | 5 | | 2 |
+
+Lag equals stock in both. The VBlank call is about 75 instructions plus the module's self-timing; with melonDS's flat cache timing (`CACHE_MODEL=0`) it is 467 cycles (0.04%), so the rest is cache misses on the cold IRQ path. Evaluation of this synthetic set still needs about a frame of CPU per frame: Kirby evaluated 1812 of 2652 queued frames and dropped 3399, Pokemon dropped 412 (evaluation speed is the next phase).
+
+Found on the way, both fixed:
+
+- **An idle loop that never halts stalls Kirby.** With frames queued, returning to the idle loop without halting kept the ARM9 busy and Kirby's attract demo stopped streaming. The module now halts after every pass.
+- **Wi-Fi next to a ROM read hangs Kirby.** Once the network got idle time, the ARM7 SDIO shim ran while the card engine had an SD read in flight; the reads failed (`sdmmc_init` retries) and the game hung at the same point every run. With the cache model off, or the network off, it didn't. nds-bootstrap now skips the shim's poll while `readOngoing` (`ring->stats.paused_card_read`). Hardware may differ, but keeping the two apart is safe either way.

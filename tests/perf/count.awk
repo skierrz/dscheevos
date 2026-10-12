@@ -6,7 +6,7 @@
 #
 #   awk -v map=<file> -v marks=<file> -f count.awk <log>
 #   map:   "<hex address> a|t" per ARM/Thumb mapping symbol, sorted
-#   marks: "<hex address> <name>" for mark_vblank, mark_vblank_queued,
+#   marks: "<hex address> <name>" for mark_vblank, mark_vblank_queued, mark_capture,
 #          mark_idle, mark_end
 # Output: "N <phase> <instructions>" per bracketed call, then
 #         "PC <phase> <hex block start> <instructions>" summed per block.

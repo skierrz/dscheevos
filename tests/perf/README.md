@@ -22,18 +22,23 @@ eight looks like a 0x02xxxxxx pointer), loads a synthetic set from
 `tools/rcheevos-footprint/harness/gen_set.py` through a fake server, then for
 each frame changes 512 random bytes and calls:
 
-- `dsc_vblank` – the snapshot, which runs in the game's IPC IRQ on the console.
-  First half of the frames: the queue is empty. Second half: idle runs only
-  every 4th frame, so the snapshot is compared against the frame still queued
-  (repeat check).
+- `dsc_capture` – the snapshot, taken as the module does when the game
+  halts (`config.capture_at_halt`). First half of the frames: the queue is
+  empty. Second half: idle runs only every 4th frame, so the snapshot is
+  compared against the frame still queued (repeat check).
+- `dsc_vblank` – queues that snapshot; this is the part that runs in the
+  game's IPC IRQ on the console.
 - `dsc_idle` – one frame evaluated by rcheevos (first half only).
+
+The first frame is copied inside `dsc_vblank` (nothing captured yet) and is
+left out of the counts.
 
 Sets: `typical` is `gen_set.py 60 8 1 3` (300 frames), `heavy` is
 `gen_set.py 250 40 1 6` (6 frames), the shapes used in
 `docs/rcheevos-arm9-footprint.md`. The heavy set needs more addresses than
 `max_addresses` (4096), so each `dsc_idle` falls back to thousands of live
-reads and costs ~190M instructions; more frames would take hours under
-qemu's log. Its `dsc_vblank` is steady from the first frame.
+reads and costs ~60M instructions; more frames would take hours under
+qemu's log. Its `dsc_capture` is steady from the first frame.
 
 A full run takes about 10 minutes under Docker on an Apple Silicon Mac
 (x86 qemu through emulation), less on x86 Linux; nearly all of it is the

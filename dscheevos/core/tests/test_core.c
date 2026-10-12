@@ -59,6 +59,102 @@ static void memory_map(const uint8_t** main_ram, const uint8_t** dtcm_base)
 static void put32(uint32_t a, uint32_t v) { memcpy(&ram[a], &v, 4); }
 static uint32_t millis(void) { return now_ms; }
 
+/* ---- capture at halt (config.capture_at_halt) ----
+ * halt_mode: every dsc_vblank() in the tests is the module's pair: a
+ * dsc_capture() when the game halts, then the VBlank. With chaos (the
+ * tests that compare with rcheevos), a frame also gets, at random: a
+ * capture of other memory first (the game ran again before halting), a
+ * capture stopped part-way for an interrupt, or no capture at all when
+ * memory is the same as at the last one (a lag frame). None of these may
+ * change any result. */
+static int halt_mode, chaos;
+static uint32_t idle_budget;   /* config.idle_max_frames */
+static int stop_in = -1;      /* polls until the fake interrupt; -1: none */
+static int vblank_in = -1;    /* polls until a VBlank comes in the middle of a copy; -1: none */
+static int vblank_fired;
+static uint32_t chaos_rng = 1;
+static uint32_t chaos_rnd(void) { chaos_rng ^= chaos_rng << 13; chaos_rng ^= chaos_rng >> 17; chaos_rng ^= chaos_rng << 5; return chaos_rng; }
+static int interrupt_pending(void)
+{
+  if (vblank_in >= 0 && vblank_in-- == 0) {
+    (dsc_vblank)();   /* the IRQ the copy lets run is this frame's VBlank */
+    vblank_fired = 1;
+    return 0;
+  }
+  if (stop_in < 0)
+    return 0;
+  return stop_in-- == 0;
+}
+static uint8_t seen_ram[0x400000], seen_dtcm[0x4000];
+static int seen_valid, chaos_stale, chaos_stops, chaos_extra, chaos_vblank_in_copy;
+
+/* bytes the chaos capture scrambles and puts back */
+static void scramble(uint8_t* saved, uint32_t* where, int n)
+{
+  int i;
+  for (i = 0; i < n; i++) {
+    uint32_t r = chaos_rnd();
+    where[i] = r % 3 == 0 ? 0x3fffc0 + r % 0x40 : r % 3 == 1 ? 0x1000000 + (r >> 8) % 0x200 : (r >> 8) % 0x1200;
+    saved[i] = where[i] >= 0x1000000 ? dtcm[where[i] - 0x1000000] : ram[where[i]];
+    if (where[i] >= 0x1000000) dtcm[where[i] - 0x1000000] = (uint8_t)(r >> 16);
+    else ram[where[i]] = (uint8_t)(r >> 16);
+  }
+}
+static void unscramble(const uint8_t* saved, const uint32_t* where, int n)
+{
+  while (n--) {
+    if (where[n] >= 0x1000000) dtcm[where[n] - 0x1000000] = saved[n];
+    else ram[where[n]] = saved[n];
+  }
+}
+
+static void test_vblank(void)
+{
+  if (halt_mode) {
+    if (chaos && seen_valid && chaos_rnd() % 3 == 0 && !memcmp(ram, seen_ram, sizeof ram) && !memcmp(dtcm, seen_dtcm, sizeof dtcm)) {
+      if (chaos_rnd() % 2) {
+        chaos_stale++;    /* the game didn't halt this frame */
+      }
+      else {
+        /* the VBlank comes while a copy lets an IRQ run */
+        vblank_fired = 0;
+        vblank_in = (int)(chaos_rnd() % 12);
+        dsc_capture();
+        vblank_in = -1;
+        if (vblank_fired) {
+          chaos_vblank_in_copy++;
+          return;
+        }
+      }
+    }
+    else {
+      if (chaos && chaos_rnd() % 3 == 0) {
+        uint8_t saved[24];
+        uint32_t where[24];
+        scramble(saved, where, 24);
+        dsc_capture();
+        unscramble(saved, where, 24);
+        chaos_extra++;
+      }
+      if (chaos && chaos_rnd() % 3 == 0) {
+        stop_in = (int)(chaos_rnd() % 12);
+        if (dsc_capture() == 1)
+          chaos_stops++;
+        stop_in = -1;
+      }
+      while (dsc_capture() == 1)
+        ;
+      if (chaos) {
+        memcpy(seen_ram, ram, sizeof ram);
+        memcpy(seen_dtcm, dtcm, sizeof dtcm);
+        seen_valid = 1;
+      }
+    }
+  }
+  (dsc_vblank)();
+}
+#define dsc_vblank() test_vblank()
+
 /* ---- fake server ---- */
 #define SET_HEAD \
   "{\"Success\":true,\"GameId\":77,\"Title\":\"Test Game\",\"ConsoleId\":18,\"ImageIconUrl\":\"\"," \
@@ -249,8 +345,9 @@ static uint32_t (*platform_frame)(void);
 static void start_with(int hardcore, uint32_t slots, uint32_t bytes)
 {
   dsc_platform_t p = { read_memory, millis, http_send, on_event, dbg_log, unix_time, &journal, &notices, publish_list, platform_frame,
-                       use_map ? memory_map : NULL };
-  dsc_config_t c = { "http://mock", "tester", "tok", hardcore, 1024, slots, bytes, spectator };
+                       use_map ? memory_map : NULL, interrupt_pending };
+  dsc_config_t c = { "http://mock", "tester", "tok", hardcore, 1024, slots, bytes, spectator, halt_mode, idle_budget };
+  seen_valid = 0;
   memset(ram, 0, sizeof ram);
   memset(dtcm, 0, sizeof dtcm);
   memset(&journal, 0xEE, sizeof journal);   /* the core must clear it */
@@ -461,7 +558,8 @@ static void test_snapshot_arena_wraps(void)
   dsc_stats_t s;
   uint32_t per_frame;
   int i;
-  start_with(1, 1024, 128);  /* a few frames' worth: the ring wraps many times */
+  start_with(1, 1024, halt_mode ? 160 : 128);  /* a few frames' worth: the ring wraps many times
+                                                  (at halt the last snapshot is kept too) */
   frames(3);
   dsc_get_stats(&s);
   per_frame = 4 * 4 + 12;    /* 4 words (0x10, 0x20, the pointer, DTCM 0x10), then the pointer target */
@@ -909,6 +1007,24 @@ static void test_challenge_indicator(void)
   dsc_shutdown();
 }
 
+/* The game is quit right after the server's answer to the last unlock:
+ * rcheevos still has the mastery event pending (raised on the next frame)
+ * and crashed raising it while unloading. */
+static void test_shutdown_right_after_mastery(void)
+{
+  int f;
+  start(1);
+  frames(3);    /* true from the start, rcheevos waits for them to be false first */
+  ram[0x10] = 5;
+  ram[0x24] = 7;
+  dtcm[0x10] = 9;
+  ram[0x20] = 3;
+  for (f = 0; f < 300 && award_count < 4; f++)
+    frame(NULL);
+  CHECK(award_count == 4);
+  dsc_shutdown();
+}
+
 static void test_notice_unlock_and_mastery(void)
 {
   const dscm_notice_t* n;
@@ -965,8 +1081,8 @@ static void test_notice_ring_wraps(void)
 
 static void test_no_outputs_is_fine(void)
 {
-  dsc_platform_t p = { read_memory, millis, http_send, on_event, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
-  dsc_config_t c = { "http://mock", "tester", "tok", 1, 1024, 0, 0, 0 };
+  dsc_platform_t p = { read_memory, millis, http_send, on_event, NULL, NULL, NULL, NULL, NULL, NULL, NULL, interrupt_pending };
+  dsc_config_t c = { "http://mock", "tester", "tok", 1, 1024, 0, 0, 0, halt_mode };
   memset(ram, 0, sizeof ram);
   unlock_count = award_count = loaded = 0;
   CHECK(dsc_init(&p, &c) == 0);
@@ -1034,6 +1150,7 @@ static int compare_with_rcheevos(const char* const* triggers, int n, int frames_
   serve_set = json;
   start_with(1, 1024, 0);
   serve_set = NULL;
+  chaos = halt_mode;
   rc_runtime_init(&ref);
   for (i = 0; i < n; i++)
     parsed += rc_runtime_activate_achievement(&ref, DIFF_BASE + i, triggers[i], NULL, 0) == RC_OK;
@@ -1044,22 +1161,32 @@ static int compare_with_rcheevos(const char* const* triggers, int n, int frames_
     ref_frame = f;
     rc_runtime_do_frame(&ref, ref_event, ref_peek, NULL, NULL);
     mutate(f, 1);
-    if (f % idle_every == 0 || f == frames_to_run)
+    if (f % idle_every == 0)
       dsc_idle();
   }
+  while (dsc_idle())    /* catch up (several calls with idle_max_frames) */
+    ;
   dsc_get_stats(stats);
   CHECK(stats->frames_dropped == 0);
   CHECK(stats->frames_evaluated == (uint32_t)frames_to_run);
   for (i = 0; i < n; i++) {
+    /* A direct read that crosses the end of main RAM or DTCM fails, and
+     * rc_client (as in RetroArch) then disables the achievement; rcheevos'
+     * bare runtime used as the reference here doesn't. */
+    unlocks += ref_unlock_frame[i] != 0;
+    if (!strncmp(triggers[i], "0xX3ffffe", 9) || !strncmp(triggers[i], "0xX1003ffe", 10)) {
+      CHECK(core_unlock_frame[i] == 0);
+      continue;
+    }
     if (core_unlock_frame[i] != ref_unlock_frame[i]) {
       if (same)
         printf("  achievement %d (%s): core frame %u, rcheevos frame %u\n", DIFF_BASE + i, triggers[i],
           (unsigned)core_unlock_frame[i], (unsigned)ref_unlock_frame[i]);
       same = 0;
     }
-    unlocks += ref_unlock_frame[i] != 0;
   }
   CHECK(same);
+  chaos = 0;
   rc_runtime_destroy(&ref);
   dsc_shutdown();
   free(json);
@@ -1076,9 +1203,9 @@ static const char* const layout_triggers[] = {
   "0xX000200=1_0xX000204=2_0xH00020c=3_0x 000210=4_0xX000214=5",  /* block, 0x208 not watched */
   "0xH1000010=3",                                  /* DTCM single */
   "0xX1000100=1_0xX1000104=2_0xX1000108=3_0xX100010c=4",  /* DTCM block */
-  "0xX3ffffe=0_0xH000030=1",                       /* crosses the end of main RAM: always 0 */
+  "0xX3ffffe=0_0xH000030=1",                       /* crosses the end of main RAM: disabled */
   "0xH3ffffc=2",                                   /* same word as the run above, readable */
-  "0xX1003ffe=0_0xH000031=1",                      /* crosses the end of DTCM */
+  "0xX1003ffe=0_0xH000031=1",                      /* crosses the end of DTCM: disabled */
   "d0xH000040=1_0xH000040=2",                      /* delta */
 };
 
@@ -1282,7 +1409,9 @@ static void test_pointer_chains_match_rcheevos(void)
     memset(ram + NEST, 0, 0x20);
     unlocks = compare_with_rcheevos(triggers, N, 500, idle, chain_mutate, &s);
     CHECK(unlocks > N / 2);
-    CHECK(s.live_reads == 0);
+    /* at halt: a frame with no capture reuses the last targets, and a chain
+     * on a pointer's delta then lands elsewhere and is read live */
+    CHECK(s.live_reads == 0 || (halt_mode && s.frames_stale));
     if (idle > 1)
       CHECK(s.frames_repeated > 0);
   }
@@ -1576,9 +1705,7 @@ static void more_chain_mutate(int frame, int when)
     put32(0x1001 + 4 * (rnd() % 4), ptrs[rnd() % 10]);
 }
 
-static void test_more_chain_shapes_match_rcheevos(void)
-{
-  static const char* const triggers[] = {
+static const char* const more_chain_triggers[] = {
     "I:0xX1000200&33554431_0xH0004=1",
     "I:0xX1000204_0xH0000=2",
     "I:0xX001001&33554431_0xH0002=1",
@@ -1595,21 +1722,44 @@ static void test_more_chain_shapes_match_rcheevos(void)
     "I:0xX001000&33554431_d0xH0004=1",
     "I:0xX001004&33554431_p0x 0006=2",
     "I:0xX001008&33554431_I:d0xX0000_0xH0002=3",
-  };
+};
+
+static void test_more_chain_shapes_match_rcheevos(void)
+{
+  static const char* const* const triggers = more_chain_triggers;
   dsc_stats_t s;
   int idle, pass;
   for (pass = 0; pass < 2; pass++) {
     for (idle = 1; idle <= 9; idle += 8) {
       rng = 31 + idle;
       use_map = pass;
-      CHECK(compare_with_rcheevos(triggers, (int)(sizeof(triggers) / sizeof(triggers[0])), 400, idle, more_chain_mutate, &s) >= 8);
+      CHECK(compare_with_rcheevos(triggers, (int)(sizeof(more_chain_triggers) / sizeof(more_chain_triggers[0])), 400, idle, more_chain_mutate, &s) >= 8);
       CHECK(s.live_reads == 0);
     }
   }
   use_map = 1;
 }
 
-int main(void)
+/* Idle time handed out a frame at a time (idle_max_frames 1), at halt with
+ * chaos: a slot's repeats are split over several dsc_idle calls while
+ * VBlanks keep queueing frames behind it. */
+static void test_budgeted_idle_matches_rcheevos(void)
+{
+  dsc_stats_t s;
+  int idle, saved = halt_mode;
+  halt_mode = 1;
+  idle_budget = 1;
+  for (idle = 1; idle <= 9; idle += 8) {
+    rng = 31 + idle;
+    CHECK(compare_with_rcheevos(layout_triggers, (int)(sizeof(layout_triggers) / sizeof(layout_triggers[0])), 400, idle, layout_mutate, &s) >= 8);
+    rng = 31 + idle;
+    CHECK(compare_with_rcheevos(more_chain_triggers, (int)(sizeof(more_chain_triggers) / sizeof(more_chain_triggers[0])), 400, idle, more_chain_mutate, &s) >= 8);
+  }
+  idle_budget = 0;
+  halt_mode = saved;
+}
+
+static void run_all(void)
 {
   for (use_map = 0; use_map < 2; use_map++) {    /* the snapshot tests, without and with a memory map */
     printf("-- memory map %s\n", use_map ? "on" : "off");
@@ -1658,9 +1808,23 @@ int main(void)
   RUN(test_list_rebuild_throttle);
   RUN(test_challenge_indicator);
   RUN(test_notice_unlock_and_mastery);
+  RUN(test_shutdown_right_after_mastery);
+  RUN(test_budgeted_idle_matches_rcheevos);
   RUN(test_notice_uses_platform_frame);
   RUN(test_notice_ring_wraps);
   RUN(test_no_outputs_is_fine);
+}
+
+int main(void)
+{
+  run_all();
+  /* again, with the snapshot taken when the game halts */
+  printf("-- capture at halt\n");
+  halt_mode = 1;
+  run_all();
+  printf("capture at halt: %d stale frames, %d stopped captures, %d replaced captures, %d VBlanks during a copy\n",
+    chaos_stale, chaos_stops, chaos_extra, chaos_vblank_in_copy);
+  CHECK(chaos_stale > 50 && chaos_stops > 100 && chaos_extra > 100 && chaos_vblank_in_copy > 20);
   printf("%d checks, %d failed\n", checks, failures);
   return failures ? 1 : 0;
 }

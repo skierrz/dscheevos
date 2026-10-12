@@ -49,6 +49,7 @@ volatile int marker_sink;
 void __attribute__((noinline)) mark_vblank(void) { marker_sink = 1; __asm__ volatile(""); }
 void __attribute__((noinline)) mark_vblank_queued(void) { marker_sink = 2; __asm__ volatile(""); }
 void __attribute__((noinline)) mark_idle(void) { marker_sink = 3; __asm__ volatile(""); }
+void __attribute__((noinline)) mark_capture(void) { marker_sink = 4; __asm__ volatile(""); }
 void __attribute__((noinline)) mark_end(void) { marker_sink = 0; __asm__ volatile(""); }
 
 /* ---- fake game memory: 4 MB main RAM + 16 KB DTCM ---- */
@@ -121,6 +122,7 @@ static void on_event(const dsc_event_t* e)
     unlocks++;
 }
 static void publish_list(struct dscm_list_t* list) { (void)list; }
+static int interrupt_pending(void) { return 0; }   /* the module reads IE & IF */
 
 static dscm_journal_t journal;
 static dscm_notices_t notices;
@@ -170,6 +172,7 @@ int main(int argc, char** argv)
   platform.publish_list = publish_list;
   platform.frame = frame;
   platform.memory_map = memory_map;
+  platform.interrupt_pending = interrupt_pending;
   memset(&config, 0, sizeof(config));
   config.host = "http://server";
   config.username = "User";
@@ -178,6 +181,7 @@ int main(int argc, char** argv)
   config.max_addresses = 4096;
   config.snapshot_slots = 1024;
   config.snapshot_bytes = 256 * 1024;
+  config.capture_at_halt = 1;
 
   if (dsc_init(&platform, &config) != 0 || dsc_begin_session("0123456789ABCDEF0123456789ABCDEF") != 0) {
     out("FAIL init\n");
@@ -194,10 +198,19 @@ int main(int argc, char** argv)
   dsc_get_stats(&s);
   out("INFO addresses %u, stack near 0x%08x\n", (unsigned)s.addresses, (unsigned)(uintptr_t)&s);
 
+  /* the first frame is copied in the VBlank (nothing captured yet) */
+  frames++;
+  dsc_vblank();
+  dsc_idle();
+
   for (i = 0; i < n; i++) {
     int queued = i >= n / 2;
     frames++;
     change_memory(mutate);
+    /* the game halts at the end of its frame: the snapshot */
+    mark_capture();
+    dsc_capture();
+    mark_end();
     if (queued && (i % 4) != 0)
       mark_vblank_queued();
     else

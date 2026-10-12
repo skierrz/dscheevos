@@ -125,6 +125,12 @@ typedef struct dscm_status_t {
   volatile uint32_t idle_lines_total;
   volatile uint32_t idle_none;        /* frames in which no idle pass started or ended */
   volatile uint32_t idle_cut;         /* idle passes a VBlank preempted; the rest of such a pass is not counted */
+  /* Snapshot when the game halts (appended after the self-timing). */
+  volatile uint32_t captures;         /* snapshots taken at a halt */
+  volatile uint32_t captures_stopped; /* ... stopped for an interrupt (taken again at the next halt) */
+  volatile uint32_t frames_stale;     /* VBlanks with no snapshot since the last: the game didn't halt */
+  volatile uint32_t halts_idle;       /* OS_Halt calls from NitroSDK's idle thread loop: the module's time */
+  volatile uint32_t halts_other;      /* OS_Halt calls from elsewhere (a game thread waiting): left as stock */
 } dscm_status_t;
 
 enum {

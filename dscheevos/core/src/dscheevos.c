@@ -172,6 +172,8 @@ typedef struct slot_t {
   uint32_t frame;
   volatile uint32_t repeats;  /* later frames whose bytes matched exactly; evaluated from this copy */
   uint32_t map;               /* how game memory was read (mem_t): only a snapshot taken the same way can repeat it */
+  uint8_t carry;              /* capture_at_halt: no capture for this frame, evaluated with the last snapshot's memory */
+  uint32_t done;              /* frames of it evaluated so far (dsc_idle may stop part-way, idle_max_frames) */
 } slot_t;
 
 typedef struct http_pending_t {
@@ -210,6 +212,24 @@ static struct {
   uint32_t arena_size;
   uint32_t arena_head;         /* end of the newest snapshot's bytes */
   slot_t* evaluating;
+  /* The snapshot evaluated last: its bytes stay in the arena while a carry
+   * slot may still need them. */
+  slot_t last;
+  volatile int has_last;
+  volatile uint32_t last_offset;
+  /* capture_at_halt: slots[slot_head] holds a capture for the next VBlank */
+  volatile int stage;
+  int stage_same;              /* its bytes and targets equal the newest queued snapshot's */
+  uint32_t stage_prev;         /* slot_head - 1 when it was taken */
+  volatile int stage_failed;   /* the last capture found no room: the frame is dropped */
+  int capturing;               /* in dsc_capture with interrupt_pending: poll it */
+  uint32_t capture_frame;      /* frame_counter when the copy began */
+  /* Chain copies whose rcheevos state (prior, changed) advances with each
+   * frame: saved before a capture, put back if it is replaced or stopped. */
+  rc_memref_value_t** sync;
+  rc_memref_value_t* sync_saved;
+  uint32_t sync_count;
+  int sync_dirty;              /* the values hold an uncommitted capture's state */
   uint32_t target_cursor;      /* the chain read rcheevos likely asks for next (see read_memory) */
   volatile uint32_t frame_counter;
 
@@ -472,6 +492,9 @@ static int table_in_use(const table_t* t)
   (void)i;
   if (t == S.current)
     return 1;
+  /* the stage first: if a VBlank queues it meanwhile, the loop below sees it */
+  if ((S.stage && S.slots[S.slot_head % MAX_SLOTS].table == t) || (S.has_last && S.last.table == t))
+    return 1;
   for (n = S.slot_tail; n != S.slot_head; n++)
     if (S.slots[n % MAX_SLOTS].table == t)
       return 1;
@@ -612,6 +635,16 @@ static inline HOT uint32_t peek(const mem_t* m, uint32_t address, uint32_t n, ui
 }
 
 /* ---- pointer chains ---- */
+
+/* dsc_capture runs with interrupts masked: every POLL_WORDS words or chain
+ * steps the platform lets any waiting interrupt run. It stops if the
+ * platform says game code may have run, or a VBlank came (the copy would be
+ * of two frames). */
+#define POLL_WORDS 16
+static inline HOT int stop_now(void)
+{
+  return S.capturing && (S.platform.interrupt_pending() || S.frame_counter != S.capture_frame);
+}
 
 /* How run_chains computes a step. Reads and the common arithmetic on
  * plain unsigned values are computed here (the value is what rcheevos'
@@ -762,7 +795,7 @@ static HOT target_t* run_leaves_slow(const leaf_t* l, const uint32_t* count, tar
  * frame on live memory, as rc_update_memref_values does for the real ones.
  * Every target slot is written: leaves first, then the other steps'. With
  * prev (the newest queued snapshot's targets), returns 1 if every target
- * is the same as there, else 0. */
+ * is the same as there, else 0; -1 if it stopped for an interrupt. */
 static HOT __attribute__((noinline)) int run_chains(target_t* targets, const mem_t* m, const target_t* prev)
 {
   const chains_t* c = &S.chains;
@@ -774,7 +807,7 @@ static HOT __attribute__((noinline)) int run_chains(target_t* targets, const mem
   const cstep_t* s = c->steps;
   const cstep_t* end = s + c->step_count;
   target_t* g = targets;
-  uint32_t i = 0, n = c->root_count, plain = ram ? c->plain_roots : 0;
+  uint32_t i = 0, n = c->root_count, plain = ram ? c->plain_roots : 0, left, k;
 
   /* roots: aligned 32-bit pointers in main RAM, then any others */
   for (; i < plain; i++)
@@ -790,27 +823,43 @@ static HOT __attribute__((noinline)) int run_chains(target_t* targets, const mem
     if (r[i].sync)
       rc_update_memref_value(&d->value, v);
   }
+  if (stop_now())
+    return -1;
 
   /* leaves, by size: compared as they are read while the targets match */
   if (!ram) {
     g = run_leaves_slow(l, c->leaf_count, g, m, &prev);
+    if (stop_now())
+      return -1;
   }
   else {
-    g = run_leaves(l, c->leaf_count[0], 1, g, m, ram, &prev);
-    l += c->leaf_count[0];
-    g = run_leaves(l, c->leaf_count[1], 2, g, m, ram, &prev);
-    l += c->leaf_count[1];
-    g = run_leaves(l, c->leaf_count[2], 4, g, m, ram, &prev);
+    /* a call per size, so each is built for its size */
+#define LEAVES(index, size) \
+    for (left = c->leaf_count[index]; left; left -= k, l += k) { \
+      k = left < POLL_WORDS ? left : POLL_WORDS; \
+      g = run_leaves(l, k, size, g, m, ram, &prev); \
+      if (stop_now()) \
+        return -1; \
+    }
+    LEAVES(0, 1)
+    LEAVES(1, 2)
+    LEAVES(2, 4)
+#undef LEAVES
   }
 
   /* other steps: plain reads here, anything else in run_step */
   if (!ram) {
-    for (; s < end; s++, out++)
+    for (; s < end; s++, out++) {
+      if (!((end - s) & (POLL_WORDS - 1)) && stop_now())
+        return -1;
       g = run_step(s, g, m, out);
+    }
   }
   else {
     for (; s < end; s++, out++) {
       uint32_t a, v;
+      if (!((end - s) & (POLL_WORDS - 1)) && stop_now())
+        return -1;
       n = s->fast;
       if (!n) {
         g = run_step(s, g, m, out);
@@ -859,6 +908,76 @@ static void free_chains(void)
 #ifdef DSC_CHECK_FAST_STEPS
   free_chain_copies(&S.ref);
 #endif
+  free(S.sync);
+  free(S.sync_saved);
+  S.sync = NULL;
+  S.sync_saved = NULL;
+  S.sync_count = 0;
+  S.sync_dirty = 0;
+}
+
+/* List the chain copies whose rcheevos state run_chains advances (and, in
+ * test builds, every reference copy check_snapshot advances). */
+static int list_sync(void)
+{
+  const chains_t* c = &S.chains;
+  uint32_t i, n = 0, total = c->root_count + c->step_count;
+#ifdef DSC_CHECK_FAST_STEPS
+  total += S.ref.direct_count + S.ref.mod_count;
+#endif
+  S.sync = (rc_memref_value_t**)malloc((total ? total : 1) * sizeof(*S.sync));
+  S.sync_saved = (rc_memref_value_t*)malloc((total ? total : 1) * sizeof(*S.sync_saved));
+  if (!S.sync || !S.sync_saved)
+    return -1;
+  for (i = 0; i < c->root_count; i++)
+    if (c->roots[i].sync)
+      S.sync[n++] = &c->direct[c->roots[i].copy].value;
+  for (i = 0; i < c->step_count; i++)
+    if (c->steps[i].flags & CF_SYNC)
+      S.sync[n++] = &c->mods[c->steps[i].copy].memref.value;
+#ifdef DSC_CHECK_FAST_STEPS
+  for (i = 0; i < S.ref.direct_count; i++)
+    S.sync[n++] = &S.ref.direct[i].value;
+  for (i = 0; i < S.ref.mod_count; i++)
+    S.sync[n++] = &S.ref.mods[i].memref.value;
+#endif
+  S.sync_count = n;
+  return 0;
+}
+
+static void sync_save(void)
+{
+  uint32_t i;
+  for (i = 0; i < S.sync_count; i++)
+    S.sync_saved[i] = *S.sync[i];
+  S.sync_dirty = 1;
+}
+
+/* Undo an uncommitted capture's chain state. */
+static void sync_restore(void)
+{
+  uint32_t i;
+  if (!S.sync_dirty)
+    return;
+  for (i = 0; i < S.sync_count; i++)
+    *S.sync[i] = S.sync_saved[i];
+  S.sync_dirty = 0;
+}
+
+/* A frame evaluated with the last snapshot's memory: as if every chain
+ * copy were read again with the same value (rc_update_memref_value). In
+ * the middle of a copy (a VBlank while dsc_capture let an IRQ run) the
+ * committed values are the saved ones: the copy puts them back. */
+static HOT void sync_unchanged(void)
+{
+  uint32_t i;
+  if (S.sync_dirty) {
+    for (i = 0; i < S.sync_count; i++)
+      S.sync_saved[i].changed = 0;
+    return;
+  }
+  for (i = 0; i < S.sync_count; i++)
+    S.sync[i]->changed = 0;
 }
 
 /* The copy of a memref an operand points at, or NULL if it isn't copied. */
@@ -1222,6 +1341,7 @@ static void prepare_snapshots(void)
   rc_memref_list_t* ml;
   uint32_t i, j;
 
+  S.stage = 0;
   free_chains();
   if (!memrefs)
     return;
@@ -1242,8 +1362,11 @@ static void prepare_snapshots(void)
   if (copy_chains(&S.chains, memrefs) != 0 || compile_chains(&S.chains) != 0)
     free_chains();    /* chains then fall back to live reads */
 #ifdef DSC_CHECK_FAST_STEPS
-  else if (copy_chains(&S.ref, memrefs) != 0)
+  else if (copy_chains(&S.ref, memrefs) != 0 || list_sync() != 0)
     abort();
+#else
+  else if (list_sync() != 0)
+    free_chains();
 #endif
 }
 
@@ -1590,15 +1713,16 @@ static HOT uint32_t RC_CCONV read_memory(uint32_t address, uint8_t* buffer, uint
   if (!slot)
     return S.platform.read_memory(address, buffer, num_bytes);
 
-  t = slot->table;
-  lo = table_lower(t, address);
   if (!num_bytes)
     return 0;
+  t = slot->table;
+  lo = table_lower(t, address);
 
   /* whole read inside one run of the snapshot's table, stored in order */
   if (lo < t->count && t->addresses[lo] == address && lo + num_bytes <= t->count &&
       t->addresses[lo + num_bytes - 1] == address + num_bytes - 1 &&
-      t->where[lo + num_bytes - 1] == t->where[lo] + num_bytes - 1) {
+      t->where[lo + num_bytes - 1] == t->where[lo] + num_bytes - 1 &&
+      (address + num_bytes <= MAIN_SIZE || address - DTCM_START <= DTCM_SIZE - num_bytes)) {    /* inside one region */
     memcpy(buffer, slot->data + t->where[lo], num_bytes);
     return num_bytes;
   }
@@ -1624,6 +1748,12 @@ static HOT uint32_t RC_CCONV read_memory(uint32_t address, uint8_t* buffer, uint
     }
   }
 
+  /* As the platform reads: a read not entirely inside one region fails
+   * whole, and rcheevos then sees 0 (rc_read_memory uses the buffer, not
+   * the count, so partial bytes would make a value rcheevos never sees).
+   * The paths above only return reads inside one region. */
+  if (region_of(address, num_bytes) == REGION_NONE)
+    return 0;
   for (i = 0, j = lo; i < num_bytes; i++) {
     uint32_t a = address + i, k;
     while (j < t->count && t->addresses[j] < a)
@@ -1645,8 +1775,10 @@ static HOT uint32_t RC_CCONV read_memory(uint32_t address, uint8_t* buffer, uint
       return 0;    /* the chain's read failed at VBlank (e.g. across the end of main RAM): fail it again */
     }
     else {
-      if (S.platform.read_memory(a, buffer + i, 1) != 1)
-        return i;
+      if (S.platform.read_memory(a, buffer + i, 1) != 1) {
+        memset(buffer, 0, num_bytes);    /* fails whole, as the platform's read */
+        return 0;
+      }
       note_missing(a);
       S.stats.live_reads++;
     }
@@ -1899,9 +2031,10 @@ int dsc_is_active(void)
 static HOT int32_t arena_alloc(uint32_t n)
 {
   uint32_t head = S.arena_head, tail;
-  if (S.slot_head == S.slot_tail)
-    return n <= S.arena_size ? 0 : -1;    /* nothing queued: start over */
-  tail = S.slots[S.slot_tail % MAX_SLOTS].offset;
+  if (S.slot_head == S.slot_tail && (!S.has_last || !S.last.size))
+    return n <= S.arena_size ? 0 : -1;    /* nothing queued or kept: start over */
+  /* the oldest bytes still needed: the last evaluated snapshot's, else the oldest queued */
+  tail = S.has_last ? S.last_offset : S.slots[S.slot_tail % MAX_SLOTS].offset;
   if (head >= tail) {
     if (S.arena_size - head >= n) return (int32_t)head;
     if (tail > n) return 0;
@@ -1970,7 +2103,8 @@ static inline HOT int copy_words_same(word_t* d, const uint8_t* base, const uint
 
 /* Copy the table's words into a snapshot (see build_program). With prev,
  * the newest queued snapshot of the same table, returns 1 if every watched
- * byte is the same as there (the repeat check), else 0. */
+ * byte is the same as there (the repeat check), else 0; -1 if it stopped
+ * for an interrupt (dsc_capture). */
 static HOT __attribute__((noinline)) int copy_snapshot(const table_t* t, uint8_t* data, const mem_t* m, const uint8_t* prev)
 {
   word_t* d = (word_t*)data;
@@ -2006,11 +2140,17 @@ static HOT __attribute__((noinline)) int copy_snapshot(const table_t* t, uint8_t
       memset((void*)(d + at), 0, n * 4);
       same = same && same_words(data, prev, t->mask, at, at + n);
     }
-    else if (same) {
-      same = copy_words_same(d + at, base, src, n, (const word_t*)prev + at, t->mask + at);
-    }
     else {
-      copy_words(d + at, base, src, n);
+      uint32_t k, c;
+      for (k = 0; k < n; k += c) {
+        c = n - k < POLL_WORDS ? n - k : POLL_WORDS;
+        if (same)
+          same = copy_words_same(d + at + k, base, src + k, c, (const word_t*)prev + at + k, t->mask + at + k);
+        else
+          copy_words(d + at + k, base, src + k, c);
+        if (stop_now())
+          return -1;
+      }
     }
     at += n;
   }
@@ -2027,15 +2167,21 @@ static HOT __attribute__((noinline)) int copy_snapshot(const table_t* t, uint8_t
       continue;
     }
     s = (const word_t*)(base + t->block[i * 2]);
-    for (; n >= 4; n -= 4, s += 4, d += 4) {
-      uint32_t a = s[0], b = s[1], c = s[2], e = s[3];
-      d[0] = a;
-      d[1] = b;
-      d[2] = c;
-      d[3] = e;
+    while (n) {
+      uint32_t k = n < POLL_WORDS ? n : POLL_WORDS;
+      n -= k;
+      for (; k >= 4; k -= 4, s += 4, d += 4) {
+        uint32_t a = s[0], b = s[1], c = s[2], e = s[3];
+        d[0] = a;
+        d[1] = b;
+        d[2] = c;
+        d[3] = e;
+      }
+      while (k--)
+        *d++ = *s++;
+      if (stop_now())
+        return -1;
     }
-    while (n--)
-      *d++ = *s++;
   }
 
   /* words read_memory would not read, then bytes copied one by one */
@@ -2111,6 +2257,70 @@ static int check_repeat(const slot_t* prev, const slot_t* slot, const table_t* t
 }
 #endif
 
+/* Queue the stage (dsc_capture's snapshot) for evaluation, or count the
+ * frame against the newest queued one. Interrupt context. */
+static HOT void commit(void)
+{
+  slot_t* slot = &S.slots[S.slot_head % MAX_SLOTS];
+  slot_t* prev = S.slot_head != S.slot_tail ? &S.slots[(S.slot_head - 1) % MAX_SLOTS] : NULL;
+
+  S.frame_counter++;
+  /* frames waiting, repeats included: past MAX_SLOTS (~17 s), drop */
+  if (S.stats.frames_snapshotted - S.stats.frames_evaluated - S.stats.frames_discarded >= MAX_SLOTS) {
+    if (S.stage) {
+      S.stage = 0;
+      sync_restore();
+      slot->state = SLOT_FREE;
+    }
+    S.stats.frames_dropped++;
+    return;
+  }
+  if (S.stage) {
+    S.stage = 0;
+    S.sync_dirty = 0;            /* the chain copies' state is this frame's now */
+    S.stats.frames_snapshotted++;
+    if (S.stage_same && prev && S.stage_prev == S.slot_head - 1 && prev->state == SLOT_READY) {
+      prev->repeats++;
+      slot->state = SLOT_FREE;
+      S.stats.frames_repeated++;
+      return;
+    }
+    slot->repeats = 0;
+    slot->carry = 0;
+    slot->frame = S.frame_counter;
+    S.arena_head = slot->offset + slot->size;
+    slot->state = SLOT_READY;
+    S.slot_head++;    /* publish last */
+    return;
+  }
+
+  /* No capture since the last VBlank: the game didn't halt (a lag frame),
+   * or every capture stopped for an interrupt. Evaluate this frame with the
+   * memory captured last, as a repeat of it. */
+  if (S.stage_failed || (!prev && !S.has_last) || (!(prev && prev->state == SLOT_READY) && S.slot_head - S.slot_tail >= S.slot_count)) {
+    S.stats.frames_dropped++;
+    return;
+  }
+  sync_unchanged();
+  S.stats.frames_snapshotted++;
+  S.stats.frames_stale++;
+  if (prev && prev->state == SLOT_READY) {
+    prev->repeats++;
+    return;
+  }
+  /* the newest snapshot is being evaluated, or done: a slot that uses its memory */
+  slot->carry = 1;
+  slot->repeats = 0;
+  slot->size = 0;
+  slot->offset = S.arena_head;
+  slot->data = NULL;
+  slot->targets = NULL;
+  slot->table = NULL;
+  slot->frame = S.frame_counter;
+  slot->state = SLOT_READY;
+  S.slot_head++;
+}
+
 HOT void dsc_vblank(void)
 {
   const table_t* t;
@@ -2123,6 +2333,12 @@ HOT void dsc_vblank(void)
 
   if (!S.active)
     return;
+  /* At halt, but nothing captured yet (session start, or after a reset):
+   * this one frame is copied here, so the first frames aren't lost. */
+  if (S.config.capture_at_halt && (S.stage || S.has_last || S.slot_head != S.slot_tail || S.stage_failed)) {
+    commit();
+    return;
+  }
 
   S.frame_counter++;
   t = S.current;
@@ -2169,9 +2385,75 @@ HOT void dsc_vblank(void)
   }
 
   slot->repeats = 0;
+  slot->carry = 0;
   S.arena_head = (uint32_t)offset + size;
   slot->state = SLOT_READY;
   S.slot_head++;    /* publish last */
+}
+
+int dsc_capture(void)
+{
+  const table_t* t;
+  slot_t* slot;
+  slot_t* prev = NULL;
+  mem_t m;
+  int32_t offset;
+  uint32_t size;
+  int same, chains;
+
+  if (!S.active || !S.config.capture_at_halt)
+    return -1;
+  /* replaces a capture taken earlier in this frame: the game ran since */
+  S.stage = 0;
+  sync_restore();
+
+  t = S.current;
+  size = t->words * 4 + S.chains.target_count * sizeof(target_t);
+  offset = S.slot_head - S.slot_tail < S.slot_count ? arena_alloc(size) : -1;
+  if (offset < 0) {
+    S.stage_failed = 1;
+    return -1;
+  }
+  S.stage_failed = 0;
+
+  slot = &S.slots[S.slot_head % MAX_SLOTS];
+  slot->map = mem_open(&m);
+  if (S.slot_head != S.slot_tail) {
+    prev = &S.slots[(S.slot_head - 1) % MAX_SLOTS];
+    if (prev->state != SLOT_READY || prev->carry || prev->table != t || prev->map != slot->map)
+      prev = NULL;
+  }
+  slot->state = SLOT_FILLING;
+  slot->offset = (uint32_t)offset;
+  slot->size = size;
+  slot->data = S.arena + offset;
+  slot->targets = (target_t*)(slot->data + t->words * 4);
+  slot->table = t;
+  sync_save();
+  S.capture_frame = S.frame_counter;
+  S.capturing = S.platform.interrupt_pending != NULL;
+  same = copy_snapshot(t, slot->data, &m, prev ? prev->data : NULL);
+  chains = same < 0 ? -1 : run_chains(slot->targets, &m, same ? prev->targets : NULL);
+  S.capturing = 0;
+  if (chains < 0) {
+    sync_restore();
+    if (S.frame_counter == S.capture_frame)
+      slot->state = SLOT_FREE;    /* else a VBlank may have queued a carry slot in it */
+    S.stats.captures_stopped++;
+    return 1;
+  }
+  same = chains && same;
+#ifdef DSC_CHECK_FAST_STEPS
+  check_snapshot(slot, t);
+  if (prev && same != check_repeat(prev, slot, t))
+    check_failed("repeat decision", same);
+#endif
+  S.stats.captures++;
+  S.stage_same = same;
+  S.stage_prev = S.slot_head - 1;
+  PUBLISH_BARRIER();
+  S.stage = 1;
+  return 0;
 }
 
 static void finish_http(void)
@@ -2209,6 +2491,7 @@ static void finish_http(void)
 int dsc_idle(void)
 {
   int evaluated = 0;
+  uint32_t stop, budget;
   static uint32_t dropped_reported;
 
   if (!S.initialized)
@@ -2216,21 +2499,48 @@ int dsc_idle(void)
 
   finish_http();
 
-  while (S.slot_tail != S.slot_head) {
+  /* Only what is queued now: frames that arrive meanwhile wait for the next
+   * call, so the caller gets back to the network and the next capture even
+   * when evaluation is slower than the game. */
+  stop = S.slot_head;
+  budget = S.config.idle_max_frames ? S.config.idle_max_frames : 0xFFFFFFFFu;
+  while (S.slot_tail != stop && budget) {
     slot_t* next = &S.slots[S.slot_tail % MAX_SLOTS];
-    if (next->state != SLOT_READY)
+    if (next->state == SLOT_READY) {
+      next->done = 0;
+      next->state = SLOT_EVAL;        /* from here on, dsc_vblank leaves repeats alone */
+    }
+    else if (next->state != SLOT_EVAL) {
       break;
-
-    next->state = SLOT_EVAL;          /* from here on, dsc_vblank leaves repeats alone */
+    }
     {
       uint32_t n = 1 + next->repeats, k;
-      S.evaluating = next;
-      for (k = 0; k < n; k++) {
+      slot_t carried;
+      if (next->carry) {
+        /* frames with no capture: the last snapshot's memory */
+        carried = S.last;
+        carried.frame = next->frame;
+        S.evaluating = &carried;
+      }
+      else {
+        S.evaluating = next;
+      }
+      for (k = next->done; k < n && budget; k++, budget--) {
         rc_client_do_frame(S.client);
         S.stats.frames_evaluated++;
         evaluated++;
       }
+      next->done = k;
       S.evaluating = NULL;
+      if (k < n)
+        break;    /* out of budget: the rest of this slot next time */
+    }
+    if (S.config.capture_at_halt && !next->carry) {
+      /* keep its bytes: a carry slot after it reads them */
+      S.last = *next;
+      S.last_offset = next->offset;
+      PUBLISH_BARRIER();
+      S.has_last = 1;
     }
     next->state = SLOT_FREE;
     S.slot_tail++;
@@ -2280,9 +2590,14 @@ void dsc_reset(void)
   if (!S.initialized)
     return;
   S.evaluating = NULL;
-  for (n = S.slot_tail; n != head; n++)
-    S.stats.frames_discarded += 1 + S.slots[n % MAX_SLOTS].repeats;
+  for (n = S.slot_tail; n != head; n++) {
+    const slot_t* q = &S.slots[n % MAX_SLOTS];
+    S.stats.frames_discarded += 1 + q->repeats - (q->state == SLOT_EVAL ? q->done : 0);
+  }
   S.slot_tail = head;          /* frames from before the reset */
+  S.has_last = 0;
+  S.stage = 0;
+  sync_restore();
   if (S.active) {
     rc_client_reset(S.client);
     S.list_stale = 1;
@@ -2329,6 +2644,16 @@ void dsc_shutdown(void)
     return;
   S.active = 0;
   if (S.client) {
+    /* rcheevos (v12.5.0) raises a pending mastery event while unloading,
+     * after it has cleared client->game, and crashes. Mastery is pending
+     * from the server's answer to the last unlock until the next frame: a
+     * game quit right then just shows no mastery notice. */
+    if (S.client->game) {
+      rc_client_subset_info_t* sub;
+      for (sub = S.client->game->subsets; sub; sub = sub->next)
+        if (sub->mastery == RC_CLIENT_MASTERY_STATE_PENDING)
+          sub->mastery = RC_CLIENT_MASTERY_STATE_SHOWN;
+    }
     rc_client_unload_game(S.client);
     rc_client_destroy(S.client);
   }

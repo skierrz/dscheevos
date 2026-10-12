@@ -1,11 +1,15 @@
 # tests/perf/run.sh --gate: <set> <metric> <limit>, instructions per call.
-# Set from the measured value + 5% (perf branch, Phase 2: snapshot copy
-# program, chains run by the core, rcheevos runtime and client in ARM mode):
-#   typical vblank_max 17124, vblank_median 11635, idle_median 420250;
-#   heavy vblank_max 60651.
-# Before Phase 2: typical 133447, 120467, 1391691; heavy 448343.
+# Set from the measured value + 5% (perf branch, Phase 1: the snapshot is
+# taken when the game halts, dsc_capture; the VBlank IRQ only queues it):
+#   typical capture_max 19698, capture_median 14587, vblank (IRQ) 74,
+#   idle_median 419296; heavy capture_max 66498, vblank 74.
+# Before: Phase 2 (copy in the IRQ) typical vblank 17124 / 11635;
+# before Phase 2: 133447 / 120467.
 # Lower these when the snapshot gets cheaper.
-typical vblank_max     17981
-typical vblank_median  12217
-typical idle_median    441263
-heavy   vblank_max     63684
+typical vblank_max      78
+typical vblank_median   78
+typical capture_max     20683
+typical capture_median  15316
+typical idle_median     440261
+heavy   vblank_max      78
+heavy   capture_max     69823

@@ -141,6 +141,8 @@ static int check_v6(void)
 	return fails;
 }
 
+extern void halt_as_idle(void (*halt)(void));
+
 int main(void)
 {
 	if (!isDSiMode()) { out("FAIL needs DSi mode (16 MB)"); out("DONE"); while (1) swiWaitForVBlank(); }
@@ -207,7 +209,7 @@ int main(void)
 			leaveCriticalSection(ime);
 			reset_done = 1;
 		}
-		((void (*)(void))hdr->halt)();     /* the game's patched OS_Halt: work, then wait for an IRQ */
+		halt_as_idle((void (*)(void))hdr->halt);   /* the game's idle thread calling its patched OS_Halt */
 		network_layer();
 		for (u32 i = 0; i < hdr->status->unlock_count && i < DSCM_RECENT_MAX; i++) {
 			u32 id = hdr->status->recent[i].id;

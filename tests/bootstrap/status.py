@@ -146,6 +146,13 @@ if status_size >= (p + 92 - o) + 4 * len(TIMING):
           f" {timing['idle_none']} frames with no idle pass, {timing['idle_cut']} passes cut by a VBlank")
 else:
     print('self-timing: not in this module')
+# snapshot at halt, appended after the self-timing
+HALT = 'captures captures_stopped frames_stale halts_idle halts_other'.split()
+if timing and status_size >= (p + 92 - o) + 4 * (len(TIMING) + len(HALT)):
+    halt = dict(zip(HALT, struct.unpack_from(f'<{len(HALT)}I', ram, p + 92 + 4 * len(TIMING))))
+    print(f"capture at halt: {halt['captures']} snapshots, {halt['captures_stopped']} stopped for an interrupt,"
+          f" {halt['frames_stale']} frames with no snapshot (evaluated with the last)")
+    print(f"OS_Halt calls: {halt['halts_idle']} from the idle thread, {halt['halts_other']} from game threads (left alone)")
 hdr = struct.unpack_from('<14I', ram, 0xD80000)
 print('header magic %08x version %d vblank_count %d' % (hdr[0], hdr[1], hdr[9]))
 

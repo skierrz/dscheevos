@@ -1,6 +1,7 @@
 #!/bin/bash
-# Instruction counts for the DScheevos core under qemu-arm (ARM946): dsc_vblank
-# (the snapshot, run in the game's IPC IRQ) and dsc_idle (one frame evaluated),
+# Instruction counts for the DScheevos core under qemu-arm (ARM946): dsc_capture
+# (the snapshot, when the game halts), dsc_vblank (queues it, in the game's IPC
+# IRQ) and dsc_idle (one frame evaluated),
 # on synthetic sets. Builds the core and rcheevos from source every run, with
 # the module's own Makefile rules and flags. See tests/perf/README.md.
 #
@@ -62,7 +63,7 @@ for set in $SETS; do
   cmp -s "$OUT/set-$set.h.new" "$OUT/set-$set.h" && rm "$OUT/set-$set.h.new" || mv "$OUT/set-$set.h.new" "$OUT/set-$set.h"
   make -s -C dscheevos/module -f Makefile -f ../../$PERF/perf.mk BUILD="$OUT" PERF_SET=$set "$elf"
   arm-none-eabi-nm -n --special-syms "$elf" | awk '$3 ~ /^\$[atd]/ { print $1, substr($3, 2, 1) }' > "$OUT/map-$set.txt"
-  arm-none-eabi-nm "$elf" | awk '$3 ~ /^mark_(vblank|vblank_queued|idle|end)$/ { print $1, $3 }' > "$OUT/marks-$set.txt"
+  arm-none-eabi-nm "$elf" | awk '$3 ~ /^mark_(vblank|vblank_queued|idle|capture|end)$/ { print $1, $3 }' > "$OUT/marks-$set.txt"
   echo "== $set: $frames frames"
   qemu-arm -cpu arm946 -d in_asm,exec,nochain -D /dev/stdout "$elf" "$frames" 512 |
     awk -v map="$OUT/map-$set.txt" -v marks="$OUT/marks-$set.txt" -f $PERF/count.awk > "$OUT/counts-$set.txt"

@@ -102,11 +102,24 @@ halt_entry:
 	bne	2f
 	mov	r0, #1
 	str	r0, [r5]
+	@ r0 = 1 if the caller is NitroSDK's idle loop: the instruction after
+	@ its call is a branch back to the call (ARM "b .-4" or Thumb "b .-4")
+	mov	r0, #0
+	tst	lr, #1
+	bne	4f
+	ldr	r1, [lr]
+	ldr	r2, =0xEAFFFFFD
+	b	5f
+4:	bic	r1, lr, #1
+	ldrh	r1, [r1]
+	ldr	r2, =0xE7FC
+5:	cmp	r1, r2
+	moveq	r0, #1
 	mov	r4, sp
 	ldr	sp, =__stack_top
 	push	{r4, r5}
-	ldr	r0, =module_idle
-	blx	r0
+	ldr	r1, =module_idle
+	blx	r1
 	pop	{r4, r5}
 	mov	sp, r4
 	mov	r1, #0
@@ -228,6 +241,29 @@ dscm_take:
 	mov	r1, #0
 	swp	r2, r1, [r0]
 	mov	r0, r2
+	bx	lr
+
+@ uint32_t dscm_irq_off(void): mask IRQs (CPSR.I), return the old CPSR.
+@ void dscm_irq_restore(uint32_t cpsr): put the old IRQ mask back.
+	.global dscm_irq_off
+	.type dscm_irq_off, %function
+dscm_irq_off:
+	mrs	r0, cpsr
+	orr	r1, r0, #0x80
+	msr	cpsr_c, r1
+	bx	lr
+	.global dscm_irq_restore
+	.type dscm_irq_restore, %function
+dscm_irq_restore:
+	msr	cpsr_c, r0
+	bx	lr
+
+@ void dscm_wfi(void): halt until an IRQ is requested (works with IRQs masked).
+	.global dscm_wfi
+	.type dscm_wfi, %function
+dscm_wfi:
+	mov	r0, #0
+	mcr	p15, 0, r0, c7, c0, 4
 	bx	lr
 
 @ uint32_t dscm_dtcm_base(void): the game's DTCM base from CP15.
