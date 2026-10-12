@@ -57,7 +57,7 @@ else
   cp "$BOOTSTRAP" "$sd/_nds/dscheevos/nds-bootstrap.nds"
 fi
 
-printf '[NDS-BOOTSTRAP]\nNDS_PATH = sd:/games/game.nds\nSAV_PATH = sd:/games/game.sav\nLOGGING = 1\nLOADING_SCREEN = 0\n' > "$sd/_nds/nds-bootstrap.ini"
+printf '[NDS-BOOTSTRAP]\nNDS_PATH = sd:/games/game.nds\nSAV_PATH = sd:/games/game.sav\nLOGGING = 1\nLOADING_SCREEN = 0\nDSI_MODE = %s\n' "${DSI_MODE:-0}" > "$sd/_nds/nds-bootstrap.ini"
 # no HOST: the real server
 ( umask 077
   printf '[DSCHEEVOS]\nENABLED = 1\nHARDCORE = %s\nSEND_DURING_PLAY = 1\nUSERNAME = %s\nTOKEN = %s\nSPECTATOR = %s\n' \

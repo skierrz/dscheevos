@@ -95,7 +95,7 @@ int bootstrap_ini_game(char* path, int path_size, int* dsi_mode)
 {
   game_ini_t g = { path, path_size, dsi_mode };
   path[0] = '\0';
-  *dsi_mode = 0;
+  *dsi_mode = 1;  /* nds-bootstrap's default when DSI_MODE is missing */
   read_ini("sd:/_nds/nds-bootstrap.ini", on_bootstrap, &g);
   return path[0] != '\0';
 }
