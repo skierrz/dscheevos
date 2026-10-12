@@ -22,6 +22,10 @@
 #define LWIP_RAW                    0
 #define LWIP_STATS                  0
 #define LWIP_NETIF_LINK_CALLBACK    0
+/* No IP fragments either way: TCP segments fit the MSS and DNS answers for
+ * one host fit a packet, so only an odd packet would ever need them. */
+#define IP_REASSEMBLY               0
+#define IP_FRAG                     0
 
 #define MEM_LIBC_MALLOC             1
 #define MEMP_MEM_MALLOC             1
@@ -34,7 +38,7 @@
 
 #define TCP_MSS                     1460
 #define TCP_WND                     (4 * TCP_MSS)
-#define TCP_SND_BUF                 (4 * TCP_MSS)
+#define TCP_SND_BUF                 (2 * TCP_MSS)   /* requests are 1.3 KB */
 #define TCP_SND_QUEUELEN            16
 #define LWIP_TCP_KEEPALIVE          1
 #define DNS_TABLE_SIZE              2

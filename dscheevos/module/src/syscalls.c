@@ -8,6 +8,7 @@
 #include <errno.h>
 #include <reent.h>
 #include <stddef.h>
+#include <stdlib.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/times.h>
@@ -45,3 +46,12 @@ int _isatty(int fd) { return _isatty_r(_REENT, fd); }
 int _kill(int pid, int sig) { return _kill_r(_REENT, pid, sig); }
 int _getpid(void) { return 1; }
 void _exit(int code) { (void)code; for (;;) {} }
+
+/* newlib's dtoa asserts that its small allocations succeed. Its own
+ * __assert_func prints with fiprintf (10 KB of formatting code no one else
+ * uses) before abort(); there is nowhere to print to here, so abort at once. */
+void __assert_func(const char* file, int line, const char* func, const char* expr)
+{
+  (void)file; (void)line; (void)func; (void)expr;
+  abort();
+}

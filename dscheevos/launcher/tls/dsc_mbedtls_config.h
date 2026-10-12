@@ -13,6 +13,7 @@
 
 #define MBEDTLS_AES_C
 #define MBEDTLS_AES_ROM_TABLES
+#define MBEDTLS_AES_FEWER_TABLES           /* 6 KB less code: AES (DRBG, WPA2 group key unwrap, AES-GCM if a server picks it) a little slower */
 #define MBEDTLS_GCM_C
 #define MBEDTLS_CHACHA20_C
 #define MBEDTLS_POLY1305_C
@@ -41,8 +42,10 @@
 #define MBEDTLS_ASN1_PARSE_C
 #define MBEDTLS_ASN1_WRITE_C
 #define MBEDTLS_OID_C
+#ifndef DSC_TLS_DER_ONLY                   /* the module: built-in and session CAs are DER */
 #define MBEDTLS_BASE64_C
-#define MBEDTLS_PEM_PARSE_C
+#define MBEDTLS_PEM_PARSE_C                /* the launcher reads ca.pem */
+#endif
 #define MBEDTLS_PK_C
 #define MBEDTLS_PK_PARSE_C
 #define MBEDTLS_X509_USE_C
@@ -58,6 +61,6 @@
 #define MBEDTLS_KEY_EXCHANGE_ECDHE_ECDSA_ENABLED
 #define MBEDTLS_KEY_EXCHANGE_ECDHE_RSA_ENABLED
 #define MBEDTLS_SSL_IN_CONTENT_LEN 16384
-#define MBEDTLS_SSL_OUT_CONTENT_LEN 4096
+#define MBEDTLS_SSL_OUT_CONTENT_LEN 2048  /* our largest write is a 1.3 KB request; longer ones go in parts */
 
 #endif

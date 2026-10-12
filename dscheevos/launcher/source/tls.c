@@ -19,8 +19,7 @@
 #include <string.h>
 #include <sys/socket.h>
 
-extern const char dsc_cacerts[];
-extern const size_t dsc_cacerts_size;
+#include "dsc_cacerts.h"
 
 struct tls_t {
   int fd;
@@ -105,7 +104,7 @@ static int setup(const char** error)
     *error = "TLS: random number setup failed";
     return -1;
   }
-  if (mbedtls_x509_crt_parse(&g_cas, (const unsigned char*)dsc_cacerts, dsc_cacerts_size) < 0) {
+  if (dsc_parse_der_list(&g_cas, dsc_cacerts, dsc_cacerts_size, 1) != 0) {
     *error = "TLS: bad built-in certificates";
     return -1;
   }

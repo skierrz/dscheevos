@@ -18,7 +18,7 @@ BUILD    := build
 ARCH     := -march=armv5te -mtune=arm946e-s -mthumb -mthumb-interwork
 CFLAGS   := $(ARCH) -Os -ffunction-sections -fdata-sections -fno-strict-aliasing -Wall \
             -DRC_NO_THREADS -DNDEBUG -Iinclude -I$(CORE)/include -I$(RCHEEVOS)/include -I$(RCHEEVOS)/src \
-            -Isrc/net -I$(LWIP)/src/include -I$(TLSCONF) -I$(MBEDTLS)/include '-DMBEDTLS_CONFIG_FILE="dsc_mbedtls_config.h"'
+            -Isrc/net -I$(LWIP)/src/include -I$(TLSCONF) -I$(MBEDTLS)/include '-DMBEDTLS_CONFIG_FILE="dsc_mbedtls_config.h"' -DDSC_TLS_DER_ONLY
 VERSION  := $(shell cat ../../VERSION)
 CFLAGS   += '-DDSC_VERSION="$(VERSION)"'
 # heap.c places load-time memory (heap.h): it wraps malloc and rc_api's parse of the set
