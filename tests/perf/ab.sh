@@ -10,7 +10,10 @@
 # Optional: SET=file.json (default: the synthetic typical set, gen_set.py 60 8 1 3),
 #   CACHE_MODEL=0 (melonDS's flat cache timing), MODULE=dir (another module build),
 #   KEEP=1 (keep the work folders, 450-650 MB each), BOOT_FRAMES (frame cap before the game, 6000),
-#   PORT (mock server, default 8453).
+#   PORT (mock server, default 8453), PCS=file (the VBlank call by PC and its cache misses,
+#   achievements on, see the runner's --profile-pcs).
+#   MODES="on" (skip the stock run; the comparison table needs both),
+#   EXTRA_ARGS (more runner arguments, both runs).
 # Needs what tests/launcher/run.sh needs (DSI_FILES, BOOTSTRAP, RUNNER). Runs the
 # emulator twice, one after the other; don't run other emulator tests meanwhile.
 set -eu
@@ -38,12 +41,14 @@ fi
 args="--profile --profile-frames $frames --script-from-game"
 [ "${CACHE_MODEL:-1}" = 0 ] || args="$args --cache-model-from-game"
 
-for mode in off on; do
+for mode in ${MODES:-off on}; do
   work=$top/$mode
   mkdir -p "$work"
   enabled=0; [ $mode = on ] && enabled=1
+  extra=${EXTRA_ARGS:-}
+  [ $mode = on ] && [ -n "${PCS:-}" ] && extra="--profile-pcs $PCS"
   echo "== $(basename "$rom"): achievements $mode"
-  PORT=${PORT:-8453} ENABLED=$enabled ROM=$rom WORK=$work SCRIPT=$script RUNNER_ARGS="$args --profile-log $work/prof.csv" \
+  PORT=${PORT:-8453} ENABLED=$enabled ROM=$rom WORK=$work SCRIPT=$script RUNNER_ARGS="$args --profile-log $work/prof.csv $extra" \
     "$repo/tests/launcher/run.sh" "$set" $((frames + ${BOOT_FRAMES:-6000})) > "$work/run.out" 2>&1 || true
   grep "^\[prof\]\|^\[runner\]" "$work/runner.log" || { echo "no profile; see $work/run.out"; exit 1; }
   if [ $mode = on ]; then
@@ -56,10 +61,13 @@ for mode in off on; do
 done
 
 python3 - "$top" "$frames" <<'EOF'
-import csv, sys
+import csv, os, sys
 top, want = sys.argv[1], int(sys.argv[2])
 cols = {}
 for mode in ("off", "on"):
+    if not os.path.exists("%s/%s/prof.csv" % (top, mode)):
+        cols[mode] = ["-"] * 7
+        continue
     rows = list(csv.DictReader(open("%s/%s/prof.csv" % (top, mode))))
     n = len(rows)
     lag = sum(int(r["lag"]) for r in rows)

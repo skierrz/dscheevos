@@ -9,7 +9,7 @@ MEMORY {
 
 SECTIONS {
   .header : { KEEP(*(.header)) } > image
-  .text   : { *(.text.entries) *(.text .text.* .gnu.linkonce.t.*) *(.glue_7) *(.glue_7t) *(.vfp11_veneer) *(.v4_bx) } > image
+  .text   : { *(.text.irq) *(.data.irq) *(.text.entries) *(.text .text.* .gnu.linkonce.t.*) *(.glue_7) *(.glue_7t) *(.vfp11_veneer) *(.v4_bx) } > image
   .rodata : { *(.rodata .rodata.* .gnu.linkonce.r.*) } > image
   .ARM.exidx : { *(.ARM.exidx* .gnu.linkonce.armexidx.*) } > image
   .init_array : { KEEP(*(.init_array*)) } > image

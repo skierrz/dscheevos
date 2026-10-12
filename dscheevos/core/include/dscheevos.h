@@ -7,7 +7,8 @@
  *   dsc_vblank()  at VBlank, in interrupt context: copies the game RAM the
  *                 achievement set needs into a snapshot. Short and bounded.
  *                 With capture_at_halt, the copy is made by dsc_capture()
- *                 when the game halts, and dsc_vblank() only queues it.
+ *                 when the game halts, and dsc_vblank() only counts the
+ *                 VBlank; idle time queues the frame.
  *   dsc_capture() (capture_at_halt only) when the game has finished its
  *                 frame and halts, with interrupts disabled: copies the game
  *                 RAM for the next dsc_vblank(). Stops early if
@@ -159,6 +160,13 @@ int dsc_is_active(void);
 /* VBlank, interrupt context. */
 void dsc_vblank(void);
 
+/* dsc_vblank() in two parts, for a handler that keeps the common case off
+ * its own stack: dsc_vblank_queue() uses no stack and calls nothing, and
+ * returns nonzero when this VBlank also needs dsc_vblank_copy() (a copy in
+ * the interrupt: capture_at_halt off, or nothing captured yet). */
+int dsc_vblank_queue(void);
+void dsc_vblank_copy(void);
+
 /* capture_at_halt: the game halted, interrupts disabled. Returns 0 if the
  * snapshot is ready for the next dsc_vblank(), 1 if it stopped for an
  * interrupt (call again at the next halt), -1 if nothing was taken. */
@@ -170,6 +178,7 @@ int dsc_idle(void);
 /* Answer for a request from dsc_platform_t.http_send. */
 void dsc_http_done(void* handle, int http_status, const char* body, size_t body_length);
 
+/* Idle context (it queues the frames dsc_vblank() counted first). */
 void dsc_get_stats(dsc_stats_t* stats);
 
 /* The game was reset: drop queued frames and reset achievement state, as

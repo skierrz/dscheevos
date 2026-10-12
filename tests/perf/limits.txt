@@ -1,15 +1,16 @@
 # tests/perf/run.sh --gate: <set> <metric> <limit>, instructions per call.
-# Set from the measured value + 5% (perf branch, Phase 1: the snapshot is
-# taken when the game halts, dsc_capture; the VBlank IRQ only queues it):
-#   typical capture_max 19698, capture_median 14587, vblank (IRQ) 74,
-#   idle_median 419296; heavy capture_max 66498, vblank 74.
-# Before: Phase 2 (copy in the IRQ) typical vblank 17124 / 11635;
-# before Phase 2: 133447 / 120467.
+# Set from the measured value + 5% (perf branch: the snapshot is taken when
+# the game halts, dsc_capture; the VBlank IRQ only counts the frame and idle
+# time queues it, dsc_vblank_queue + drain):
+#   typical capture_max 19873, capture_median 14669, vblank (IRQ) max 54,
+#   median 27, idle_median 419399; heavy capture_max 66794, vblank 54.
+# Before: Phase 1 (the IRQ queued the frame itself) vblank 74; Phase 2 (copy
+# in the IRQ) typical vblank 17124 / 11635; before Phase 2: 133447 / 120467.
 # Lower these when the snapshot gets cheaper.
-typical vblank_max      78
-typical vblank_median   78
+typical vblank_max      57
+typical vblank_median   29
 typical capture_max     20683
 typical capture_median  15316
 typical idle_median     440261
-heavy   vblank_max      78
+heavy   vblank_max      57
 heavy   capture_max     69823

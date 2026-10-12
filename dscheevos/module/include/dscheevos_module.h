@@ -15,10 +15,11 @@
  * DSCM_BASE and the session file (written by the DScheevos launcher) to
  * DSCM_SESSION, then its ARM9 calls header->init(DSCM_SESSION). After that
  * only hooks call in:
- *   header->vblank()  from the ARM9 IPC sync IRQ. The ARM7 VBlank handler
+ *   header->vblank()  from the ARM9 IPC sync IRQ, on the game's IRQ stack
+ *                     (it pushes three words). The ARM7 VBlank handler
  *                     bumps header->vblank_count, then sends the IRQ. The
- *                     module snapshots once per new count, so a sync value
- *                     overwritten by another IPC message loses nothing.
+ *                     module counts a frame once per new count, so a sync
+ *                     value overwritten by another IPC message loses nothing.
  *   header->halt()    replaces the game's OS_Halt: runs evaluation work,
  *                     then waits for an interrupt as OS_Halt did.
  *   header->reset()   from nds-bootstrap's game reset (in-game menu, soft
@@ -120,6 +121,7 @@ typedef struct dscm_status_t {
   volatile uint32_t irq_lines_last;   /* the module's VBlank work, inside the game's IPC IRQ */
   volatile uint32_t irq_lines_max;
   volatile uint32_t irq_lines_total;
+  /* the idle lines are added up in idle time: they lag while no pass runs */
   volatile uint32_t idle_lines_last;  /* idle work (halt path) in the last frame */
   volatile uint32_t idle_lines_max;
   volatile uint32_t idle_lines_total;
@@ -341,6 +343,7 @@ typedef struct dscm_header_t {
   void* net_ring;                     /* 0x44: dscm_shim.h ring, 0 if none; same line */
   volatile uint32_t cues;             /* 0x48: LED cues for the ARM7 (DSCM_CUE_*); same cache line, cleaned to RAM */
   uint32_t reserved2[5];
+  /* 0x60: the VBlank IRQ's own state, then its code (module internals) */
 } dscm_header_t;
 
 #define DSCM_HEADER ((dscm_header_t*)DSCM_BASE)

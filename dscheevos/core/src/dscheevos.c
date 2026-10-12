@@ -19,7 +19,9 @@
  * remembers which table it was taken with.
  *
  * Snapshots queue in a ring: dsc_vblank (IRQ) adds at the head, dsc_idle
- * evaluates and frees at the tail, oldest first. Their bytes live in one
+ * evaluates and frees at the tail, oldest first. With capture_at_halt the
+ * IRQ only counts the VBlank (dsc_vblank_queue, see Q); idle time adds it
+ * to the ring (drain). Their bytes live in one
  * arena, also used as a ring, so each frame costs only the bytes watched
  * and a long stretch without idle time (loading, save writes) queues many
  * frames instead of dropping them.
@@ -52,8 +54,14 @@
  * built as the module Makefile says (Thumb, for size). */
 #if defined(__arm__) && defined(__GNUC__) && !defined(__clang__)
 #define HOT __attribute__((target("arm"), optimize("O2")))
+/* dsc_vblank_queue and Q: the module's linker script puts them next to its
+ * own VBlank code and data, so the IRQ touches few cache lines. */
+#define IRQ_TEXT __attribute__((target("arm"), optimize("O2"), section(".text.irq")))
+#define IRQ_DATA __attribute__((aligned(32), section(".data.irq")))
 #else
 #define HOT
+#define IRQ_TEXT
+#define IRQ_DATA
 #endif
 
 /* Readers (in-game menu, ARM7) may look at any time: a count or head is
@@ -206,7 +214,7 @@ static struct {
 
   slot_t slots[MAX_SLOTS];     /* ring: [slot_tail, slot_head) are queued */
   uint32_t slot_count;         /* most frames that may wait */
-  volatile uint32_t slot_head; /* written by dsc_vblank only */
+  volatile uint32_t slot_head; /* written by commit (drain) and dsc_vblank_copy, never at once */
   volatile uint32_t slot_tail; /* written by dsc_idle only */
   uint8_t* arena;
   uint32_t arena_size;
@@ -217,13 +225,12 @@ static struct {
   slot_t last;
   volatile int has_last;
   volatile uint32_t last_offset;
-  /* capture_at_halt: slots[slot_head] holds a capture for the next VBlank */
-  volatile int stage;
+  /* capture_at_halt: slots[slot_head] holds a capture for the next VBlank (Q.stage) */
   int stage_same;              /* its bytes and targets equal the newest queued snapshot's */
   uint32_t stage_prev;         /* slot_head - 1 when it was taken */
   volatile int stage_failed;   /* the last capture found no room: the frame is dropped */
   int capturing;               /* in dsc_capture with interrupt_pending: poll it */
-  uint32_t capture_frame;      /* frame_counter when the copy began */
+  uint32_t capture_frame;      /* Q.count when the copy began */
   /* Chain copies whose rcheevos state (prior, changed) advances with each
    * frame: saved before a capture, put back if it is replaced or stopped. */
   rc_memref_value_t** sync;
@@ -251,6 +258,21 @@ static struct {
   uint32_t shadow_size[MAX_SLOTS];
 #endif
 } S;
+
+/* What the VBlank IRQ reads and writes with capture_at_halt, once something
+ * is captured: nothing else of the core. It counts the VBlank and hands the
+ * stage to it; drain() (idle time) then adds the frames to the ring, as
+ * commit(). Only the IRQ writes count, frames and sealed; only idle time
+ * writes taken. */
+enum { MODE_OFF, MODE_COPY, MODE_QUEUE };
+static struct {
+  volatile uint32_t mode;      /* MODE_COPY: dsc_vblank_copy() checks (and may switch to MODE_QUEUE) */
+  volatile uint32_t stage;     /* slots[slot_head] holds a capture for the next VBlank */
+  volatile uint32_t count;     /* every VBlank: did one come during a copy? */
+  volatile uint32_t frames;    /* VBlanks queued, all time */
+  volatile uint32_t sealed;    /* the one of those the stage went to */
+  volatile uint32_t taken;     /* frames drain() has committed */
+} Q IRQ_DATA;
 
 static void dsc_log(const char* message)
 {
@@ -492,8 +514,10 @@ static int table_in_use(const table_t* t)
   (void)i;
   if (t == S.current)
     return 1;
-  /* the stage first: if a VBlank queues it meanwhile, the loop below sees it */
-  if ((S.stage && S.slots[S.slot_head % MAX_SLOTS].table == t) || (S.has_last && S.last.table == t))
+  /* the stage first, also once a VBlank took it (sealed, not drained yet) */
+  if ((Q.stage || (int32_t)(Q.sealed - Q.taken) > 0) && S.slots[S.slot_head % MAX_SLOTS].table == t)
+    return 1;
+  if (S.has_last && S.last.table == t)
     return 1;
   for (n = S.slot_tail; n != S.slot_head; n++)
     if (S.slots[n % MAX_SLOTS].table == t)
@@ -643,7 +667,7 @@ static inline HOT uint32_t peek(const mem_t* m, uint32_t address, uint32_t n, ui
 #define POLL_WORDS 16
 static inline HOT int stop_now(void)
 {
-  return S.capturing && (S.platform.interrupt_pending() || S.frame_counter != S.capture_frame);
+  return S.capturing && (S.platform.interrupt_pending() || Q.count != S.capture_frame);
 }
 
 /* How run_chains computes a step. Reads and the common arithmetic on
@@ -1341,7 +1365,7 @@ static void prepare_snapshots(void)
   rc_memref_list_t* ml;
   uint32_t i, j;
 
-  S.stage = 0;
+  Q.stage = 0;
   free_chains();
   if (!memrefs)
     return;
@@ -1931,6 +1955,7 @@ static void RC_CCONV game_loaded(int result, const char* error_message, rc_clien
       game ? game->title : NULL, count);
     PUBLISH_BARRIER();
     S.active = 1;
+    Q.mode = MODE_COPY;
     emit(DSC_EVENT_GAME_LOADED, game ? game->id : 0, 0, game ? game->title : NULL, NULL);
   }
   else {
@@ -1962,6 +1987,7 @@ int dsc_init(const dsc_platform_t* platform, const dsc_config_t* config)
     return -1;
 
   memset(&S, 0, sizeof(S));
+  memset((void*)&Q, 0, sizeof(Q));
   S.platform = *platform;
   S.config = *config;
   if (!S.config.max_addresses)
@@ -2258,8 +2284,8 @@ static int check_repeat(const slot_t* prev, const slot_t* slot, const table_t* t
 #endif
 
 /* Queue the stage (dsc_capture's snapshot) for evaluation, or count the
- * frame against the newest queued one. Interrupt context. */
-static HOT void commit(void)
+ * frame against the newest queued one. Idle time (drain). */
+static void commit(int staged)
 {
   slot_t* slot = &S.slots[S.slot_head % MAX_SLOTS];
   slot_t* prev = S.slot_head != S.slot_tail ? &S.slots[(S.slot_head - 1) % MAX_SLOTS] : NULL;
@@ -2267,16 +2293,14 @@ static HOT void commit(void)
   S.frame_counter++;
   /* frames waiting, repeats included: past MAX_SLOTS (~17 s), drop */
   if (S.stats.frames_snapshotted - S.stats.frames_evaluated - S.stats.frames_discarded >= MAX_SLOTS) {
-    if (S.stage) {
-      S.stage = 0;
+    if (staged) {
       sync_restore();
       slot->state = SLOT_FREE;
     }
     S.stats.frames_dropped++;
     return;
   }
-  if (S.stage) {
-    S.stage = 0;
+  if (staged) {
     S.sync_dirty = 0;            /* the chain copies' state is this frame's now */
     S.stats.frames_snapshotted++;
     if (S.stage_same && prev && S.stage_prev == S.slot_head - 1 && prev->state == SLOT_READY) {
@@ -2321,7 +2345,51 @@ static HOT void commit(void)
   S.slot_head++;
 }
 
-HOT void dsc_vblank(void)
+/* The VBlanks the IRQ queued, oldest first, into the ring. Idle time:
+ * called before anything that looks at the ring or the stage. */
+static void drain(void)
+{
+  uint32_t n = Q.frames;
+  while (Q.taken != n) {
+    uint32_t f = Q.taken + 1;
+    commit(Q.sealed == f);
+    PUBLISH_BARRIER();
+    Q.taken = f;
+  }
+}
+
+static inline __attribute__((always_inline)) void queue_frame(void)
+{
+  uint32_t f = Q.frames + 1;
+  if (Q.stage) {
+    Q.stage = 0;
+    Q.sealed = f;
+  }
+  Q.frames = f;      /* publish last */
+}
+
+/* No stack, no calls: the module runs it on the game's IRQ stack. A copy
+ * (nothing captured yet, or capture_at_halt off) needs dsc_vblank_copy().
+ * While drain() still has frames to commit, this one waits behind them:
+ * only one side moves the ring at a time. */
+IRQ_TEXT int dsc_vblank_queue(void)
+{
+  uint32_t mode = Q.mode;
+  Q.count++;
+  if (mode == MODE_QUEUE || Q.frames != Q.taken) {
+    queue_frame();
+    return 0;
+  }
+  return mode == MODE_COPY;
+}
+
+void dsc_vblank(void)
+{
+  if (dsc_vblank_queue())
+    dsc_vblank_copy();
+}
+
+HOT void dsc_vblank_copy(void)
 {
   const table_t* t;
   slot_t* slot;
@@ -2334,9 +2402,11 @@ HOT void dsc_vblank(void)
   if (!S.active)
     return;
   /* At halt, but nothing captured yet (session start, or after a reset):
-   * this one frame is copied here, so the first frames aren't lost. */
-  if (S.config.capture_at_halt && (S.stage || S.has_last || S.slot_head != S.slot_tail || S.stage_failed)) {
-    commit();
+   * this one frame is copied here, so the first frames aren't lost. Once
+   * there is a capture, VBlanks only queue. */
+  if (S.config.capture_at_halt && (Q.stage || S.has_last || S.slot_head != S.slot_tail || S.stage_failed)) {
+    Q.mode = MODE_QUEUE;
+    queue_frame();
     return;
   }
 
@@ -2398,13 +2468,14 @@ int dsc_capture(void)
   slot_t* prev = NULL;
   mem_t m;
   int32_t offset;
-  uint32_t size;
+  uint32_t size, head;
   int same, chains;
 
   if (!S.active || !S.config.capture_at_halt)
     return -1;
+  drain();
   /* replaces a capture taken earlier in this frame: the game ran since */
-  S.stage = 0;
+  Q.stage = 0;
   sync_restore();
 
   t = S.current;
@@ -2430,15 +2501,16 @@ int dsc_capture(void)
   slot->targets = (target_t*)(slot->data + t->words * 4);
   slot->table = t;
   sync_save();
-  S.capture_frame = S.frame_counter;
+  head = S.slot_head;
+  S.capture_frame = Q.count;
   S.capturing = S.platform.interrupt_pending != NULL;
   same = copy_snapshot(t, slot->data, &m, prev ? prev->data : NULL);
   chains = same < 0 ? -1 : run_chains(slot->targets, &m, same ? prev->targets : NULL);
   S.capturing = 0;
   if (chains < 0) {
     sync_restore();
-    if (S.frame_counter == S.capture_frame)
-      slot->state = SLOT_FREE;    /* else a VBlank may have queued a carry slot in it */
+    if (S.slot_head == head)
+      slot->state = SLOT_FREE;    /* else a VBlank copied into it (nothing captured before) */
     S.stats.captures_stopped++;
     return 1;
   }
@@ -2452,7 +2524,7 @@ int dsc_capture(void)
   S.stage_same = same;
   S.stage_prev = S.slot_head - 1;
   PUBLISH_BARRIER();
-  S.stage = 1;
+  Q.stage = 1;
   return 0;
 }
 
@@ -2498,6 +2570,7 @@ int dsc_idle(void)
     return 0;
 
   finish_http();
+  drain();
 
   /* Only what is queued now: frames that arrive meanwhile wait for the next
    * call, so the caller gets back to the network and the next capture even
@@ -2581,14 +2654,20 @@ void dsc_http_done(void* handle, int http_status, const char* body, size_t body_
 
 void dsc_get_stats(dsc_stats_t* stats)
 {
+  if (S.initialized)
+    drain();
   *stats = S.stats;
 }
 
 void dsc_reset(void)
 {
-  uint32_t head = S.slot_head, n;
+  uint32_t head, n;
   if (!S.initialized)
     return;
+  /* no stage for the next VBlank, then the frames already counted */
+  Q.stage = 0;
+  drain();
+  head = S.slot_head;
   S.evaluating = NULL;
   for (n = S.slot_tail; n != head; n++) {
     const slot_t* q = &S.slots[n % MAX_SLOTS];
@@ -2596,8 +2675,9 @@ void dsc_reset(void)
   }
   S.slot_tail = head;          /* frames from before the reset */
   S.has_last = 0;
-  S.stage = 0;
   sync_restore();
+  if (S.active)
+    Q.mode = MODE_COPY;        /* the next frame is copied in the IRQ again, as at the start */
   if (S.active) {
     rc_client_reset(S.client);
     S.list_stale = 1;
@@ -2643,6 +2723,7 @@ void dsc_shutdown(void)
   if (!S.initialized)
     return;
   S.active = 0;
+  Q.mode = MODE_OFF;
   if (S.client) {
     /* rcheevos (v12.5.0) raises a pending mastery event while unloading,
      * after it has cleared client->game, and crashes. Mastery is pending
@@ -2675,4 +2756,5 @@ void dsc_shutdown(void)
   free_chains();
   list_free();
   memset(&S, 0, sizeof(S));
+  memset((void*)&Q, 0, sizeof(Q));
 }

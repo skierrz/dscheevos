@@ -7,6 +7,7 @@
 #include "net/net.h"
 #include "util/rc_version.h"
 
+#include <stddef.h>
 #include <string.h>
 
 #define REG_VCOUNT (*(volatile uint16_t*)0x04000006)
@@ -26,8 +27,6 @@ static void* g_net_handle[DSCM_NET_SLOTS];
 static uint32_t g_net_sequence;
 static dscm_boot_t g_boot;
 static const char* g_session;        /* session file in memory (preloads) */
-static volatile uint32_t g_frames;
-static uint32_t g_last_vblank;
 static uint32_t g_dtcm;
 static int g_initialized;
 
@@ -56,12 +55,71 @@ static inline uint32_t lines_between(uint32_t start, uint32_t end)
 }
 #define lines_since(start) lines_between((start), REG_VCOUNT)
 
-/* Idle time per frame. The idle thread owns g_idle_lines, the IRQ owns
- * g_idle_cut_lines; the IRQ adds both up once a frame. g_idle_open says a
- * pass is being timed: whoever clears it (the pass at its end, or the VBlank
- * IRQ that preempts it) counts the lines, so none are counted twice. */
-static volatile uint32_t g_idle_start, g_idle_open, g_idle_ran, g_idle_lines;
-static uint32_t g_idle_cut_lines, g_idle_seen;
+/* What the VBlank IRQ (vblank_entry in start.s) reads and writes: two
+ * cache lines in the module header, next to its code; each VBlank touches
+ * only the first. publish_stats() copies the counters to the status in idle
+ * time. idle_open says an idle pass is being timed: whoever clears it (the
+ * pass at its end, or the VBlank IRQ that preempts it) counts its lines, so
+ * none are counted twice. */
+typedef struct dscm_irq_t {
+  uint32_t last_vblank;          /* the ARM7's count at the last call */
+  volatile uint32_t frames;      /* VBlanks since init */
+  uint8_t on;                    /* initialized and active */
+  volatile uint8_t in_vblank;    /* a copy (dsc_vblank_copy) is running */
+  uint8_t reserved[2];
+  volatile uint32_t idle_open;
+  volatile uint32_t idle_start;
+  uint32_t timed_frames;
+  uint32_t irq_lines_total;
+  uint16_t irq_lines_last;
+  uint16_t irq_lines_max;
+  /* second line: only when a pass is cut, or VBlanks were missed */
+  volatile uint32_t idle_cut_lines;
+  uint32_t idle_cut;
+  uint32_t frames_missed;
+  uint32_t reserved2[5];
+} dscm_irq_t;
+extern dscm_irq_t dscm_irq;
+/* the offsets start.s uses */
+_Static_assert(sizeof(dscm_irq_t) == 64, "dscm_irq: two cache lines");
+_Static_assert(offsetof(dscm_irq_t, on) == 8 && offsetof(dscm_irq_t, in_vblank) == 9 && offsetof(dscm_irq_t, idle_open) == 12, "dscm_irq");
+_Static_assert(offsetof(dscm_irq_t, idle_start) == 16 && offsetof(dscm_irq_t, timed_frames) == 20 && offsetof(dscm_irq_t, irq_lines_total) == 24, "dscm_irq");
+_Static_assert(offsetof(dscm_irq_t, irq_lines_last) == 28 && offsetof(dscm_irq_t, irq_lines_max) == 30, "dscm_irq");
+_Static_assert(offsetof(dscm_irq_t, idle_cut_lines) == 32 && offsetof(dscm_irq_t, idle_cut) == 36 && offsetof(dscm_irq_t, frames_missed) == 40, "dscm_irq");
+#define g_frames (dscm_irq.frames)
+
+/* Idle lines per frame, from the idle thread, with IRQs masked: at each
+ * pass's start and end it closes the frames that ended since (VBlanks
+ * counted by the IRQ). Lines a pass added belong to the frame it ran in,
+ * and so does a cut (the IRQ counts it at that frame's end); frames since
+ * then had no pass. "Ran": a pass started or ended in the frame. */
+static struct {
+  uint32_t frame;                /* the frame being added up (dscm_irq.frames then) */
+  uint32_t lines;                /* its lines so far */
+  uint32_t cut_seen;             /* dscm_irq.idle_cut_lines already counted */
+  int ran;
+  uint32_t last, max, total, none;
+} g_idle;
+
+static void idle_frames(uint32_t lines)
+{
+  uint32_t passed = dscm_irq.frames - g_idle.frame;
+  if (passed) {
+    uint32_t cut = dscm_irq.idle_cut_lines;
+    uint32_t count = g_idle.lines + (cut - g_idle.cut_seen);
+    g_idle.cut_seen = cut;
+    g_idle.total += count;
+    if (count > g_idle.max)
+      g_idle.max = count;
+    g_idle.last = passed > 1 ? 0 : count;
+    g_idle.none += passed - 1 + !g_idle.ran;
+    g_idle.frame = dscm_irq.frames;
+    g_idle.lines = 0;
+    g_idle.ran = 0;
+  }
+  g_idle.lines += lines;
+  g_idle.ran = 1;
+}
 
 /* used by the stubs in syscalls.c */
 uint32_t dscm_unix_time(void) { return g_boot.unix_time + g_frames / 60; }
@@ -81,8 +139,8 @@ static uint32_t read_memory(uint32_t address, uint8_t* buffer, uint32_t num_byte
   return 0;
 }
 
-/* The same regions as read_memory, for the core's direct snapshot copy.
- * Runs in the VBlank IRQ, after g_dtcm is refreshed. */
+/* The same regions as read_memory, for the core's direct snapshot copy
+ * (dsc_capture, or a copy in the VBlank IRQ), after g_dtcm is refreshed. */
 static void memory_map(const uint8_t** main_ram, const uint8_t** dtcm)
 {
   *main_ram = (const uint8_t*)0x02000000u;
@@ -114,8 +172,16 @@ static int interrupt_pending(void)
 
 /* A snapshot when the game halts. Returns with IRQs still masked, and the
  * CPSR to put back: the caller may halt first. */
+/* The game sets its DTCM up before its first frame; the module starts before that. */
+static void refresh_dtcm(void)
+{
+  if (!g_boot.dtcm_base)
+    g_dtcm = dscm_dtcm_base();
+}
+
 static uint32_t capture(void)
 {
+  refresh_dtcm();
   g_capture_cpsr = dscm_irq_off();
   dsc_capture();
   return g_capture_cpsr;
@@ -320,7 +386,7 @@ int module_init(const dscm_boot_t* boot)
   g_boot.token[sizeof(g_boot.token) - 1] = '\0';
   g_boot.game_hash[sizeof(g_boot.game_hash) - 1] = '\0';
   g_dtcm = g_boot.dtcm_base;
-  g_last_vblank = dscm_vblank_count_read();
+  dscm_irq.last_vblank = dscm_vblank_count_read();
   dscm_g_status.hardcore = g_boot.hardcore;
 
   memset(&platform, 0, sizeof(platform));
@@ -403,53 +469,17 @@ int module_init(const dscm_boot_t* boot)
     g_net_started = 1;
   }
   g_initialized = 1;
+  g_idle.frame = dscm_irq.frames;
+  dscm_irq.on = dscm_g_status.active ? 1 : 0;
   return dscm_g_status.active ? 0 : -1;
 }
 
-/* Called on every ARM9 IPC sync IRQ; acts once per ARM7 VBlank. */
-void module_vblank(void)
+/* The rest of a VBlank that needs a copy in the IRQ (vblank_entry in start.s
+ * calls it on the module's IRQ stack). */
+void module_vblank_copy(void)
 {
-  uint32_t start = REG_VCOUNT;
-  uint32_t count = dscm_vblank_count_read();
-  uint32_t passed = count - g_last_vblank;
-  uint32_t lines;
-  if (passed == 0)
-    return;   /* another IPC message, not a VBlank */
-  g_last_vblank = count;
-  g_frames += passed;
-  if (!g_initialized || !dscm_g_status.active)
-    return;
-  if (passed > 1)
-    dscm_g_status.frames_missed += passed - 1;
-  if (!g_boot.dtcm_base)
-    g_dtcm = dscm_dtcm_base();
-  dsc_vblank();   /* the counters reach the status in idle time (publish_stats) */
-
-  /* Idle time of the frame that ends here. A pass still running was
-   * preempted by this IRQ: count it up to here; the game runs next. */
-  if (g_idle_open) {
-    g_idle_open = 0;
-    g_idle_cut_lines += lines_between(g_idle_start, start);
-    dscm_g_status.idle_cut++;
-  }
-  lines = g_idle_lines + g_idle_cut_lines;
-  count = lines - g_idle_seen;
-  g_idle_seen = lines;
-  dscm_g_status.idle_lines_last = count;
-  if (count > dscm_g_status.idle_lines_max)
-    dscm_g_status.idle_lines_max = count;
-  dscm_g_status.idle_lines_total += count;
-  if (!g_idle_ran)
-    dscm_g_status.idle_none++;
-  g_idle_ran = 0;
-
-  /* This IRQ's own cost, from the first line of this function. */
-  lines = lines_since(start);
-  dscm_g_status.irq_lines_last = lines;
-  if (lines > dscm_g_status.irq_lines_max)
-    dscm_g_status.irq_lines_max = lines;
-  dscm_g_status.irq_lines_total += lines;
-  dscm_g_status.timed_frames++;
+  refresh_dtcm();
+  dsc_vblank_copy();
 }
 
 /* Frames queued and not evaluated yet (dropped ones were never queued). */
@@ -471,6 +501,17 @@ static void publish_stats(void)
   dscm_g_status.captures = s.captures;
   dscm_g_status.captures_stopped = s.captures_stopped;
   dscm_g_status.frames_stale = s.frames_stale;
+  /* the IRQ's own counters */
+  dscm_g_status.frames_missed = dscm_irq.frames_missed;
+  dscm_g_status.timed_frames = dscm_irq.timed_frames;
+  dscm_g_status.irq_lines_last = dscm_irq.irq_lines_last;
+  dscm_g_status.irq_lines_max = dscm_irq.irq_lines_max;
+  dscm_g_status.irq_lines_total = dscm_irq.irq_lines_total;
+  dscm_g_status.idle_lines_last = g_idle.last;
+  dscm_g_status.idle_lines_max = g_idle.max;
+  dscm_g_status.idle_lines_total = g_idle.total;
+  dscm_g_status.idle_none = g_idle.none;
+  dscm_g_status.idle_cut = dscm_irq.idle_cut;
 }
 
 static void update_progress(void)
@@ -498,7 +539,7 @@ void module_reset(void)
  * at once; it resumes the next time the game is idle. eval_lines is wall time
  * between start and end, so it includes any time the game took meanwhile.
  * The idle lines in the status stop at the VBlank that preempts a pass (see
- * module_vblank), so they leave out the game's frame but also the rest of
+ * vblank_entry), so they leave out the game's frame but also the rest of
  * that pass; idle_cut counts such passes.
  * Returns nonzero when the pass took a scanline or more: an IRQ may have come
  * and gone meanwhile, so halt_entry returns to the game's loop instead of
@@ -518,9 +559,13 @@ int module_idle(int idle_loop)
     return 0;
   }
   dscm_g_status.halts_idle++;
-  g_idle_start = start;
-  g_idle_open = 1;
-  g_idle_ran = 1;
+  {
+    uint32_t cpsr = dscm_irq_off();
+    idle_frames(0);
+    dscm_irq.idle_start = start;
+    dscm_irq.idle_open = 1;
+    dscm_irq_restore(cpsr);
+  }
 
   if (g_reset_pending) {
     g_reset_pending = 0;
@@ -568,11 +613,10 @@ int module_idle(int idle_loop)
    * Star Ultra's streaming for a minute (tests/perf/AB.md). */
   {
     uint32_t cpsr = capture();
+    start = dscm_irq.idle_start;
+    /* else a VBlank came meanwhile and counted the pass */
+    idle_frames(dscm_take(&dscm_irq.idle_open) ? lines_since(start) : 0);
     publish_stats();
-    g_idle_ran = 1;
-    start = g_idle_start;
-    if (dscm_take(&g_idle_open))
-      g_idle_lines += lines_since(start);   /* else a VBlank came meanwhile and counted the pass */
     dscm_wfi();
     dscm_irq_restore(cpsr);
     return 1;   /* halted here */
@@ -584,6 +628,7 @@ void module_shutdown(void)
   if (g_initialized)
     dsc_shutdown();
   g_initialized = 0;
+  dscm_irq.on = 0;
   dscm_g_status.active = 0;
 }
 

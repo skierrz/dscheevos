@@ -26,8 +26,9 @@ each frame changes 512 random bytes and calls:
   halts (`config.capture_at_halt`). First half of the frames: the queue is
   empty. Second half: idle runs only every 4th frame, so the snapshot is
   compared against the frame still queued (repeat check).
-- `dsc_vblank` – queues that snapshot; this is the part that runs in the
-  game's IPC IRQ on the console.
+- `dsc_vblank` – counts the frame and hands it that snapshot
+  (`dsc_vblank_queue`; the next `dsc_capture` or `dsc_idle` queues it). This
+  is the core's part of what runs in the game's IPC IRQ on the console.
 - `dsc_idle` – one frame evaluated by rcheevos (first half only).
 
 The first frame is copied inside `dsc_vblank` (nothing captured yet) and is

@@ -19,7 +19,7 @@ Optional: `CACHE_MODEL=0` (melonDS's flat cache timing), `MODULE=dir` (test anot
 
 The headless runner (`tools/melonDS`, branch `dscheevos-perf`) counts, for every instruction the ARM9 interpreter runs, the cycles melonDS charges for it (`ARMv5::ProfileInstr` in `src/ARM.cpp`). Per VBlank interval (from the start of one VBlank, line 192, to the next) it adds up:
 
-- **module VBlank call**: PC inside the module (`DSCM_BASE` 0x02D80000 up to the image size from the module header; see `dscheevos/module/module.ld`) while it runs the VBlank call: `vblank_entry` → `module_vblank` → `dsc_vblank`, the snapshot, called from nds-bootstrap's ARM9 IPC handler inside the game's interrupt. Told apart from idle work by the PC (the entry stub) or the stack pointer (the module's own IRQ stack, which `vblank_entry` switches to), not by the CPU mode. The game is frozen for all of it.
+- **module VBlank call**: PC inside the module (`DSCM_BASE` 0x02D80000 up to the image size from the module header; see `dscheevos/module/module.ld`) while it runs the VBlank call: `vblank_entry` → `dsc_vblank_queue` (and, for a session's first frame, `dsc_vblank_copy` on the module's IRQ stack), called from nds-bootstrap's ARM9 IPC handler inside the game's interrupt. Told apart from idle work by the PC (from `vblank_entry` up to `halt_entry`, which takes in `dsc_vblank_queue`) or the stack pointer (the module's own IRQ stack, which `vblank_entry` switches to), not by the CPU mode. The game is frozen for all of it.
 - **module idle work**: PC inside the module the rest of the time: the idle work behind `halt_entry` (evaluation, network). This runs only when the game has nothing to do.
 - **module in IRQ mode**: module cycles with CPSR in IRQ mode, whatever the context. On Kirby and Pokemon it equals the VBlank call: the call runs in IRQ mode.
 - **ARM9 busy**: all executed cycles, module or not. 100% means the ARM9 never halted.
@@ -58,6 +58,8 @@ The runner also learns the game's first `OS_Halt` call from these events (the st
 | `--script-from-game` | `--script` frames count from the game's first `OS_Halt` call |
 | `--cache-model-from-game` | cache model on from the game's first `OS_Halt` call |
 | `--watch-write ADDR:SIZE` | DSi mode: print bus writes (CPU or DMA) to a range with the frame and the CPU's PC; for finding who overwrites memory |
+| `--profile-pcs FILE` | with the cache model: the VBlank call's cycles and cache misses by PC, and its data misses and uncached accesses by address (CSV); `ab.sh` takes `PCS=file` |
+| `--trace-sd FRAME` | from that frame on: every SD/SDIO command and error IRQ, ARM9/ARM7 IPC sync sends, and (with `--watch-write`) every watched write, with ARM7 timestamps, on stderr |
 
 Use them directly with `RUNNER_ARGS="--profile ..." tests/launcher/run.sh ...`.
 
@@ -119,7 +121,25 @@ The module copies at the halt (`dsc_capture`, IRQs masked in chunks of 16 words 
 
 Lag equals stock in both. The VBlank call is about 75 instructions plus the module's self-timing; with melonDS's flat cache timing (`CACHE_MODEL=0`) it is 467 cycles (0.04%), so the rest is cache misses on the cold IRQ path. Evaluation of this synthetic set still needs about a frame of CPU per frame: Kirby evaluated 1812 of 2652 queued frames and dropped 3399, Pokemon dropped 412 (evaluation speed is the next phase).
 
-Found on the way, both fixed:
+Found on the way (the second one turned out not to be fixed; see the next section):
 
 - **An idle loop that never halts stalls Kirby.** With frames queued, returning to the idle loop without halting kept the ARM9 busy and Kirby's attract demo stopped streaming. The module now halts after every pass.
 - **Wi-Fi next to a ROM read hangs Kirby.** Once the network got idle time, the ARM7 SDIO shim ran while the card engine had an SD read in flight; the reads failed (`sdmmc_init` retries) and the game hung at the same point every run. With the cache model off, or the network off, it didn't. nds-bootstrap now skips the shim's poll while `readOngoing` (`ring->stats.paused_card_read`). Hardware may differ, but keeping the two apart is safe either way.
+
+### The VBlank call trimmed (perf branch, `perf-irq-trim`)
+
+The IRQ now only counts the frame: the core's `dsc_vblank_queue` (27 instructions, no stack, no calls) hands it the capture taken at the halt, and idle time adds it to the queue (`drain`, at the start of `dsc_capture`, `dsc_idle`, `dsc_get_stats` and `dsc_reset`). The module's part is in assembly next to the header (`vblank_entry`): it reads the ARM7's count past the cache, keeps its state in one cache line (a second one only when an idle pass is cut or VBlanks were missed), runs on the game's IRQ stack (the three words it always pushed), and leaves the per-frame idle statistics to the idle thread. The copy for a session's first frame still runs in the IRQ, on the module's stack.
+
+Where the old call went (`--profile-pcs`, Kirby, cache model): all of it was cache misses on a cold path, about 28 instruction and 32 data line fills a frame: Thumb interworking stubs, literal pools, the module's own stack (4 lines), and fields spread over the core's state and the status. Now: about 7 instruction lines, 2 data lines, a literal and 3 uncached reads (the ARM7's count, `REG_VCOUNT` twice).
+
+| | Kirby off | Kirby on | Pokemon off | Pokemon on |
+|---|---|---|---|---|
+| lag intervals | 1808 (30.13%) | 1795 (29.92%) | 50 (0.83%) | 50 (0.83%) |
+| longest lag run | 7 | 7 | 21 | 21 |
+| module VBlank call, avg / max | 0 | 525 / 699 (0.05% / 0.06%) | 0 | 529 / 2,072 (0.05% / 0.18%) |
+| unlocks the mock server got | | 5 | | 2 |
+
+Before (same setup): 2,752 and 3,081 cycles. With the flat cache (`CACHE_MODEL=0`) Pokemon's call is 151 cycles. The Pokemon max is the first frame's copy in the IRQ. Steps, Pokemon avg: deferred queueing and the assembly entry 758; a shorter entry 673; idle statistics out of the IRQ 529.
+
+**Kirby still hangs, with this build and with the Phase 1 one.** The Wi-Fi-next-to-a-ROM-read hang above is not fixed: in repeated runs of the same A/B, Kirby's attract demo froze at the same frame (5037, interval 2300, then 3,699 lag intervals) in 4 of 6 runs of the Phase 1 module (`perf-baseline-p1`) and 4 of 6 of this one. Network traffic timing depends on the host, so runs differ; the Phase 1 results above came from runs that didn't hang. Padding this build's IRQ back to ~3,000 cycles made one run pass; the network off (`HARDCORE=0 LIVE=0`) made it pass too. `--trace-sd` shows the card engine's ROM read issuing CMD18 for one sector and the transfer never finishing, with no SDIO command or SD error IRQ in between (the shim's poll is already skipped while `readOngoing`; skipping it also while a read is only requested didn't help). Not solved yet: it freezes the game, so it blocks any release until understood, on hardware too.
+

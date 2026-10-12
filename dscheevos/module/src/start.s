@@ -35,6 +35,112 @@ dscm_cues:
 	.word 0                     @ 0x48: LED cues for the ARM7 (same cache line)
 	.space 20
 
+@ 0x60: what the VBlank IRQ reads and writes (struct dscm_irq_t in module.c,
+@ which checks these offsets): every VBlank touches the first cache line
+@ only. The IRQ code follows, and the core's part of it (.text.irq) right
+@ after: an IRQ that finds everything cold touches few lines.
+	.equ	IRQ_LAST, 0
+	.equ	IRQ_FRAMES, 4
+	.equ	IRQ_ON, 8
+	.equ	IRQ_IN_VBLANK, 9
+	.equ	IRQ_IDLE_OPEN, 12
+	.equ	IRQ_IDLE_START, 16
+	.equ	IRQ_TIMED, 20
+	.equ	IRQ_LINES_TOTAL, 24
+	.equ	IRQ_LINES_LAST, 28
+	.equ	IRQ_LINES_MAX, 30
+	.equ	IRQ_IDLE_CUT_LINES, 32
+	.equ	IRQ_IDLE_CUT, 36
+	.equ	IRQ_MISSED, 40
+	.balign	32
+	.global dscm_irq
+dscm_irq:
+	.space	64
+
+	.arm
+@ VBlank: called from the ARM9 IPC sync IRQ handler, on the game's IRQ stack
+@ (DTCM): the three words pushed here are all it uses, unless the frame
+@ needs a copy (dsc_vblank_copy), which runs on the module's IRQ stack.
+@ Acts once per ARM7 VBlank.
+	.global vblank_entry
+	.type vblank_entry, %function
+vblank_entry:
+	push	{r4, r5, lr}
+	adr	r4, dscm_irq
+	ldmia	r4, {r0-r2}                 @ last_vblank, frames, flag bytes
+	tst	r2, #0x100                  @ in_vblank: the copy below is running
+	bne	9f
+	adr	r12, dscm_vblank_count
+	add	r12, r12, #0x0A000000       @ uncached mirror: the ARM7 writes it
+	ldr	r12, [r12]
+	subs	lr, r12, r0                 @ VBlanks since the last call
+	beq	9f                          @ another IPC message
+	mov	r0, r12
+	add	r1, r1, lr
+	stmia	r4, {r0, r1}                @ last_vblank, frames
+	tst	r2, #0xFF                   @ on
+	beq	9f
+	mov	r0, #0x04000000
+	ldrh	r5, [r0, #6]                @ REG_VCOUNT: start
+	subs	lr, lr, #1
+	ldrne	r0, [r4, #IRQ_MISSED]
+	addne	r0, r0, lr
+	strne	r0, [r4, #IRQ_MISSED]
+	bl	dsc_vblank_queue
+	cmp	r0, #0
+	bne	8f
+1:	ldr	r0, [r4, #IRQ_IDLE_OPEN]
+	cmp	r0, #0
+	bne	7f
+	@ this IRQ's own lines
+2:	mov	r0, #0x04000000
+	ldrh	r0, [r0, #6]
+	subs	r0, r0, r5
+	addmi	r0, r0, #256                @ + LINES_PER_FRAME (263)
+	addmi	r0, r0, #7
+	add	r12, r4, #IRQ_TIMED
+	ldmia	r12, {r1-r3}                @ timed_frames, irq_lines_total, irq_lines_last | max << 16
+	add	r1, r1, #1
+	add	r2, r2, r0
+	cmp	r0, r3, lsr #16
+	bichi	r3, r3, #0xFF000000
+	bichi	r3, r3, #0x00FF0000
+	orrhi	r3, r3, r0, lsl #16
+	mov	r3, r3, lsr #16
+	orr	r3, r0, r3, lsl #16
+	stmia	r12, {r1-r3}
+9:	pop	{r4, r5, lr}
+	bx	lr
+	@ An idle pass was running: this IRQ preempted it, the game runs next.
+	@ Its lines up to here count (module_idle adds them to its frame).
+7:	mov	r0, #0
+	str	r0, [r4, #IRQ_IDLE_OPEN]
+	ldr	r1, [r4, #IRQ_IDLE_START]
+	subs	r1, r5, r1
+	addmi	r1, r1, #256
+	addmi	r1, r1, #7
+	add	r12, r4, #IRQ_IDLE_CUT_LINES
+	ldmia	r12, {r2, r3}               @ idle_cut_lines, idle_cut
+	add	r2, r2, r1
+	add	r3, r3, #1
+	stmia	r12, {r2, r3}
+	b	2b
+	@ A copy in the IRQ (nothing captured yet), on the module's IRQ stack:
+	@ the game's is small.
+8:	mov	r0, #1
+	strb	r0, [r4, #IRQ_IN_VBLANK]
+	mov	r1, sp
+	ldr	sp, =__irq_stack_top
+	push	{r1, r2}
+	ldr	r0, =module_vblank_copy
+	blx	r0
+	pop	{r1, r2}
+	mov	sp, r1
+	mov	r0, #0
+	strb	r0, [r4, #IRQ_IN_VBLANK]
+	b	1b
+	.ltorg
+
 	.section .text.entries, "ax"
 	.arm
 
@@ -52,30 +158,6 @@ init_entry:
 	pop	{r4, r5}
 	mov	sp, r4
 	pop	{r4, lr}
-	bx	lr
-
-@ VBlank: called from the ARM9 IPC sync IRQ handler. Runs module_vblank on
-@ the module's IRQ stack, so the game's small DTCM IRQ stack is untouched.
-	.global vblank_entry
-	.type vblank_entry, %function
-vblank_entry:
-	push	{r4, r5, lr}
-	ldr	r5, =in_vblank
-	ldr	r0, [r5]
-	cmp	r0, #0
-	bne	1f
-	mov	r0, #1
-	str	r0, [r5]
-	mov	r4, sp
-	ldr	sp, =__irq_stack_top
-	push	{r4, r5}
-	ldr	r0, =module_vblank
-	blx	r0
-	pop	{r4, r5}
-	mov	sp, r4
-	mov	r0, #0
-	str	r0, [r5]
-1:	pop	{r4, r5, lr}
 	bx	lr
 
 @ Halt: the game's OS_Halt jumps here. Run idle work on the module stack,
@@ -137,9 +219,9 @@ halt_entry:
 	.global reset_entry
 	.type reset_entry, %function
 reset_entry:
-	ldr	r0, =in_vblank
+	ldr	r0, =dscm_irq
 	mov	r1, #0
-	str	r1, [r0]
+	strb	r1, [r0, #IRQ_IN_VBLANK]
 	ldr	r0, =in_halt
 	str	r1, [r0]
 	ldr	r0, =module_reset
@@ -279,5 +361,4 @@ dscm_dtcm_base:
 
 	.bss
 	.align 2
-in_vblank:	.word 0
 in_halt:	.word 0
