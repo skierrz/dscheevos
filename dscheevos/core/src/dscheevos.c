@@ -12,11 +12,18 @@
  * that uses Remember/Recall) is read live and added to the table; that read
  * may be from a later frame, and live_reads counts it.
  *
- * Address tables are immutable once published. Publishing one also lays
- * out its snapshot (every aligned word holding a watched byte, see
- * build_program) and the list of word copies dsc_vblank() runs, reading
- * game memory directly through the platform's memory_map. Each snapshot
- * remembers which table it was taken with.
+ * Address tables are immutable once published, and sized to what they
+ * hold (at most max_addresses). Publishing one also lays out its snapshot
+ * (every aligned word holding a watched byte, see build_program), the list
+ * of word copies dsc_vblank() runs, reading game memory directly through the
+ * platform's memory_map, and where each of the set's direct reads lands in
+ * the snapshot, in the order rcheevos makes them (see read_memory). Each
+ * snapshot remembers which table it was taken with; a table no snapshot
+ * uses any more is freed.
+ *
+ * When a set reads more addresses than max_addresses, the table holds the
+ * first ones and the rest are read live at evaluation (live_reads), at the
+ * cost of a plain read each.
  *
  * Snapshots queue in a ring: dsc_vblank (IRQ) adds at the head, dsc_idle
  * evaluates and frees at the tail, oldest first. With capture_at_halt the
@@ -85,11 +92,12 @@ typedef struct fix_t {
 } fix_t;
 
 typedef struct table_t {
-  uint32_t* addresses;        /* sorted, unique, one entry per byte */
+  uint32_t* addresses;        /* sorted, unique, one entry per byte; NULL: unused */
   uint32_t count;
-  run_t* runs;
+  run_t* runs;                /* only kept without a memory map (and in test builds) */
   uint32_t run_count;
   uint32_t generation;
+  uint16_t* seq;              /* per direct read (S.seq): its byte in the snapshot, or SEQ_* */
 
   /* Snapshot layout and copy program, built when the table is published.
    * The snapshot holds every aligned word with a watched byte, in this
@@ -110,6 +118,9 @@ typedef struct table_t {
 } table_t;
 
 #define BAD_ADDRESS 0xFFFFFFFFu
+#define SEQ_LIVE 0xFFFEu      /* no byte of it in the table (the table is full): read live */
+#define SEQ_SLOW 0xFFFFu      /* anything else: the general path */
+#define SEQ_LOOKAHEAD 4       /* direct reads rcheevos may skip (a memref it disabled) */
 #define CURSOR_WINDOW 16      /* chain reads looked ahead for the one evaluation asks for */
 #define BLOCK_MIN 4           /* watched words for a block copy to beat single words */
 
@@ -208,9 +219,20 @@ static struct {
 
   table_t tables[TABLES];
   table_t* volatile current;   /* read by dsc_vblank */
+  int tables_spare;            /* a table other than current may hold memory */
+  int table_full_logged;
   uint32_t* pending_new;       /* addresses missed during evaluation, merged after the frame */
   uint32_t pending_new_count;
-  uint8_t* scratch;            /* max_addresses bytes: dsc_vblank without memory_map */
+  uint32_t pending_new_size;   /* allocated */
+  uint8_t* scratch;            /* dsc_vblank without memory_map: the longest run */
+  uint32_t scratch_size;
+  /* The direct reads rcheevos makes each frame, in its order (every memref
+   * it reads, rc_client_update_memref_values): table_t.seq says where each
+   * lands. seq_next is the one expected next while a frame is evaluated. */
+  uint32_t* seq_address;
+  uint8_t* seq_bytes;
+  uint32_t seq_count;
+  uint32_t seq_next;
 
   slot_t slots[MAX_SLOTS];     /* ring: [slot_tail, slot_head) are queued */
   uint32_t slot_count;         /* most frames that may wait */
@@ -301,9 +323,16 @@ static int cmp_u32(const void* a, const void* b)
   return (x > y) - (x < y);
 }
 
-static void build_runs(table_t* t)
+/* Returns 0, or -1 if out of memory. */
+static int build_runs(table_t* t)
 {
-  uint32_t i;
+  uint32_t i, n = 0;
+  for (i = 0; i < t->count; i++)
+    n += !i || t->addresses[i - 1] + 1 != t->addresses[i];
+  free(t->runs);
+  t->runs = (run_t*)malloc((n ? n : 1) * sizeof(run_t));
+  if (!t->runs)
+    return -1;
   t->run_count = 0;
   for (i = 0; i < t->count; i++) {
     if (t->run_count && t->runs[t->run_count - 1].address + t->runs[t->run_count - 1].length == t->addresses[i]) {
@@ -316,6 +345,7 @@ static void build_runs(table_t* t)
       r->length = 1;
     }
   }
+  return 0;
 }
 
 /* Memory regions, as the platform's read_memory has them: a read must be
@@ -355,18 +385,31 @@ typedef struct word_info_t {
  * watched words at most one word apart is copied as one block when it has
  * BLOCK_MIN or more. A watched byte whose run can't be read whole stays 0,
  * as read_memory would leave it; words with both kinds go byte by byte.
- * Returns 0, or -1 if out of memory (the table is then left as it was). */
+ * Then where each of the set's direct reads (S.seq) lands (seq_of).
+ * Returns 0, or -1 if out of memory (the caller frees what it allocated). */
+static uint16_t seq_of(const table_t* t, uint32_t address, uint32_t n);
 static int build_program(table_t* t)
 {
   word_info_t* w;
   uint8_t* run_region;
   uint32_t i, j, r, n = 0, at, single_main = 0, single = 0, block_main = 0, blocks = 0;
   uint32_t block_words_main = 0, block_words = 0, zero = 0, mixed = 0, fix_count = 0;
-  uint32_t pos[6], words;
+  uint32_t pos[6], words, longest = 0;
   size_t size;
   uint8_t* p;
 
-  build_runs(t);
+  if (build_runs(t) != 0)
+    return -1;
+  /* without a memory map, copy_snapshot reads a run at a time */
+  for (r = 0; r < t->run_count; r++)
+    longest = t->runs[r].length > longest ? t->runs[r].length : longest;
+  if (!S.platform.memory_map && longest > S.scratch_size) {
+    uint8_t* b = (uint8_t*)realloc(S.scratch, longest);
+    if (!b)
+      return -1;
+    S.scratch = b;
+    S.scratch_size = longest;
+  }
   w = (word_info_t*)malloc((t->count ? t->count : 1) * sizeof(*w));
   run_region = (uint8_t*)malloc(t->run_count ? t->run_count : 1);
   if (!w || !run_region) {
@@ -433,7 +476,8 @@ static int build_program(table_t* t)
   }
   words = single + block_words + zero + mixed;
 
-  size = (t->count + words + single + 2 * blocks) * sizeof(uint32_t) + fix_count * sizeof(fix_t);
+  size = (t->count + words + single + 2 * blocks) * sizeof(uint32_t) + fix_count * sizeof(fix_t) +
+         S.seq_count * sizeof(uint16_t);
   p = (uint8_t*)malloc(size ? size : 1);
   if (!p) {
     free(w);
@@ -447,6 +491,7 @@ static int build_program(table_t* t)
   t->single = t->mask + words;
   t->block = t->single + single;
   t->fix = (fix_t*)(t->block + 2 * blocks);
+  t->seq = (uint16_t*)(t->fix + fix_count);
   t->words = words;
   t->single_main = single_main;
   t->single_count = single;
@@ -504,7 +549,23 @@ static int build_program(table_t* t)
   /* blocks are numbered main first: they came in address order, main RAM before DTCM */
   free(w);
   free(run_region);
+  for (i = 0; i < S.seq_count; i++)
+    t->seq[i] = seq_of(t, S.seq_address[i], S.seq_bytes[i]);
+#ifndef DSC_CHECK_FAST_STEPS
+  if (S.platform.memory_map) {
+    free(t->runs);    /* only copy_snapshot without a map reads them */
+    t->runs = NULL;
+  }
+#endif
   return 0;
+}
+
+static void table_free(table_t* t)
+{
+  free(t->addresses);
+  free(t->runs);
+  free(t->program);
+  memset(t, 0, sizeof(*t));
 }
 
 static int table_in_use(const table_t* t)
@@ -525,12 +586,14 @@ static int table_in_use(const table_t* t)
   return 0;
 }
 
-/* Merge addresses missed during the last evaluation into a new table and publish it. */
+/* Merge addresses missed during the last evaluation into a new table, sized
+ * to what it holds, and publish it. */
 static void publish_pending_addresses(void)
 {
   table_t* old = S.current;
   table_t* t = NULL;
-  uint32_t i, n, max = S.config.max_addresses;
+  table_t next;
+  uint32_t i, n;
 
   if (!S.pending_new_count)
     return;
@@ -544,27 +607,68 @@ static void publish_pending_addresses(void)
   if (!t)
     return; /* every table is still referenced; try again after the next frame */
 
-  n = old->count;
-  memcpy(t->addresses, old->addresses, n * sizeof(uint32_t));
-  for (i = 0; i < S.pending_new_count && n < max; i++)
-    t->addresses[n++] = S.pending_new[i];
-  qsort(t->addresses, n, sizeof(uint32_t), cmp_u32);
+  /* note_missing keeps old->count + pending_new_count within max_addresses */
+  memset(&next, 0, sizeof(next));
+  n = old->count + S.pending_new_count;
+  next.addresses = (uint32_t*)malloc(n * sizeof(uint32_t));
+  if (!next.addresses)
+    return;    /* no memory now; the addresses stay pending */
+  if (old->count)
+    memcpy(next.addresses, old->addresses, old->count * sizeof(uint32_t));
+  memcpy(next.addresses + old->count, S.pending_new, S.pending_new_count * sizeof(uint32_t));
+  qsort(next.addresses, n, sizeof(uint32_t), cmp_u32);
 
   /* drop duplicates */
-  t->count = 0;
   for (i = 0; i < n; i++)
-    if (t->count == 0 || t->addresses[t->count - 1] != t->addresses[i])
-      t->addresses[t->count++] = t->addresses[i];
+    if (next.count == 0 || next.addresses[next.count - 1] != next.addresses[i])
+      next.addresses[next.count++] = next.addresses[i];
+  if (next.count < n) {
+    uint32_t* fit = (uint32_t*)realloc(next.addresses, next.count * sizeof(uint32_t));
+    if (fit)
+      next.addresses = fit;
+  }
 
-  if (build_program(t) != 0) {
-    t->count = 0;
+  if (build_program(&next) != 0) {
+    table_free(&next);
     return;    /* no memory now; the addresses stay pending */
   }
-  t->generation = old->generation + 1;
+  next.generation = old->generation + 1;
+  table_free(t);    /* nothing uses it (table_in_use) */
+  *t = next;
   S.pending_new_count = 0;
+  if (S.pending_new_size > 64) {
+    /* the load's list (every address the set reads) is not needed again */
+    free(S.pending_new);
+    S.pending_new = NULL;
+    S.pending_new_size = 0;
+  }
   PUBLISH_BARRIER();
   S.current = t; /* single word store: dsc_vblank sees the old or the new table, never a mix */
+  S.tables_spare = t != old;
   S.stats.addresses = t->count;
+  if (t->count >= S.config.max_addresses && !S.table_full_logged) {
+    S.table_full_logged = 1;
+    dsc_log("snapshot table full (max_addresses): further addresses are read live");
+  }
+}
+
+/* Idle time: free the tables no snapshot uses any more. */
+static void release_tables(void)
+{
+  uint32_t i;
+  int spare = 0;
+  if (!S.tables_spare)
+    return;
+  for (i = 0; i < TABLES; i++) {
+    table_t* t = &S.tables[i];
+    if (t == S.current || !t->addresses)
+      continue;
+    if (table_in_use(t))
+      spare = 1;
+    else
+      table_free(t);
+  }
+  S.tables_spare = spare;
 }
 
 /* The first index whose address is at least address. */
@@ -581,6 +685,32 @@ static HOT uint32_t table_lower(const table_t* t, uint32_t address)
   return lo;
 }
 
+/* A whole read inside one run of the table, stored in order in the
+ * snapshot and inside one region (lo: table_lower). */
+static inline HOT int table_run_read(const table_t* t, uint32_t lo, uint32_t address, uint32_t num_bytes)
+{
+  return lo < t->count && t->addresses[lo] == address && lo + num_bytes <= t->count &&
+      t->addresses[lo + num_bytes - 1] == address + num_bytes - 1 &&
+      t->where[lo + num_bytes - 1] == t->where[lo] + num_bytes - 1 &&
+      (address + num_bytes <= MAIN_SIZE || address - DTCM_START <= DTCM_SIZE - num_bytes);
+}
+
+/* Where a direct read of the set lands in a table's snapshot (table_t.seq):
+ * read_memory serves it from there as the general path would. SEQ_LIVE: no
+ * byte of it is in the table and the table is full, so the general path
+ * would read it live (it only looks among the chain reads first, which
+ * hold the same bytes unless memory changed since the snapshot). */
+static uint16_t seq_of(const table_t* t, uint32_t address, uint32_t n)
+{
+  uint32_t lo = table_lower(t, address);
+  if (table_run_read(t, lo, address, n))
+    return t->where[lo] < SEQ_LIVE ? (uint16_t)t->where[lo] : SEQ_SLOW;
+  if ((lo == t->count || t->addresses[lo] - address >= n) && t->count >= S.config.max_addresses &&
+      region_of(address, n) != REGION_NONE)
+    return SEQ_LIVE;
+  return SEQ_SLOW;
+}
+
 /* Only as many as the next table has room for: publish_pending_addresses
  * would drop the rest (and a full table then costs nothing per read). */
 static void note_missing(uint32_t address)
@@ -591,6 +721,14 @@ static void note_missing(uint32_t address)
   for (i = 0; i < S.pending_new_count; i++)
     if (S.pending_new[i] == address)
       return;
+  if (S.pending_new_count == S.pending_new_size) {
+    uint32_t size = S.pending_new_size ? S.pending_new_size * 2 : 16;
+    uint32_t* p = (uint32_t*)realloc(S.pending_new, size * sizeof(uint32_t));
+    if (!p)
+      return;    /* stays a live read */
+    S.pending_new = p;
+    S.pending_new_size = size;
+  }
   S.pending_new[S.pending_new_count++] = address;
 }
 
@@ -682,6 +820,7 @@ enum {
 #define CF_PRIOR 2    /* ... or its prior */
 #define CF_SYNC  4    /* keep the rcheevos copy up to date (prior, changed) */
 #define CF_READS 8    /* rcheevos computes it, and it reads memory (one target) */
+#define FAST_STATE 0x80    /* cstep_t.fast: the parent is read as its delta or prior */
 
 /* Reads a chain step's target live at VBlank and keeps the bytes in the snapshot. */
 typedef struct capture_t {
@@ -881,7 +1020,7 @@ static HOT __attribute__((noinline)) int run_chains(target_t* targets, const mem
   }
   else {
     for (; s < end; s++, out++) {
-      uint32_t a, v;
+      uint32_t a, v, p;
       if (!((end - s) & (POLL_WORDS - 1)) && stop_now())
         return -1;
       n = s->fast;
@@ -889,7 +1028,14 @@ static HOT __attribute__((noinline)) int run_chains(target_t* targets, const mem
         g = run_step(s, g, m, out);
         continue;
       }
-      a = (values[s->parent] & s->mask) + s->k;
+      p = values[s->parent];
+      if (n & FAST_STATE) {
+        /* the parent's delta or prior, as run_step reads it */
+        const rc_memref_value_t* pv = c->vref[s->parent];
+        p = ((s->flags & CF_PRIOR) || pv->changed) ? pv->prior : pv->value;
+        n &= ~FAST_STATE;
+      }
+      a = (p & s->mask) + s->k;
       g->address = a;
       if (a <= MAIN_SIZE - n) {
         v = load(ram + a, n);
@@ -1004,28 +1150,46 @@ static HOT void sync_unchanged(void)
     S.sync[i]->changed = 0;
 }
 
-/* The copy of a memref an operand points at, or NULL if it isn't copied. */
-static rc_memref_t* chain_copy_of(const chains_t* c, const rc_memref_t* original, rc_memref_t* const* direct_src, rc_modified_memref_t* const* mod_src)
+/* Index of a memref in rcheevos' lists of direct memrefs (or of modified
+ * ones), in list order; -1 if it is in neither. */
+static int32_t direct_index(const rc_memrefs_t* memrefs, const rc_memref_t* m)
 {
-  uint32_t i;
-  for (i = 0; i < c->direct_count; i++)
-    if (direct_src[i] == original)
-      return &c->direct[i];
-  for (i = 0; i < c->mod_count; i++)
-    if (mod_src[i] == (const rc_modified_memref_t*)original)
-      return &c->mods[i].memref;
-  return NULL;
+  const rc_memref_list_t* l;
+  uint32_t base = 0;
+  for (l = &memrefs->memrefs; l; l = l->next) {
+    if (m >= l->items && m < l->items + l->count)
+      return (int32_t)(base + (uint32_t)(m - l->items));
+    base += l->count;
+  }
+  return -1;
+}
+
+static int32_t mod_index(const rc_memrefs_t* memrefs, const rc_memref_t* m)
+{
+  const rc_modified_memref_list_t* l;
+  const rc_modified_memref_t* p = (const rc_modified_memref_t*)m;
+  uint32_t base = 0;
+  for (l = &memrefs->modified_memrefs; l; l = l->next) {
+    if (p >= l->items && p < l->items + l->count)
+      return (int32_t)(base + (uint32_t)(p - l->items));
+    base += l->count;
+  }
+  return -1;
 }
 
 /* Copy the steps of every pointer chain into c, operands pointing at the
- * copies. Returns 0, or -1 if out of memory. */
+ * copies; each array sized to what it holds. Returns 0, or -1 if out of
+ * memory. */
 static int copy_chains(chains_t* c, rc_memrefs_t* memrefs)
 {
+  rc_memref_list_t* ml;
   rc_modified_memref_list_t* mml;
   rc_modified_memref_t** mods = NULL;
-  rc_memref_t** direct_src = NULL;
-  uint8_t* need = NULL;
-  uint32_t mod_total = 0, i, j, n;
+  rc_memref_t** direct_src = NULL;  /* source of direct copy k */
+  uint32_t* direct_of = NULL;       /* direct memref -> its copy + 1, or 0 */
+  uint32_t* copy_of = NULL;         /* step -> its copy + 1, 0: not copied; 1 in the first pass: needed */
+  uint32_t mod_total = 0, direct_total = 0, i, j, n;
+  int result = -1;
 
   memset(c, 0, sizeof(*c));
   /* chain steps in order, parents first */
@@ -1033,92 +1197,152 @@ static int copy_chains(chains_t* c, rc_memrefs_t* memrefs)
     mod_total += mml->count;
   if (!mod_total)
     return 0;
+  for (ml = &memrefs->memrefs; ml; ml = ml->next)
+    direct_total += ml->count;
   mods = (rc_modified_memref_t**)malloc(mod_total * sizeof(*mods));
-  need = (uint8_t*)calloc(mod_total, 1);
+  copy_of = (uint32_t*)calloc(mod_total, sizeof(*copy_of));
+  direct_of = (uint32_t*)calloc(direct_total + 1, sizeof(*direct_of));
   direct_src = (rc_memref_t**)malloc(mod_total * 2 * sizeof(*direct_src));
-  c->mods = (rc_modified_memref_t*)malloc(mod_total * sizeof(rc_modified_memref_t));
-  c->direct = (rc_memref_t*)malloc(mod_total * 2 * sizeof(rc_memref_t));
-  if (!mods || !need || !direct_src || !c->mods || !c->direct)
-    goto fail;
+  if (!mods || !copy_of || !direct_of || !direct_src)
+    goto done;
   n = 0;
   for (mml = &memrefs->modified_memrefs; mml; mml = mml->next)
     for (i = 0; i < mml->count; i++)
       mods[n++] = &mml->items[i];
 
-  /* a step is needed if it reads memory, or a needed step uses it; walk back from the reads */
+  /* a step is needed if it reads memory, or a needed step uses it; walk back
+   * from the reads. Directs a needed step uses get a copy, numbered as found. */
   for (i = mod_total; i-- > 0;) {
     const rc_operand_t* ops[2];
     if (mods[i]->modifier_type == RC_OPERATOR_INDIRECT_READ)
-      need[i] = 1;
-    if (!need[i])
+      copy_of[i] = 1;
+    if (!copy_of[i])
       continue;
     ops[0] = &mods[i]->parent;
     ops[1] = &mods[i]->modifier;
     for (j = 0; j < 2; j++) {
       const rc_operand_t* op = ops[j];
-      uint32_t k;
+      int32_t k;
       if (!rc_operand_type_is_memref(op->type) || !op->value.memref)
         continue;
       if (op->value.memref->value.memref_type == RC_MEMREF_TYPE_MODIFIED_MEMREF) {
-        for (k = 0; k < i; k++)
-          if (mods[k] == (rc_modified_memref_t*)op->value.memref)
-            need[k] = 1;
+        k = mod_index(memrefs, op->value.memref);
+        if (k >= 0 && (uint32_t)k < i)
+          copy_of[k] = 1;
       }
       else if (op->value.memref->value.memref_type == RC_MEMREF_TYPE_MEMREF) {
-        for (k = 0; k < c->direct_count; k++)
-          if (direct_src[k] == op->value.memref)
-            break;
-        if (k == c->direct_count) {
-          direct_src[k] = op->value.memref;
-          c->direct[k] = *op->value.memref;
-          c->direct_count++;
+        k = direct_index(memrefs, op->value.memref);
+        if (k >= 0 && direct_of[k])
+          continue;
+        if (k < 0) {    /* not in the set's list: look among the copies */
+          uint32_t x;
+          for (x = 0; x < c->direct_count && direct_src[x] != op->value.memref; x++)
+            ;
+          if (x < c->direct_count)
+            continue;
         }
+        direct_src[c->direct_count++] = op->value.memref;
+        if (k >= 0)
+          direct_of[k] = c->direct_count;
       }
     }
   }
 
-  /* copy the needed steps, pointing their operands at the copies; a step that
-   * depends on something not copied (Remember/Recall) is left to live reads */
+  /* which needed steps are copied: those whose operands are all copies; a
+   * step that depends on something not copied (Remember/Recall) is left to
+   * live reads */
+  for (i = 0; i < mod_total; i++) {
+    const rc_operand_t* ops[2];
+    int ok = copy_of[i] != 0;
+    copy_of[i] = 0;
+    if (!ok)
+      continue;
+    ops[0] = &mods[i]->parent;
+    ops[1] = &mods[i]->modifier;
+    for (j = 0; j < 2 && ok; j++) {
+      const rc_operand_t* op = ops[j];
+      if (op->type == RC_OPERAND_RECALL) {
+        ok = 0;
+      }
+      else if (rc_operand_type_is_memref(op->type) && op->value.memref) {
+        int32_t k;
+        if (op->value.memref->value.memref_type == RC_MEMREF_TYPE_MODIFIED_MEMREF) {
+          k = mod_index(memrefs, op->value.memref);
+          ok = k >= 0 && (uint32_t)k < i && copy_of[k];
+        }
+        else if (op->value.memref->value.memref_type == RC_MEMREF_TYPE_MEMREF) {
+          k = direct_index(memrefs, op->value.memref);
+          if (k < 0) {
+            uint32_t x;
+            for (x = 0; x < c->direct_count && direct_src[x] != op->value.memref; x++)
+              ;
+            ok = x < c->direct_count;
+          }
+          else {
+            ok = direct_of[k] != 0;
+          }
+        }
+        else {
+          ok = 0;
+        }
+      }
+    }
+    if (ok)
+      copy_of[i] = ++c->mod_count;
+  }
+
+  c->direct = (rc_memref_t*)malloc((c->direct_count ? c->direct_count : 1) * sizeof(rc_memref_t));
+  c->mods = (rc_modified_memref_t*)malloc((c->mod_count ? c->mod_count : 1) * sizeof(rc_modified_memref_t));
+  if (!c->direct || !c->mods)
+    goto done;
+  for (i = 0; i < c->direct_count; i++)
+    c->direct[i] = *direct_src[i];
+
+  /* copy them, operands pointing at the copies */
   for (i = 0; i < mod_total; i++) {
     rc_modified_memref_t* copy;
     rc_operand_t* ops[2];
-    int ok = 1;
-    if (!need[i])
+    if (!copy_of[i])
       continue;
-    copy = &c->mods[c->mod_count];
+    copy = &c->mods[copy_of[i] - 1];
     *copy = *mods[i];
     ops[0] = &copy->parent;
     ops[1] = &copy->modifier;
     for (j = 0; j < 2; j++) {
-      if (ops[j]->type == RC_OPERAND_RECALL) {
-        ok = 0;
+      rc_operand_t* op = ops[j];
+      int32_t k;
+      if (!rc_operand_type_is_memref(op->type) || !op->value.memref)
+        continue;
+      if (op->value.memref->value.memref_type == RC_MEMREF_TYPE_MODIFIED_MEMREF) {
+        k = mod_index(memrefs, op->value.memref);
+        op->value.memref = &c->mods[copy_of[k] - 1].memref;
       }
-      else if (rc_operand_type_is_memref(ops[j]->type) && ops[j]->value.memref) {
-        rc_memref_t* m = chain_copy_of(c, ops[j]->value.memref, direct_src, mods);
-        if (m)
-          ops[j]->value.memref = m;
-        else
-          ok = 0;
+      else {
+        uint32_t x;
+        k = direct_index(memrefs, op->value.memref);
+        if (k >= 0) {
+          x = direct_of[k] - 1;
+        }
+        else {
+          for (x = 0; direct_src[x] != op->value.memref; x++)
+            ;
+        }
+        op->value.memref = &c->direct[x];
       }
     }
-    if (!ok)
-      continue;
-    mods[c->mod_count] = mods[i];  /* reused as "source of copy k" from here on */
-    c->mod_count++;
     if (copy->modifier_type == RC_OPERATOR_INDIRECT_READ)
       c->target_count++;
   }
-  free(mods);
-  free(need);
-  free(direct_src);
-  return 0;
+  result = 0;
 
-fail:
+done:
   free(mods);
-  free(need);
+  free(copy_of);
+  free(direct_of);
   free(direct_src);
-  free_chain_copies(c);
-  return -1;
+  if (result != 0)
+    free_chain_copies(c);
+  return result;
 }
 
 /* The value index of a copy an operand points at. */
@@ -1175,6 +1399,91 @@ static uint8_t fast_op(const rc_modified_memref_t* m)
 static int plain_root(const rc_memref_t* m, int sync)
 {
   return m->value.size == RC_MEMSIZE_32_BITS && !(m->address & 3) && m->address < MAIN_SIZE && !sync;
+}
+
+/* After compile_chains: keep only what run_chains uses. The steps it runs
+ * through rcheevos (CS_GENERIC), and those whose rcheevos state is kept
+ * (CF_SYNC: read as delta or prior, or by rcheevos' code), keep their copy;
+ * the rest live in steps[] and values[] alone. The other arrays shrink to
+ * their counts. Returns 0, or -1 if out of memory. */
+static int compact_chains(chains_t* c, uint32_t total)
+{
+  rc_modified_memref_t* kept = NULL;
+  uint32_t* index = NULL;    /* old copy -> kept copy + 1, or 0 */
+  uint32_t i, n = 0, values = c->root_count + c->step_count, leaves;
+  void* p;
+
+  for (i = 0; i < c->step_count; i++)
+    if (c->steps[i].op == CS_GENERIC || (c->steps[i].flags & CF_SYNC))
+      n++;
+  index = (uint32_t*)calloc(c->mod_count + 1, sizeof(*index));
+  if (n)
+    kept = (rc_modified_memref_t*)malloc(n * sizeof(*kept));
+  if (!index || (n && !kept)) {
+    free(index);
+    free(kept);
+    return -1;
+  }
+  n = 0;
+  for (i = 0; i < c->step_count; i++) {
+    cstep_t* s = &c->steps[i];
+    if (s->op == CS_GENERIC || (s->flags & CF_SYNC)) {
+      kept[n] = c->mods[s->copy];
+      index[s->copy] = ++n;
+      s->copy = (uint16_t)(n - 1);
+    }
+    else {
+      s->copy = 0;    /* not used */
+    }
+  }
+  /* Operands of a copy rcheevos' code computes point at kept copies (it
+   * syncs what it reads); the other kept copies only hold their value. */
+  for (i = 0; i < c->step_count; i++) {
+    const cstep_t* s = &c->steps[i];
+    rc_operand_t* ops[2];
+    uint32_t j;
+    if (s->op != CS_GENERIC && !(s->flags & CF_SYNC))
+      continue;
+    ops[0] = &kept[s->copy].parent;
+    ops[1] = &kept[s->copy].modifier;
+    for (j = 0; j < 2; j++) {
+      const rc_modified_memref_t* m = (const rc_modified_memref_t*)ops[j]->value.memref;
+      if (!rc_operand_type_is_memref(ops[j]->type) || !m || m < c->mods || m >= c->mods + c->mod_count)
+        continue;
+      if (index[m - c->mods])
+        ops[j]->value.memref = &kept[index[m - c->mods] - 1].memref;
+      else if (s->op != CS_GENERIC)
+        ops[j]->value.memref = NULL;    /* never read */
+      else {
+        free(index);
+        free(kept);
+        return -1;    /* can't happen: compile_chains syncs what rcheevos' code reads */
+      }
+    }
+  }
+  for (i = 0; i < total + 1 && i < values; i++) {
+    const rc_modified_memref_t* m = (const rc_modified_memref_t*)c->vref[i];
+    if ((const void*)m >= (const void*)c->mods && (const void*)m < (const void*)(c->mods + c->mod_count))
+      c->vref[i] = index[m - c->mods] ? &kept[index[m - c->mods] - 1].memref.value : NULL;
+  }
+  free(index);
+  free(c->mods);
+  c->mods = kept;
+  c->mod_count = n;
+
+  /* shrinking can't fail; a NULL from realloc keeps the old block */
+  leaves = c->leaf_count[0] + c->leaf_count[1] + c->leaf_count[2];
+  if ((p = realloc(c->values, (values + 1) * sizeof(*c->values))) != NULL)
+    c->values = (uint32_t*)p;
+  if ((p = realloc(c->vref, (values + 1) * sizeof(*c->vref))) != NULL)
+    c->vref = (rc_memref_value_t**)p;
+  if ((p = realloc(c->steps, (c->step_count + 1) * sizeof(*c->steps))) != NULL)
+    c->steps = (cstep_t*)p;
+  if ((p = realloc(c->leaves, (leaves + 1) * sizeof(*c->leaves))) != NULL)
+    c->leaves = (leaf_t*)p;
+  if ((p = realloc(c->roots, (c->root_count + 1) * sizeof(*c->roots))) != NULL)
+    c->roots = (root_t*)p;
+  return 0;
 }
 
 /* Turn the copies into the program run_chains runs.
@@ -1332,7 +1641,9 @@ static int compile_chains(chains_t* c)
     }
     if (sync[d + i] || op[i] == CS_GENERIC)
       s->flags |= CF_SYNC;
-    s->fast = (op[i] <= CS_READ4 && !s->flags) ? op[i] : 0;
+    /* plain reads, also of a parent's delta or prior, run in run_chains */
+    s->fast = (op[i] <= CS_READ4 && !(s->flags & ~(CF_DELTA | CF_PRIOR))) ?
+              (uint8_t)(op[i] | (s->flags ? FAST_STATE : 0)) : 0;
     if (m->modifier_type == RC_OPERATOR_INDIRECT_READ)
       c->target_order[t++] = target[i];
     c->values[number[d + i]] = m->memref.value.value;
@@ -1341,6 +1652,8 @@ static int compile_chains(chains_t* c)
   for (i = 0; i < t; i++)
     c->target_slot[c->target_order[i]] = (uint16_t)i;
   result = t == c->target_count ? 0 : -1;
+  if (result == 0)
+    result = compact_chains(c, d + c->mod_count);
 
 done:
   free(parent);
@@ -1363,20 +1676,59 @@ static void prepare_snapshots(void)
 {
   rc_memrefs_t* memrefs = S.client->game->runtime.memrefs;
   rc_memref_list_t* ml;
-  uint32_t i, j;
+  uint32_t i, j, n = 0, bytes_total = 0;
 
   Q.stage = 0;
   free_chains();
+  free(S.seq_address);
+  free(S.seq_bytes);
+  S.seq_address = NULL;
+  S.seq_bytes = NULL;
+  S.seq_count = 0;
   if (!memrefs)
     return;
 
-  /* every byte read directly, merged into the table (rcheevos has already
-   * disabled achievements whose addresses can't be read) */
+  /* the direct reads, in rcheevos' order (memrefs it reads, of a known size) */
   for (ml = &memrefs->memrefs; ml; ml = ml->next) {
     for (i = 0; i < ml->count; i++) {
       const rc_memref_t* m = &ml->items[i];
       uint32_t bytes = m->value.type == RC_VALUE_TYPE_NONE ? 0 : rc_memref_bytes(m->value.size);
-      for (j = 0; j < bytes && S.pending_new_count < S.config.max_addresses; j++)
+      n += bytes != 0;
+      bytes_total += bytes;
+    }
+  }
+  S.seq_address = (uint32_t*)malloc((n ? n : 1) * sizeof(uint32_t));
+  S.seq_bytes = (uint8_t*)malloc(n ? n : 1);
+  if (bytes_total > S.config.max_addresses - S.current->count)
+    bytes_total = S.config.max_addresses - S.current->count;
+  if (S.pending_new_size < S.pending_new_count + bytes_total) {
+    uint32_t* p = (uint32_t*)realloc(S.pending_new, (S.pending_new_count + bytes_total + 1) * sizeof(uint32_t));
+    if (p) {
+      S.pending_new = p;
+      S.pending_new_size = S.pending_new_count + bytes_total + 1;
+    }
+  }
+  if (S.seq_address && S.seq_bytes) {
+    for (ml = &memrefs->memrefs; ml; ml = ml->next) {
+      for (i = 0; i < ml->count; i++) {
+        const rc_memref_t* m = &ml->items[i];
+        uint32_t bytes = m->value.type == RC_VALUE_TYPE_NONE ? 0 : rc_memref_bytes(m->value.size);
+        if (bytes) {
+          S.seq_address[S.seq_count] = m->address;
+          S.seq_bytes[S.seq_count++] = (uint8_t)bytes;
+        }
+      }
+    }
+  }
+
+  /* every byte read directly, merged into the table (rcheevos has already
+   * disabled achievements whose addresses can't be read), as many as fit */
+  for (ml = &memrefs->memrefs; ml; ml = ml->next) {
+    for (i = 0; i < ml->count; i++) {
+      const rc_memref_t* m = &ml->items[i];
+      uint32_t bytes = m->value.type == RC_VALUE_TYPE_NONE ? 0 : rc_memref_bytes(m->value.size);
+      for (j = 0; j < bytes && S.current->count + S.pending_new_count < S.config.max_addresses &&
+                  S.pending_new_count < S.pending_new_size; j++)
         S.pending_new[S.pending_new_count++] = m->address + j;
     }
   }
@@ -1740,22 +2092,43 @@ static HOT uint32_t RC_CCONV read_memory(uint32_t address, uint8_t* buffer, uint
   if (!num_bytes)
     return 0;
   t = slot->table;
-  lo = table_lower(t, address);
 
-  /* whole read inside one run of the snapshot's table, stored in order */
-  if (lo < t->count && t->addresses[lo] == address && lo + num_bytes <= t->count &&
-      t->addresses[lo + num_bytes - 1] == address + num_bytes - 1 &&
-      t->where[lo + num_bytes - 1] == t->where[lo] + num_bytes - 1 &&
-      (address + num_bytes <= MAIN_SIZE || address - DTCM_START <= DTCM_SIZE - num_bytes)) {    /* inside one region */
-    memcpy(buffer, slot->data + t->where[lo], num_bytes);
-    return num_bytes;
+  /* The set's direct reads come first, in the same order every frame:
+   * where each lands was worked out with the table (seq_of). A memref
+   * rcheevos stopped reading is skipped. */
+  if (S.seq_next < S.seq_count && t->seq) {
+    uint32_t k = S.seq_next, end = k + SEQ_LOOKAHEAD < S.seq_count ? k + SEQ_LOOKAHEAD : S.seq_count;
+    for (; k < end; k++) {
+      uint32_t w;
+      if (S.seq_address[k] != address || S.seq_bytes[k] != num_bytes)
+        continue;
+      S.seq_next = k + 1;
+      w = t->seq[k];
+      if (w < SEQ_LIVE) {
+        const uint8_t* p = slot->data + w;
+        buffer[0] = p[0];
+        for (i = 1; i < num_bytes; i++)
+          buffer[i] = p[i];
+        return num_bytes;
+      }
+      if (w == SEQ_LIVE) {
+        /* the table is full: read live, as the general path would */
+        if (S.platform.read_memory(address, buffer, num_bytes) != num_bytes) {
+          memset(buffer, 0, num_bytes);
+          return 0;
+        }
+        S.stats.live_reads += num_bytes;
+        return num_bytes;
+      }
+      break;
+    }
   }
 
-  /* no byte in the table: most likely one of the next few chain reads in
-   * rcheevos' order (any target with these bytes holds the same values).
-   * If it read nothing and its first byte is in no region, no target has
-   * that byte either: the read fails, as below. */
-  if (S.chains.target_count && (lo == t->count || t->addresses[lo] - address >= num_bytes)) {
+  /* Then the chain reads: most likely one of the next few in rcheevos'
+   * order. Any target with these bytes holds the same values as the table,
+   * if it has them too: both are copied in the same snapshot. */
+  failed = 0;
+  if (S.chains.target_count) {
     uint32_t n = S.chains.target_count, k = S.target_cursor;
     for (i = 0; i < n && i < CURSOR_WINDOW; i++, k = k + 1 == n ? 0 : k + 1) {
       const target_t* g = &slot->targets[S.chains.target_slot[k]];
@@ -1766,11 +2139,22 @@ static HOT uint32_t RC_CCONV read_memory(uint32_t address, uint8_t* buffer, uint
         memcpy(buffer, g->bytes, num_bytes);
         return num_bytes;
       }
-      if (!g->length && region_of(address, 1) == REGION_NONE)
-        return 0;
+      failed = !g->length;
       break;
     }
   }
+
+  /* whole read inside one run of the snapshot's table, stored in order */
+  lo = table_lower(t, address);
+  if (table_run_read(t, lo, address, num_bytes)) {
+    memcpy(buffer, slot->data + t->where[lo], num_bytes);
+    return num_bytes;
+  }
+
+  /* A chain read that read nothing at VBlank, no byte in the table, first
+   * byte in no region: no target has that byte either. It fails, as below. */
+  if (failed && (lo == t->count || t->addresses[lo] - address >= num_bytes) && region_of(address, 1) == REGION_NONE)
+    return 0;
 
   /* As the platform reads: a read not entirely inside one region fails
    * whole, and rcheevos then sees 0 (rc_read_memory uses the buffer, not
@@ -1978,7 +2362,6 @@ static void RC_CCONV logged_in(int result, const char* error_message, rc_client_
 
 int dsc_init(const dsc_platform_t* platform, const dsc_config_t* config)
 {
-  int i;
   uint32_t max;
 
   if (S.initialized)
@@ -1998,18 +2381,9 @@ int dsc_init(const dsc_platform_t* platform, const dsc_config_t* config)
     S.slot_count = MAX_SLOTS;
   S.arena_size = S.config.snapshot_bytes ? S.config.snapshot_bytes : S.slot_count * max * 4;   /* worst case: a word per address */
 
-  for (i = 0; i < TABLES; i++) {
-    S.tables[i].addresses = (uint32_t*)malloc(max * sizeof(uint32_t));
-    S.tables[i].runs = (run_t*)malloc(max * sizeof(run_t));
-    if (!S.tables[i].addresses || !S.tables[i].runs)
-      return -2;
-  }
+  /* tables are allocated as they are published, sized to what they hold */
   S.arena = (uint8_t*)malloc(S.arena_size);
   if (!S.arena)
-    return -2;
-  S.pending_new = (uint32_t*)malloc(max * sizeof(uint32_t));
-  S.scratch = (uint8_t*)malloc(max);
-  if (!S.pending_new || !S.scratch)
     return -2;
   S.current = &S.tables[0];
 
@@ -2599,6 +2973,7 @@ int dsc_idle(void)
         S.evaluating = next;
       }
       for (k = next->done; k < n && budget; k++, budget--) {
+        S.seq_next = 0;
         rc_client_do_frame(S.client);
         S.stats.frames_evaluated++;
         evaluated++;
@@ -2622,6 +2997,7 @@ int dsc_idle(void)
     finish_http();
   }
 
+  release_tables();
   if (!evaluated && S.active)
     rc_client_idle(S.client);
   list_update();
@@ -2738,13 +3114,12 @@ void dsc_shutdown(void)
     rc_client_unload_game(S.client);
     rc_client_destroy(S.client);
   }
-  for (i = 0; i < TABLES; i++) {
-    free(S.tables[i].addresses);
-    free(S.tables[i].runs);
-    free(S.tables[i].program);
-  }
+  for (i = 0; i < TABLES; i++)
+    table_free(&S.tables[i]);
   free(S.arena);
   free(S.scratch);
+  free(S.seq_address);
+  free(S.seq_bytes);
 #ifdef DSC_CHECK_FAST_STEPS
   for (i = 0; i < MAX_SLOTS; i++)
     free(S.shadow[i]);

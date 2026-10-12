@@ -339,15 +339,24 @@ static uint32_t journal_unsent(void)
 }
 
 /* ---- helpers ---- */
-static void dbg_log(const char* m) { if (getenv("DSC_LOG")) printf("LOG %s\n", m); }
+static int table_full_logs;
+static void dbg_log(const char* m)
+{
+  if (strstr(m, "snapshot table full"))
+    table_full_logs++;
+  if (getenv("DSC_LOG"))
+    printf("LOG %s\n", m);
+}
+static uint32_t max_addresses = 1024;    /* config.max_addresses for start_with */
 static int spectator;
 static uint32_t (*platform_frame)(void);
 static void start_with(int hardcore, uint32_t slots, uint32_t bytes)
 {
   dsc_platform_t p = { read_memory, millis, http_send, on_event, dbg_log, unix_time, &journal, &notices, publish_list, platform_frame,
                        use_map ? memory_map : NULL, interrupt_pending };
-  dsc_config_t c = { "http://mock", "tester", "tok", hardcore, 1024, slots, bytes, spectator, halt_mode, idle_budget };
+  dsc_config_t c = { "http://mock", "tester", "tok", hardcore, max_addresses, slots, bytes, spectator, halt_mode, idle_budget };
   seen_valid = 0;
+  table_full_logs = 0;
   memset(ram, 0, sizeof ram);
   memset(dtcm, 0, sizeof dtcm);
   memset(&journal, 0xEE, sizeof journal);   /* the core must clear it */
@@ -1512,6 +1521,85 @@ static void test_scattered_set_fits_default_arena(void)
   free(json);
 }
 
+/* Tables are sized to the set: one far bigger than the old fixed tables
+ * (1024 addresses here) is snapshotted whole, with no live reads. */
+static void test_table_sized_to_set(void)
+{
+  enum { T = 30, PER = 100 };
+  static char text[T][PER * 16];
+  const char* triggers[T];
+  char* json;
+  dsc_stats_t s;
+  int i, k;
+  for (i = 0; i < T; i++) {
+    text[i][0] = 0;
+    for (k = 0; k < PER; k++)
+      sprintf(text[i] + strlen(text[i]), "%s0xH%06x=9", k ? "_" : "", 0x10000 + 3 * (i * PER + k));
+    triggers[i] = text[i];
+  }
+  json = make_set(triggers, T);
+  max_addresses = 4096;
+  serve_set = json;
+  start_with(1, 64, 64 * 1024);
+  serve_set = NULL;
+  ram[0x10000] = 9;
+  frames(5);
+  dsc_get_stats(&s);
+  CHECK(s.addresses == T * PER);
+  CHECK(s.live_reads == 0);
+  CHECK(s.frames_dropped == 0);
+  CHECK(table_full_logs == 0);
+  dsc_shutdown();
+  max_addresses = 1024;
+  free(json);
+}
+
+/* A set that reads more addresses than max_addresses: the table holds the
+ * first ones, the rest are read live at evaluation (logged once, counted).
+ * With memory changed only before each VBlank, every achievement unlocks
+ * on the same frame as in rcheevos reading live memory, chains included. */
+static void overflow_mutate(int frame, int when)
+{
+  int k;
+  if (when == 1)
+    return;
+  for (k = 0; k < 6; k++)
+    ram[0x2000 + rnd() % 0x40] = (uint8_t)(rnd() % 3);
+  if (frame % 4 == 0)
+    put32(0x1000 + 4 * (rnd() % 2), 0x02002000 + 4 * (rnd() % 8));
+}
+static void test_table_overflow_reads_live(void)
+{
+  enum { N = 24 };
+  static char text[N][96];
+  const char* triggers[N];
+  dsc_stats_t s;
+  int i, unlocks, pass;
+  rng = 5;
+  for (i = 0; i < N; i++) {
+    uint32_t a = 0x2000 + (rnd() % 0x40);
+    switch (i % 4) {
+      case 0: snprintf(text[i], sizeof text[i], "0xH%06x=1_0xH%06x=2", a, 0x2000 + (rnd() % 0x40)); break;
+      case 1: snprintf(text[i], sizeof text[i], "0x %06x=257", a & ~1u); break;
+      case 2: snprintf(text[i], sizeof text[i], "I:0xX%06x&33554431_0xH%04x=2", 0x1000 + 4 * (rnd() % 2), rnd() % 0x10); break;
+      default: snprintf(text[i], sizeof text[i], "0xH%06x=2.2._d0xH%06x=1", a, a); break;
+    }
+    triggers[i] = text[i];
+  }
+  for (pass = 0; pass < 2; pass++) {
+    use_map = pass;
+    max_addresses = 12;
+    rng = 9;
+    unlocks = compare_with_rcheevos(triggers, N, 300, 1, overflow_mutate, &s);
+    CHECK(unlocks > N / 2);
+    CHECK(s.addresses == 12);
+    CHECK(s.live_reads > 0);
+    CHECK(table_full_logs == 1);
+  }
+  max_addresses = 1024;
+  use_map = 1;
+}
+
 /* Tables republished while frames are queued: Recall chains read live, so
  * each evaluation adds addresses (until the table is full); pointers move
  * between region ends, DTCM comes and goes. The self-check
@@ -1787,6 +1875,8 @@ static void run_all(void)
   RUN(test_recall_chain_reads_live);
   RUN(test_live_read_next_to_failed_chain_read);
   RUN(test_republish_while_queued);
+  RUN(test_table_sized_to_set);
+  RUN(test_table_overflow_reads_live);
   RUN(test_vblank_during_evaluation);
   RUN(test_random_layouts);
   RUN(test_more_chain_shapes_match_rcheevos);
