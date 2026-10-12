@@ -37,9 +37,9 @@ left out of the counts.
 Sets: `typical` is `gen_set.py 60 8 1 3` (300 frames), `heavy` is
 `gen_set.py 250 40 1 6` (6 frames), the shapes used in
 `docs/rcheevos-arm9-footprint.md`. The heavy set needs more addresses than
-`max_addresses` (4096), so each `dsc_idle` falls back to thousands of live
-reads and costs ~60M instructions; more frames would take hours under
-qemu's log. Its `dsc_capture` is steady from the first frame.
+`max_addresses` (4096): the table holds the first 4096 and each `dsc_idle`
+reads the rest live (about 30,000 bytes over 6 frames, ~1.6M instructions
+a frame). Its `dsc_capture` is steady from the first frame.
 
 A full run takes about 10 minutes under Docker on an Apple Silicon Mac
 (x86 qemu through emulation), less on x86 Linux; nearly all of it is the
@@ -95,3 +95,10 @@ median and p95 instructions per frame and the ARM9 time that is at CPI
 - `FLOAT=1` adds a variant built with `realsets-float.h` force-included
   (rcheevos' operand constants stored as float). It is for information only:
   not shipped, and it would need RetroAchievements' agreement.
+- Both runs also print an evaluation digest (every memref value, condition
+  hit count, trigger, leaderboard and rich presence state after each frame,
+  taken outside the counted calls) and newlib heap figures. Memory doesn't
+  change between capture and evaluation here, so the core's digest must
+  equal rc_client's; the report flags any set where it doesn't, and shows
+  the core's own heap (core run minus rc_client alone, the snapshot arena
+  included). `OUT=build/<dir>` keeps several runs apart.

@@ -55,7 +55,7 @@ mkdir -p "$OUT"; echo "$stamp" > "$OUT/stamp"
 for set in $SETS; do
   case $set in
     typical) args="60 8 1 3"; frames=${FRAMES:-300} ;;    # as in docs/rcheevos-arm9-footprint.md
-    heavy)   args="250 40 1 6"; frames=${FRAMES:-6} ;;     # dsc_idle ~190M each: the set overflows max_addresses
+    heavy)   args="250 40 1 6"; frames=${FRAMES:-6} ;;     # overflows max_addresses: the rest is read live
     *) echo "unknown set $set" >&2; exit 2 ;;
   esac
   elf=$OUT/perf-$set.elf

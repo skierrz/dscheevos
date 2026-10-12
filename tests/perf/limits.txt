@@ -3,7 +3,8 @@
 # the game halts, dsc_capture; the VBlank IRQ only counts the frame and idle
 # time queues it, dsc_vblank_queue + drain):
 #   typical capture_max 19873, capture_median 14669, vblank (IRQ) max 54,
-#   median 27, idle_median 419399; heavy capture_max 66794, vblank 54.
+#   median 27, idle_median 330942 (419399 before the core read the set's
+#   direct reads in rcheevos' order); heavy capture_max 66796, vblank 54.
 # Before: Phase 1 (the IRQ queued the frame itself) vblank 74; Phase 2 (copy
 # in the IRQ) typical vblank 17124 / 11635; before Phase 2: 133447 / 120467.
 # Lower these when the snapshot gets cheaper.
@@ -11,6 +12,6 @@ typical vblank_max      57
 typical vblank_median   29
 typical capture_max     20683
 typical capture_median  15316
-typical idle_median     440261
+typical idle_median     347489
 heavy   vblank_max      57
 heavy   capture_max     69823
