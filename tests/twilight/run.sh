@@ -30,6 +30,7 @@ repo=$here/../..
 set=$1 frames=$2; shift 2
 port=${PORT:-8443}
 work=${WORK:-$(mktemp -d)}
+[ -n "${WORK:-}" ] || tmpwork=$work   # no WORK: delete the files on exit
 press_a=${PRESS_A:-1100}
 case ${BOOT:-direct} in
   direct) nand=$DSI_FILES/dsinand.bin boot_args="--arg sd:/BOOT.NDS" ;;
@@ -88,7 +89,7 @@ topng() { python3 -c 'import sys; from PIL import Image; Image.open(sys.argv[1])
 
 # One emulator run from a fresh copy of the SD, with its own mock server.
 mock=
-trap '[ -z "$mock" ] || kill $mock 2>/dev/null' EXIT
+trap '[ -z "$mock" ] || kill $mock 2>/dev/null; [ -z "${tmpwork:-}" ] || rm -rf "$tmpwork"' EXIT
 run() { # run NAME FRAMES
   d=$work/$1
   rm -rf "$d" && mkdir -p "$d" && cp -r "$sd0" "$d/sd"

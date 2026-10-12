@@ -26,6 +26,8 @@ repo=$here/../..
 check=0
 if [ "${1:-}" = "--check" ]; then check=1; shift; fi
 work=${WORK:-$(mktemp -d)}
+[ -n "${WORK:-}" ] || tmpwork=$work   # no WORK: delete the files on exit
+trap '[ -z "${tmpwork:-}" ] || rm -rf "$tmpwork"' EXIT
 sd=$work/sd
 mkdir -p "$sd/_nds/dscheevos" "$sd/games"
 

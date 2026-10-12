@@ -27,6 +27,7 @@ set=$1 frames=$2; shift 2
 port=${PORT:-8443}
 module=${MODULE:-$repo/dscheevos/module/build}
 work=${WORK:-$(mktemp -d)}
+[ -n "${WORK:-}" ] || tmpwork=$work   # no WORK: delete the files on exit
 sd=$work/sd
 mkdir -p "$sd/_nds/dscheevos" "$sd/games" "$work/tls"
 
@@ -52,7 +53,7 @@ cp "$DSI_FILES/dsinand.bin" "$work/nand.bin"
 python3 "$repo/tools/mock-ra-server/server.py" --bind 0.0.0.0 --port "$port" --set "$set" --log "$work/events.jsonl" \
   --tls-cert "$work/tls/server.pem" --tls-key "$work/tls/server.key" ${MOCK_ARGS:-} > "$work/mock.log" 2>&1 &
 mock=$!
-trap 'kill $mock 2>/dev/null' EXIT
+trap 'kill $mock 2>/dev/null; wait $mock 2>/dev/null || true; [ -z "${tmpwork:-}" ] || rm -rf "$tmpwork"' EXIT
 sleep 1
 
 "$RUNNER" --mode dsi --rom "$sd/_nds/nds-bootstrap-release.nds" --arg sd:/_nds/nds-bootstrap-release.nds \
