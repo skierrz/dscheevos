@@ -11,7 +11,8 @@
 #   SCRIPT  runner input script, frames from the game's first OS_Halt call:
 #           "F KEYMASK HOLD", "F TOUCH X Y HOLD", "F SHOT", "F DUMP"
 # Optional: DUMPS=dir (where RAM dumps go, default OUT; keep them out of the repo),
-#   (RAM dumps are named f<FRAME>.bin, end.bin for the last frame)
+#   (RAM dumps are named f<FRAME>.bin, with the DTCM in f<FRAME>.dtcm; end.bin for
+#   the last frame)
 #   SEGMENTS="name:from-to ..." (report parts of the run too, in intervals),
 #   BOOT_FRAMES (frame cap before the game, 6000), PORT (mock server, 8453),
 #   CACHE_MODEL=0, DSI_MODE (default 0), EXTRA_ARGS (more runner arguments).
@@ -46,7 +47,7 @@ for f in "$work"/screen.ppm*; do
   python3 "$here/ppm2png.py" "$f" "$out/$b.png"
 done
 [ ! -f "$work/ram.bin" ] || mv "$work/ram.bin" "$dumps/end.bin"
-for f in "$work"/ram.bin.f*.bin; do
+for f in "$work"/ram.bin.f*.bin "$work"/ram.bin.f*.dtcm; do
   [ -f "$f" ] || continue
   mv "$f" "$dumps/$(basename "$f" | sed 's/^ram\.bin\.//')"
 done
