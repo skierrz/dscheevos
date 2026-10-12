@@ -54,7 +54,7 @@ ARM9 idle: the game's idle thread calls OS_Halt (SDK wait for interrupt)
 
 ## Memory
 
-DScheevos uses 2 MB at `0x02D80000`–`0x02F80000` (the DSi's extra RAM, cached mirror). nds-bootstrap's ROM cache for DS games normally covers it, so the cache is cut to end at `0x0CD80000` (the same RAM through the uncached mirror); ROMs that loaded fully into RAM within about 2.4 MB of the old limit now use cache mode.
+DScheevos uses 2 MB at `0x02D80000`–`0x02F80000` (the DSi's extra RAM, cached mirror). nds-bootstrap's ROM cache for DS games normally covers it, so the cache is cut to end at `0x0CD80000` (the same RAM through the uncached mirror); ROMs that loaded fully into RAM within about 2.4 MB of the old limit now use cache mode. Games with a preload entry (ROM ranges nds-bootstrap loads into the cache at boot) that fit only without the cut keep as much of it as fits (`dscheevosTrimPreload`), instead of losing all of it: without that, Mario Kart DS read its 10 MB preload from SD during play and its loading screens got longer (tests/perf/AB.md). 40 of nds-bootstrap's 140 DSi preload entries are affected; they keep 83-99% of it.
 
 | Range | Use |
 |---|---|
