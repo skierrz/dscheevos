@@ -66,6 +66,12 @@ typedef struct dsd_item_t {
 enum { DSD_TEXT_TITLE = 0, DSD_TEXT_DETAIL };
 typedef const char* (*dsd_text_fn)(void* ctx, const dsd_item_t* item, int which);
 
+/* Badges (phase 2): the module returns the item's badge once its slot has
+ * been read from the pack, or 0 to draw the built-in icon. The pointer must
+ * stay valid while the item is on screen. */
+struct dsd_badge_t;
+typedef const struct dsd_badge_t* (*dsd_badge_fn)(void* ctx, const dsd_item_t* item);
+
 #define DSD_QUEUE_MAX 8
 #define DSD_MISSED_MAX 8
 #define DSD_LINE_MAX 40               /* glyphs per rendered line */
@@ -74,6 +80,8 @@ typedef struct dsd_config_t {
   const dsd_font_t* font;
   dsd_text_fn text;
   void* text_ctx;
+  dsd_badge_fn badge;                 /* 0 = icons only (phase 1) */
+  void* badge_ctx;
   uint8_t hardcore;                   /* accent colour */
 } dsd_config_t;
 
@@ -102,6 +110,7 @@ typedef struct dsd_t {
   uint32_t layout_gen;
   uint16_t layout_h;
   uint16_t render_row;
+  const struct dsd_badge_t* badge;    /* drawn instead of the icon, 0 = icon */
   uint8_t value_at;                   /* line 0: glyphs from here are the right-aligned value */
   uint8_t value_x;
   uint8_t widths[256];                /* glyph advance, from the font */
