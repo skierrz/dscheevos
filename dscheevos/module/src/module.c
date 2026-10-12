@@ -38,12 +38,30 @@ extern void dscm_publish_cues(uint32_t cues);
 extern void dscm_publish_list(void* list);
 extern void dscm_dc_clean(const void* addr, uint32_t len);
 extern void dscm_dc_invalidate(const void* addr, uint32_t len);
+extern uint32_t dscm_take(volatile uint32_t* p);
 static uint32_t g_notices_seen;
 static uint32_t g_cues_head;         /* last notice counted into the cues */
 static uint32_t g_cues;
 static volatile int g_reset_pending;
 static int g_progress_stale;
 static void update_progress(void);
+
+/* Self-timing. REG_VCOUNT is read-only and runs whatever the game does; the
+ * timers are the game's, so we never touch them. Whole lines; the caller
+ * keeps the work under a frame (a longer one wraps and reads short). */
+static inline uint32_t lines_between(uint32_t start, uint32_t end)
+{
+  int32_t d = (int32_t)end - (int32_t)start;
+  return (uint32_t)(d < 0 ? d + LINES_PER_FRAME : d);
+}
+#define lines_since(start) lines_between((start), REG_VCOUNT)
+
+/* Idle time per frame. The idle thread owns g_idle_lines, the IRQ owns
+ * g_idle_cut_lines; the IRQ adds both up once a frame. g_idle_open says a
+ * pass is being timed: whoever clears it (the pass at its end, or the VBlank
+ * IRQ that preempts it) counts the lines, so none are counted twice. */
+static volatile uint32_t g_idle_start, g_idle_open, g_idle_ran, g_idle_lines;
+static uint32_t g_idle_cut_lines, g_idle_seen;
 
 /* used by the stubs in syscalls.c */
 uint32_t dscm_unix_time(void) { return g_boot.unix_time + g_frames / 60; }
@@ -61,6 +79,14 @@ static uint32_t read_memory(uint32_t address, uint8_t* buffer, uint32_t num_byte
     return num_bytes;
   }
   return 0;
+}
+
+/* The same regions as read_memory, for the core's direct snapshot copy.
+ * Runs in the VBlank IRQ, after g_dtcm is refreshed. */
+static void memory_map(const uint8_t** main_ram, const uint8_t** dtcm)
+{
+  *main_ram = (const uint8_t*)0x02000000u;
+  *dtcm = g_dtcm ? (const uint8_t*)g_dtcm : NULL;
 }
 
 static uint32_t millis(void)
@@ -267,6 +293,7 @@ int module_init(const dscm_boot_t* boot)
 
   memset(&platform, 0, sizeof(platform));
   platform.read_memory = read_memory;
+  platform.memory_map = memory_map;
   platform.millis = millis;
   platform.http_send = http_send;
   platform.event = on_event;
@@ -348,8 +375,10 @@ int module_init(const dscm_boot_t* boot)
 void module_vblank(void)
 {
   dsc_stats_t s;
+  uint32_t start = REG_VCOUNT;
   uint32_t count = dscm_vblank_count_read();
   uint32_t passed = count - g_last_vblank;
+  uint32_t lines;
   if (passed == 0)
     return;   /* another IPC message, not a VBlank */
   g_last_vblank = count;
@@ -364,6 +393,32 @@ void module_vblank(void)
   dsc_get_stats(&s);
   dscm_g_status.frames_snapshotted = s.frames_snapshotted;
   dscm_g_status.frames_dropped = s.frames_dropped;
+
+  /* Idle time of the frame that ends here. A pass still running was
+   * preempted by this IRQ: count it up to here; the game runs next. */
+  if (g_idle_open) {
+    g_idle_open = 0;
+    g_idle_cut_lines += lines_between(g_idle_start, start);
+    dscm_g_status.idle_cut++;
+  }
+  lines = g_idle_lines + g_idle_cut_lines;
+  count = lines - g_idle_seen;
+  g_idle_seen = lines;
+  dscm_g_status.idle_lines_last = count;
+  if (count > dscm_g_status.idle_lines_max)
+    dscm_g_status.idle_lines_max = count;
+  dscm_g_status.idle_lines_total += count;
+  if (!g_idle_ran)
+    dscm_g_status.idle_none++;
+  g_idle_ran = 0;
+
+  /* This IRQ's own cost, from the first line of this function. */
+  lines = lines_since(start);
+  dscm_g_status.irq_lines_last = lines;
+  if (lines > dscm_g_status.irq_lines_max)
+    dscm_g_status.irq_lines_max = lines;
+  dscm_g_status.irq_lines_total += lines;
+  dscm_g_status.timed_frames++;
 }
 
 static void update_progress(void)
@@ -389,14 +444,24 @@ void module_reset(void)
  * NitroSDK switches threads when an IRQ returns, so any game thread that wakes
  * (the main loop at VBlank, a loader thread at a card IRQ) preempts this work
  * at once; it resumes the next time the game is idle. eval_lines is wall time
- * between start and end, so it includes any time the game took meanwhile. */
-void module_idle(void)
+ * between start and end, so it includes any time the game took meanwhile.
+ * The idle lines in the status stop at the VBlank that preempts a pass (see
+ * module_vblank), so they leave out the game's frame but also the rest of
+ * that pass; idle_cut counts such passes.
+ * Returns nonzero when the pass took a scanline or more: an IRQ may have come
+ * and gone meanwhile, so halt_entry returns to the game's loop instead of
+ * waiting for the next one. */
+int module_idle(void)
 {
   dsc_stats_t s;
   uint32_t start, end, used;
 
+  start = REG_VCOUNT;
   if (!g_initialized || !dscm_g_status.active)
-    return;
+    return 0;
+  g_idle_start = start;
+  g_idle_open = 1;
+  g_idle_ran = 1;
 
   if (g_reset_pending) {
     g_reset_pending = 0;
@@ -411,7 +476,7 @@ void module_idle(void)
     start = REG_VCOUNT;
     dsc_idle();
     end = REG_VCOUNT;
-    used = (end + LINES_PER_FRAME - start) % LINES_PER_FRAME;
+    used = lines_between(start, end);
     dscm_g_status.eval_lines = (dscm_g_status.eval_lines * 7 + used * 16) / 8;
     dsc_get_stats(&s);
     dscm_g_status.frames_evaluated = s.frames_evaluated;
@@ -431,6 +496,12 @@ void module_idle(void)
     dscm_g_status.net_rejoins = link_rejoins();
     poll_network();
   }
+  g_idle_ran = 1;
+  start = g_idle_start;
+  if (!dscm_take(&g_idle_open))
+    return 1;   /* a VBlank came meanwhile and counted the pass */
+  g_idle_lines += lines_since(start);
+  return REG_VCOUNT != start;
 }
 
 void module_shutdown(void)

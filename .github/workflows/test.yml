@@ -17,6 +17,16 @@ jobs:
         run: |
           cc -Idscheevos/module/include tools/mksession/layout.c -o layout
           ./layout | grep -q "^size=$(sed -n 's/^BOOT_SIZE = \([0-9]*\).*/\1/p' tools/mksession/mksession.py) "
+  perf:
+    runs-on: ubuntu-24.04    # same qemu-user-static as run.sh fetches locally
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch rcheevos
+        run: git submodule update --init --depth 1 external/rcheevos
+      - name: Install qemu-arm
+        run: sudo apt-get update && sudo apt-get install -y qemu-user-static
+      - name: Instruction-count gate (dsc_vblank)
+        run: QEMU_ARM=/usr/bin/qemu-arm-static tests/perf/run.sh --gate
   games:
     runs-on: ubuntu-latest
     steps:

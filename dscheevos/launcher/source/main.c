@@ -23,6 +23,7 @@
 
 static dsc_settings_t settings;
 static char rom_path[256];
+static int wifi_started;   /* net_connect ran: DSWiFi is up and must be stopped */
 
 static const char* basename_of(const char* path)
 {
@@ -53,8 +54,8 @@ static void boot_game(int with_achievements)
   ui_status(with_achievements ? "Starting with achievements..." : "Starting without achievements...");
   if (keep_wifi)
     hand_over_wifi();
-  else
-    Wifi_DisableWifi();
+  else if (wifi_started)
+    Wifi_DisableWifi();   /* never started otherwise: DSWiFi's IPC isn't set up, it data-aborts */
   int err = chainload(BOOTSTRAP_PATH, 1, argv);
   log_line("chainload failed: %d", err);
   ui_status("\x1b[31;1mCouldn't start nds-bootstrap (%d)\x1b[39;0m", err);
@@ -88,6 +89,7 @@ static int log_in(void)
     if (!ui_input("Password", password, sizeof(password), 1))
       continue;
     ui_status("Logging in as %s...", settings.username);
+    wifi_started = 1;
     if (net_connect(60 * 20) != 0) {
       ui_status("\x1b[31;1m%s\x1b[39;0m", net_error());
       continue;
@@ -193,6 +195,7 @@ int main(int argc, char** argv)
       boot_game(0);
 
     ui_status("Connecting to Wi-Fi...");
+    wifi_started = 1;
     if (net_connect(60 * 20) != 0) {
       log_line("wifi: %s", net_error());
       ui_status("\x1b[31;1m%s\x1b[39;0m", net_error());

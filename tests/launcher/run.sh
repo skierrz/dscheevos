@@ -9,6 +9,8 @@
 #   RUNNER     melonds-headless from skierrz/melonDS (dscheevos branch)
 # Optional: SCRIPT=file (timed input), WORK=dir (keep files), PORT, LIVE=0 (no sending during play),
 #   HARDCORE=0, SPECTATOR=1, MOCK_ARGS (extra mock server options, e.g. --fail-awards),
+#   ENABLED=0 (achievements off in dscheevos.ini: the game starts without them),
+#   MODULE=dir (dscheevos9.bin and .map from another build),
 #   RUNNER_ARGS (extra runner options, e.g. --wpa-ap melonAP:<PMK> for a WPA2 access point).
 # Offline queue: run once with MOCK_ARGS=--fail-awards, then again with the same WORK; the
 # second launcher run sends the unlocks from _nds/dscheevos/pending.bin (logged with "offset").
@@ -23,6 +25,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 repo=$here/../..
 set=$1 frames=$2; shift 2
 port=${PORT:-8443}
+module=${MODULE:-$repo/dscheevos/module/build}
 work=${WORK:-$(mktemp -d)}
 sd=$work/sd
 mkdir -p "$sd/_nds/dscheevos" "$sd/games" "$work/tls"
@@ -39,10 +42,10 @@ openssl x509 -req -in "$work/tls/server.csr" -CA "$work/tls/ca.pem" -CAkey "$wor
 cp "$ROM" "$sd/games/game.nds"
 [ -f "$sd/games/game.sav" ] || head -c 524288 /dev/zero | tr '\0' '\377' > "$sd/games/game.sav"
 printf '[NDS-BOOTSTRAP]\nNDS_PATH = sd:/games/game.nds\nSAV_PATH = sd:/games/game.sav\nLOGGING = 1\nLOADING_SCREEN = 0\n' > "$sd/_nds/nds-bootstrap.ini"
-printf '[DSCHEEVOS]\nENABLED = 1\nHARDCORE = %s\nSEND_DURING_PLAY = %s\nUSERNAME = tester\nTOKEN = MockToken\nHOST = https://10.64.0.1:%s\nSPECTATOR = %s\n' \
-  "${HARDCORE:-1}" "${LIVE:-1}" "$port" "${SPECTATOR:-0}" > "$sd/_nds/dscheevos/dscheevos.ini"
+printf '[DSCHEEVOS]\nENABLED = %s\nHARDCORE = %s\nSEND_DURING_PLAY = %s\nUSERNAME = tester\nTOKEN = MockToken\nHOST = https://10.64.0.1:%s\nSPECTATOR = %s\n' \
+  "${ENABLED:-1}" "${HARDCORE:-1}" "${LIVE:-1}" "$port" "${SPECTATOR:-0}" > "$sd/_nds/dscheevos/dscheevos.ini"
 cp "$repo/dscheevos/launcher/dscheevos-launcher.nds" "$sd/_nds/nds-bootstrap-release.nds"
-cp "$repo/dscheevos/launcher/loader/out/load.bin" "$repo/dscheevos/module/build/dscheevos9.bin" "$work/tls/ca.pem" "$sd/_nds/dscheevos/"
+cp "$repo/dscheevos/launcher/loader/out/load.bin" "$module/dscheevos9.bin" "$work/tls/ca.pem" "$sd/_nds/dscheevos/"
 cp "$BOOTSTRAP" "$sd/_nds/dscheevos/nds-bootstrap.nds"
 cp "$DSI_FILES/dsinand.bin" "$work/nand.bin"
 
@@ -59,4 +62,4 @@ grep -v "^\[pc\]" "$work/runner.log" | tail -1
 echo "server saw:"; cat "$work/events.jsonl"
 echo "launcher.log:"; cat "$sd/_nds/dscheevos/launcher.log" 2>/dev/null || true
 [ -f "$sd/_nds/dscheevos/session.used" ] || { echo "RESULT FAIL: nds-bootstrap didn't use the session"; exit 1; }
-python3 "$repo/tests/bootstrap/status.py" "$work/ram.bin" "$repo/dscheevos/module/build/dscheevos9.map" "$@"
+python3 "$repo/tests/bootstrap/status.py" "$work/ram.bin" "$module/dscheevos9.map" "$@"

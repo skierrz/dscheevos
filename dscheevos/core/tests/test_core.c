@@ -5,6 +5,8 @@
 #include "dscheevos.h"
 #include "../../module/include/dscheevos_module.h"
 
+#include "rc_runtime.h"
+
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,16 +22,39 @@ static uint8_t ram[0x400000];
 static uint8_t dtcm[0x4000];
 static uint32_t now_ms;
 
+static int dtcm_known = 1;   /* 0: the platform can't find the game's DTCM */
+
+/* irq_in_idle: the next live read made during dsc_idle (evaluation) first
+ * runs a VBlank, as if the IRQ came in the middle of idle work. Cleared
+ * when it fires, so idle can catch up. */
+static int irq_in_idle, in_idle, in_irq, irq_count;
+static void irq_vblank(void);
+
+/* As the module reads: a read must be entirely inside one region. */
 static uint32_t read_memory(uint32_t a, uint8_t* buf, uint32_t n)
 {
-  uint32_t i;
-  for (i = 0; i < n; i++) {
-    uint32_t x = a + i;
-    if (x < sizeof(ram)) buf[i] = ram[x];
-    else if (x >= 0x1000000 && x < 0x1000000 + sizeof(dtcm)) buf[i] = dtcm[x - 0x1000000];
-    else return i;
+  if (irq_in_idle && in_idle && !in_irq) {
+    irq_in_idle = 0;
+    irq_vblank();
   }
-  return n;
+  if (a < sizeof(ram) && n <= sizeof(ram) - a) {
+    memcpy(buf, ram + a, n);
+    return n;
+  }
+  if (a >= 0x1000000 && a - 0x1000000 < sizeof(dtcm) && n <= sizeof(dtcm) - (a - 0x1000000) && dtcm_known) {
+    memcpy(buf, dtcm + (a - 0x1000000), n);
+    return n;
+  }
+  return 0;
+}
+
+/* The platform's memory map, or none (use_map 0): dsc_vblank then reads
+ * through read_memory. Tests of the snapshot run both ways. */
+static int use_map = 1;
+static void memory_map(const uint8_t** main_ram, const uint8_t** dtcm_base)
+{
+  *main_ram = ram;
+  *dtcm_base = dtcm_known ? dtcm : NULL;
 }
 static void put32(uint32_t a, uint32_t v) { memcpy(&ram[a], &v, 4); }
 static uint32_t millis(void) { return now_ms; }
@@ -59,6 +84,7 @@ static const char* set_json = SET_HEAD SET_ACHIEVEMENTS SET_TAIL;
 static const char* set_json_warning = SET_HEAD SET_ACHIEVEMENTS SET_WARNING SET_TAIL;
 static const char* set_json_v6 = SET_HEAD SET_ACHIEVEMENTS SET_V6 SET_V6_TAIL;
 static int serve_warning, serve_v6;
+static const char* serve_set;             /* a test's own set, if set */
 static const char* session_unlocks = "";  /* startsession "Unlocks" (softcore) entries */
 
 enum { AWARD_OK, AWARD_ALREADY, AWARD_REFUSED };
@@ -104,7 +130,7 @@ static void http_send(const dsc_http_request_t* req)
   }
   param(post, "r", r, sizeof r);
   if (!strcmp(r, "login2")) body = "{\"Success\":true,\"User\":\"tester\",\"Token\":\"tok\",\"Score\":0,\"Messages\":0}";
-  else if (!strcmp(r, "achievementsets")) body = serve_v6 ? set_json_v6 : serve_warning ? set_json_warning : set_json;
+  else if (!strcmp(r, "achievementsets")) body = serve_set ? serve_set : serve_v6 ? set_json_v6 : serve_warning ? set_json_warning : set_json;
   else if (!strcmp(r, "startsession")) {
     hardcore_session = param(post, "h", v, sizeof v) && !strcmp(v, "1");
     snprintf(buf, sizeof buf, "{\"Success\":true,\"Unlocks\":[%s],\"HardcoreUnlocks\":[]}", session_unlocks);
@@ -146,8 +172,16 @@ static void http_send(const dsc_http_request_t* req)
 
 /* ---- events ---- */
 static int unlocked[8], unlock_count, loaded, degraded;
+#define DIFF_MAX 256               /* achievements in a comparison with rcheevos (see compare_with_rcheevos) */
+#define DIFF_BASE 5000
+static uint32_t core_unlock_frame[DIFF_MAX];
 static void on_event(const dsc_event_t* e)
 {
+  if (e->type == DSC_EVENT_UNLOCK && e->id >= DIFF_BASE && e->id < DIFF_BASE + DIFF_MAX) {
+    dsc_stats_t s;
+    dsc_get_stats(&s);    /* frames are evaluated in order: this is the next one */
+    core_unlock_frame[e->id - DIFF_BASE] = s.frames_evaluated + 1;
+  }
   if (e->type == DSC_EVENT_UNLOCK && unlock_count < 8) unlocked[unlock_count++] = (int)e->id;
   if (e->type == DSC_EVENT_GAME_LOADED) loaded = 1;
   if (e->type == DSC_EVENT_DEGRADED) degraded++;
@@ -209,11 +243,13 @@ static uint32_t journal_unsent(void)
 }
 
 /* ---- helpers ---- */
+static void dbg_log(const char* m) { if (getenv("DSC_LOG")) printf("LOG %s\n", m); }
 static int spectator;
 static uint32_t (*platform_frame)(void);
 static void start_with(int hardcore, uint32_t slots, uint32_t bytes)
 {
-  dsc_platform_t p = { read_memory, millis, http_send, on_event, NULL, unix_time, &journal, &notices, publish_list, platform_frame };
+  dsc_platform_t p = { read_memory, millis, http_send, on_event, dbg_log, unix_time, &journal, &notices, publish_list, platform_frame,
+                       use_map ? memory_map : NULL };
   dsc_config_t c = { "http://mock", "tester", "tok", hardcore, 1024, slots, bytes, spectator };
   memset(ram, 0, sizeof ram);
   memset(dtcm, 0, sizeof dtcm);
@@ -428,7 +464,7 @@ static void test_snapshot_arena_wraps(void)
   start_with(1, 1024, 128);  /* a few frames' worth: the ring wraps many times */
   frames(3);
   dsc_get_stats(&s);
-  per_frame = ((s.addresses + 3) & ~3u) + 12;  /* table bytes, then the pointer target */
+  per_frame = 4 * 4 + 12;    /* 4 words (0x10, 0x20, the pointer, DTCM 0x10), then the pointer target */
   CHECK(per_frame * 4 < 128);
   for (i = 0; i < 400; i++) {
     ram[0x10] = (i == 333) ? 5 : 0;
@@ -929,7 +965,7 @@ static void test_notice_ring_wraps(void)
 
 static void test_no_outputs_is_fine(void)
 {
-  dsc_platform_t p = { read_memory, millis, http_send, on_event, NULL, NULL, NULL, NULL, NULL };
+  dsc_platform_t p = { read_memory, millis, http_send, on_event, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
   dsc_config_t c = { "http://mock", "tester", "tok", 1, 1024, 0, 0, 0 };
   memset(ram, 0, sizeof ram);
   unlock_count = award_count = loaded = 0;
@@ -942,23 +978,671 @@ static void test_no_outputs_is_fine(void)
   dsc_shutdown();
 }
 
+
+/* ---- snapshot copy and pointer chains, against rcheevos reading live memory ---- */
+
+static uint32_t rng = 1;
+static uint32_t rnd(void) { rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5; return rng; }
+
+/* A set of achievements DIFF_BASE, DIFF_BASE + 1, ... with these triggers. */
+static char* make_set(const char* const* triggers, int n)
+{
+  size_t size = 4096;
+  char* out;
+  int i;
+  for (i = 0; i < n; i++)
+    size += strlen(triggers[i]) + 160;
+  out = (char*)malloc(size);
+  strcpy(out, SET_HEAD);
+  for (i = 0; i < n; i++)
+    sprintf(out + strlen(out), "%s{\"ID\":%d,\"Title\":\"T%d\",\"Description\":\"d\",\"Flags\":3,\"Points\":1,"
+      "\"MemAddr\":\"%s\",\"Author\":\"t\",\"BadgeName\":\"1\",\"Created\":1,\"Modified\":1}",
+      i ? "," : "", DIFF_BASE + i, i, triggers[i]);
+  strcat(out, SET_TAIL);
+  return out;
+}
+
+static uint32_t ref_unlock_frame[DIFF_MAX], ref_frame;
+static uint32_t RC_CCONV ref_peek(uint32_t address, uint8_t* buffer, uint32_t num_bytes, void* ud)
+{
+  (void)ud;
+  return read_memory(address, buffer, num_bytes);
+}
+static void RC_CCONV ref_event(const rc_runtime_event_t* e)
+{
+  if (e->type == RC_RUNTIME_EVENT_ACHIEVEMENT_TRIGGERED && e->id >= DIFF_BASE && e->id < DIFF_BASE + DIFF_MAX &&
+      !ref_unlock_frame[e->id - DIFF_BASE])
+    ref_unlock_frame[e->id - DIFF_BASE] = ref_frame;
+}
+
+/* Run the set through the core (idle time every idle_every frames) and
+ * through rcheevos' own runtime reading live memory at each VBlank; every
+ * achievement must unlock on the same frame in both. mutate(frame, when)
+ * changes memory: when 0 before the VBlank, 1 right after it (the snapshot
+ * must not see that). Returns how many unlocked. In this test build the
+ * core also checks each snapshot against the old copy code and rcheevos
+ * (DSC_CHECK_FAST_STEPS), and aborts on any difference. */
+static int compare_with_rcheevos(const char* const* triggers, int n, int frames_to_run, int idle_every,
+                                 void (*mutate)(int frame, int when), dsc_stats_t* stats)
+{
+  rc_runtime_t ref;
+  char* json = make_set(triggers, n);
+  int i, f, unlocks = 0, same = 1, parsed = 0;
+
+  memset(core_unlock_frame, 0, sizeof(core_unlock_frame));
+  memset(ref_unlock_frame, 0, sizeof(ref_unlock_frame));
+  serve_set = json;
+  start_with(1, 1024, 0);
+  serve_set = NULL;
+  rc_runtime_init(&ref);
+  for (i = 0; i < n; i++)
+    parsed += rc_runtime_activate_achievement(&ref, DIFF_BASE + i, triggers[i], NULL, 0) == RC_OK;
+  CHECK(parsed == n);
+  for (f = 1; f <= frames_to_run; f++) {
+    mutate(f, 0);
+    dsc_vblank();
+    ref_frame = f;
+    rc_runtime_do_frame(&ref, ref_event, ref_peek, NULL, NULL);
+    mutate(f, 1);
+    if (f % idle_every == 0 || f == frames_to_run)
+      dsc_idle();
+  }
+  dsc_get_stats(stats);
+  CHECK(stats->frames_dropped == 0);
+  CHECK(stats->frames_evaluated == (uint32_t)frames_to_run);
+  for (i = 0; i < n; i++) {
+    if (core_unlock_frame[i] != ref_unlock_frame[i]) {
+      if (same)
+        printf("  achievement %d (%s): core frame %u, rcheevos frame %u\n", DIFF_BASE + i, triggers[i],
+          (unsigned)core_unlock_frame[i], (unsigned)ref_unlock_frame[i]);
+      same = 0;
+    }
+    unlocks += ref_unlock_frame[i] != 0;
+  }
+  CHECK(same);
+  rc_runtime_destroy(&ref);
+  dsc_shutdown();
+  free(json);
+  return unlocks;
+}
+
+/* Words copied singly and in blocks, unaligned values, DTCM, a block with
+ * an unwatched word in it, and runs at the ends of main RAM and DTCM that
+ * can't be read whole (they read as 0, as read_memory leaves them). */
+static const char* const layout_triggers[] = {
+  "0xH000010=1_0xH000011=2",                       /* two bytes, one word */
+  "0x 000013=258",                                 /* 16-bit across a word boundary */
+  "0xX000021=50462976",                            /* 32-bit, unaligned: 00 01 02 03 */
+  "0xX000200=1_0xX000204=2_0xH00020c=3_0x 000210=4_0xX000214=5",  /* block, 0x208 not watched */
+  "0xH1000010=3",                                  /* DTCM single */
+  "0xX1000100=1_0xX1000104=2_0xX1000108=3_0xX100010c=4",  /* DTCM block */
+  "0xX3ffffe=0_0xH000030=1",                       /* crosses the end of main RAM: always 0 */
+  "0xH3ffffc=2",                                   /* same word as the run above, readable */
+  "0xX1003ffe=0_0xH000031=1",                      /* crosses the end of DTCM */
+  "d0xH000040=1_0xH000040=2",                      /* delta */
+};
+
+static void layout_mutate(int frame, int when)
+{
+  static const uint32_t hot[] = { 0x10, 0x11, 0x13, 0x14, 0x21, 0x22, 0x23, 0x24, 0x200, 0x204, 0x208, 0x20c, 0x20d,
+    0x210, 0x214, 0x3ffffc, 0x3ffffd, 0x3ffffe, 0x3fffff, 0x30, 0x31, 0x40, 0x12, 0x20 };
+  static const uint32_t hot_dtcm[] = { 0x10, 0x11, 0x100, 0x104, 0x108, 0x10c, 0x10d, 0x3ffe, 0x3fff };
+  int k;
+  if (when == 1 && frame % 3) {    /* after the VBlank: must not be seen until the next one */
+    ram[0x10] ^= 1;
+    return;
+  }
+  if (frame > 300 && frame < 340)    /* quiet: queued frames repeat */
+    return;
+  for (k = 0; k < 4; k++) {
+    uint32_t a = hot[rnd() % (sizeof(hot) / sizeof(hot[0]))];
+    ram[a] = (uint8_t)(rnd() % 6);
+  }
+  dtcm[hot_dtcm[rnd() % (sizeof(hot_dtcm) / sizeof(hot_dtcm[0]))]] = (uint8_t)(rnd() % 5);
+  if (frame % 50 == 7) {    /* the exact values some triggers want */
+    put32(0x21, 0x03020100);
+    ram[0x13] = 2; ram[0x14] = 1;
+    put32(0x200, 1); put32(0x204, 2); ram[0x20c] = 3; ram[0x210] = 4; ram[0x211] = 0; put32(0x214, 5);
+    memcpy(&dtcm[0x100], "\1\0\0\0\2\0\0\0\3\0\0\0\4\0\0\0", 16);
+  }
+}
+
+static void test_snapshot_layouts_match_rcheevos(void)
+{
+  dsc_stats_t s;
+  int idle, unlocks;
+  for (idle = 1; idle <= 7; idle += 6) {
+    rng = 99;
+    unlocks = compare_with_rcheevos(layout_triggers, (int)(sizeof(layout_triggers) / sizeof(layout_triggers[0])),
+      400, idle, layout_mutate, &s);
+    CHECK(unlocks >= 9);
+    CHECK(s.live_reads == 0);
+    if (idle > 1)
+      CHECK(s.frames_repeated > 0);
+  }
+}
+
+/* DTCM can't be read after a while (at load rc_client would disable the
+ * achievements that use it): those bytes are 0, as read_memory leaves them.
+ * It goes during a quiet, queued stretch: that frame is not a repeat. */
+static void lose_dtcm_mutate(int frame, int when)
+{
+  if (frame == 320)
+    dtcm_known = 0;
+  layout_mutate(frame, when);
+}
+
+static void test_snapshot_without_dtcm(void)
+{
+  dsc_stats_t s;
+  rng = 5;
+  compare_with_rcheevos(layout_triggers, (int)(sizeof(layout_triggers) / sizeof(layout_triggers[0])),
+    400, 7, lose_dtcm_mutate, &s);
+  dtcm_known = 1;
+}
+
+/* A frame read differently (DTCM no longer readable) is stored, not
+ * counted as a repeat, even when the bytes come out the same. */
+static void test_new_memory_map_is_not_a_repeat(void)
+{
+  dsc_stats_t s;
+  start_with(1, 1024, 0);
+  frames(3);
+  dsc_vblank();
+  dsc_vblank();                /* DTCM is all 0: a repeat */
+  dtcm_known = 0;
+  dsc_vblank();                /* DTCM reads 0 now too, but it wasn't read */
+  dtcm_known = 1;
+  dsc_get_stats(&s);
+  CHECK(s.frames_repeated == (use_map ? 1u : 2u));    /* without a map, the core can't tell */
+  dsc_idle();
+  dsc_shutdown();
+}
+
+/* Twenty single words; while frames queue, one changes per frame, each in
+ * turn: none of them is a repeat. Then nothing changes: all are. */
+static void test_any_word_breaks_a_repeat(void)
+{
+  static char text[20][32];
+  const char* triggers[20];
+  char* json;
+  dsc_stats_t s;
+  int i;
+  for (i = 0; i < 20; i++) {
+    snprintf(text[i], sizeof text[i], "0xH%06x=200", 0x800 + 16 * i);
+    triggers[i] = text[i];
+  }
+  json = make_set(triggers, 20);
+  serve_set = json;
+  start_with(1, 1024, 0);
+  serve_set = NULL;
+  frames(3);
+  for (i = 0; i < 40; i++) {
+    ram[0x800 + 16 * (i % 20)]++;
+    dsc_vblank();
+  }
+  dsc_get_stats(&s);
+  CHECK(s.frames_repeated == 0);
+  for (i = 0; i < 10; i++)
+    dsc_vblank();
+  dsc_idle();
+  dsc_get_stats(&s);
+  CHECK(s.frames_repeated == 10);
+  CHECK(s.frames_evaluated == s.frames_snapshotted);
+  dsc_shutdown();
+  free(json);
+}
+
+/* Pointer chains of every shape run_chains computes itself, and some it
+ * leaves to rcheevos, into main RAM, DTCM, unmapped memory and across the
+ * end of main RAM; pointers move between frames. */
+#define SLOTS 0x1000       /* 16 pointer slots */
+#define NEST 0x5000        /* pointers a slot can point at */
+static const uint32_t pointers[] = {
+  0x02002000, 0x02003001, 0x01000100, 0x023ffff0, 0x00500000,      /* DS pointers: & 0x1FFFFFF */
+  0x00002000, 0x00003001, 0x01000101, 0x003ffff4,                  /* plain offsets */
+  0x02005000, 0x02005010, 0x00000000
+};
+static const char* const chain_shapes[] = {
+  "I:0xX%06x&33554431_0xH%04x=%u",
+  "I:0xX%06x_0xH%04x=%u",
+  "I:0xX%06x&4194303_0x %04x=%u",
+  "I:0xX%06x&33554431_0xX%04x=%u",
+  "I:0xX%06x&33554431_I:0xX%04x&33554431_0xH%04x=%u",
+  "I:d0xX%06x&33554431_0xH%04x=%u",
+  "I:p0xX%06x&33554431_0xH%04x=%u",
+  "I:0xX%06x*1_0xH%04x=%u",
+  "I:0xX%06x+16_0xH%04x=%u",
+  "I:0xX%06x-33554432_0xH%04x=%u",
+  "I:0xX%06x^33554432_0xH%04x=%u",
+  "I:0xW%06x_0xH%04x=%u",
+  "I:0x %06x_0xH%04x=%u",
+  "I:0xX%06x/2_0xH%04x=%u",
+  "I:0xX%06x&33554431_0xL%04x=%u",
+  "I:0xX%06x&33554431_0xM%04x=1",
+  "I:0xX%06x&33554431_d0xH%04x!=0xH%04x",
+  "I:0xH%06x_0xH%04x=%u",
+  "I:0xX%06x&33554431_I:0x %04x_0xH%04x=%u",
+  "I:0xX%06x&33554431_0x %04x>%u_I:0xX%06x&33554431_0xH%04x=%u",
+  "I:0xX%06x&33554431_I:d0xX%04x&33554431_0xH%04x=%u",     /* delta of a step */
+  "I:0xX%06x&33554431_I:0xX%04x/1_0xH%04x=%u",             /* a step rcheevos computes, from a step */
+};
+
+static void chain_mutate(int frame, int when)
+{
+  int k;
+  if (when == 1) {
+    if (frame % 4 == 1)    /* moves right after the VBlank: the snapshot keeps the old target */
+      put32(SLOTS + 4 * (rnd() % 16), pointers[rnd() % (sizeof(pointers) / sizeof(pointers[0]))]);
+    return;
+  }
+  if (frame > 200 && frame < 260)
+    return;
+  for (k = 0; k < 8; k++) {
+    static const uint32_t areas[] = { 0x2000, 0x3001, 0x3fffdc, 0x10, 0x5000, 0x40 };
+    ram[areas[rnd() % 6] + rnd() % 0x24] = (uint8_t)(rnd() % 4);
+  }
+  dtcm[0x100 + rnd() % 0x24] = (uint8_t)(rnd() % 4);
+  if (frame % 3 == 0)
+    put32(SLOTS + 4 * (rnd() % 16), pointers[rnd() % (sizeof(pointers) / sizeof(pointers[0]))]);
+  if (frame % 5 == 0)
+    put32(NEST + 4 * (rnd() % 8), pointers[rnd() % 9]);
+}
+
+static void test_pointer_chains_match_rcheevos(void)
+{
+  enum { N = 160 };
+  static char text[N][160];
+  const char* triggers[N];
+  dsc_stats_t s;
+  int i, idle, unlocks;
+  rng = 7;
+  for (i = 0; i < N; i++) {
+    const char* shape = chain_shapes[i % (sizeof(chain_shapes) / sizeof(chain_shapes[0]))];
+    uint32_t slot = SLOTS + 4 * (rnd() % 16), off = rnd() % 0x14, off2 = rnd() % 0x10, v = rnd() % 4;
+    if (strstr(shape, "0xH%06x_"))
+      slot = 0x40 + rnd() % 4;    /* 8-bit pointer: a small address */
+    if (strstr(shape, "%04x&") || strstr(shape, "%04x/"))  /* nested: the second pointer is in NEST */
+      snprintf(text[i], sizeof text[i], shape, slot, off & ~3u, off2, v);
+    else if (strstr(shape, "I:0x %04x"))
+      snprintf(text[i], sizeof text[i], shape, slot, 0x10u, off2, v);
+    else if (strstr(shape, "d0xH%04x!="))
+      snprintf(text[i], sizeof text[i], shape, slot, off, off);
+    else if (strstr(shape, ">%u_I:"))
+      snprintf(text[i], sizeof text[i], shape, slot, off, v, SLOTS + 4 * (rnd() % 16), off2, v);
+    else
+      snprintf(text[i], sizeof text[i], shape, slot, off, v);
+    if (i % 3 == 1)
+      strcat(text[i], ".3.");
+    triggers[i] = text[i];
+  }
+  for (idle = 1; idle <= 9; idle += 4) {
+    rng = 11;
+    use_map = idle != 5;          /* and once through read_memory */
+    memset(ram + NEST, 0, 0x20);
+    unlocks = compare_with_rcheevos(triggers, N, 500, idle, chain_mutate, &s);
+    CHECK(unlocks > N / 2);
+    CHECK(s.live_reads == 0);
+    if (idle > 1)
+      CHECK(s.frames_repeated > 0);
+  }
+  use_map = 1;
+}
+
+/* Remember/Recall chains aren't copied: read live, and counted. */
+static void test_recall_chain_reads_live(void)
+{
+  static const char* const triggers[] = { "K:0xX001000&33554431_I:{recall}_0xH000004=1" };
+  char* json = make_set(triggers, 1);
+  dsc_stats_t s;
+  serve_set = json;
+  start(1);
+  serve_set = NULL;
+  put32(0x1000, 0x02000020);
+  frames(3);
+  ram[0x24] = 1;
+  frames(2);
+  dsc_get_stats(&s);
+  CHECK(s.live_reads > 0);
+  CHECK(was_unlocked(DIFF_BASE));
+  dsc_shutdown();
+  free(json);
+}
+
+/* A change to an unwatched byte in a watched word is not a change. */
+static void test_unwatched_bytes_still_repeat(void)
+{
+  dsc_stats_t s;
+  int i;
+  start_with(1, 1024, 0);
+  frames(3);
+  for (i = 0; i < 20; i++) {
+    ram[0x11] = (uint8_t)i;    /* same word as 0x10, not watched */
+    ram[0x103 + 0x20] = (uint8_t)i;
+    dsc_vblank();
+  }
+  dsc_idle();
+  dsc_get_stats(&s);
+  CHECK(s.frames_repeated == 19);
+  dsc_shutdown();
+}
+
+/* ---- review: gaps found against the code before the copy program ---- */
+
+/* A chain's 32-bit read at 0x3ffffe fails at VBlank (it crosses the end of
+ * main RAM), but a 1-byte read of 0x3ffffe is fine. A Recall chain (read
+ * live at evaluation) reading that one byte must get it, as rcheevos and
+ * the old code do. */
+static void test_live_read_next_to_failed_chain_read(void)
+{
+  static const char* const triggers[] = {
+    "K:0xX001000_I:{recall}_0xH000000=7",   /* 1 byte at 0x3ffffe, read live */
+    "I:0xX001004_0xX000000=1",              /* 4 bytes at 0x3ffffe: fails */
+  };
+  char* json = make_set(triggers, 2);
+  serve_set = json;
+  start(1);
+  serve_set = NULL;
+  put32(0x1000, 0x3ffffe);
+  put32(0x1004, 0x3ffffe);
+  frames(3);
+  ram[0x3ffffe] = 7;
+  frames(3);
+  CHECK(was_unlocked(DIFF_BASE));
+  dsc_shutdown();
+  free(json);
+}
+
+/* Default arena (snapshot_bytes 0 = slots * max_addresses): a set of
+ * scattered single bytes must still fit, as it did with one byte per
+ * address. */
+static void test_scattered_set_fits_default_arena(void)
+{
+  enum { T = 6, PER = 100 };
+  static char text[T][PER * 16];
+  const char* triggers[T];
+  char* json;
+  dsc_stats_t s;
+  int i, k;
+  for (i = 0; i < T; i++) {
+    text[i][0] = 0;
+    for (k = 0; k < PER; k++)
+      sprintf(text[i] + strlen(text[i]), "%s0xH%06x=9", k ? "_" : "", 0x10000 + 4 * (i * PER + k));
+    triggers[i] = text[i];
+  }
+  json = make_set(triggers, T);
+  serve_set = json;
+  start_with(1, 2, 0);       /* 2 slots, 2 * 1024 bytes */
+  serve_set = NULL;
+  frames(10);
+  dsc_get_stats(&s);
+  CHECK(s.addresses == T * PER);
+  CHECK(s.frames_dropped == 0);
+  CHECK(s.frames_evaluated == s.frames_snapshotted);
+  dsc_shutdown();
+  free(json);
+}
+
+/* Tables republished while frames are queued: Recall chains read live, so
+ * each evaluation adds addresses (until the table is full); pointers move
+ * between region ends, DTCM comes and goes. The self-check
+ * (DSC_CHECK_FAST_STEPS) aborts on any difference from the old copy. */
+static void test_republish_while_queued(void)
+{
+  static const uint32_t spots[] = { 0x10, 0x3ffffc, 0x3ffffd, 0x3ffffe, 0x3fffff, 0x1000000, 0x1003ffd, 0x1003ffe,
+                                    0x1003fff, 0x400000, 0xfffffe, 0x2001, 0x2002, 0x2003 };
+  static const char* const triggers[] = {
+    "K:0xX001000_I:{recall}_0xH000000=7",
+    "K:0xX001004_I:{recall}_0x 000000=7",
+    "K:0xX001008_I:{recall}_0xX000000=7",
+    "K:0xX00100c_I:{recall}_0xH000001=7",
+    "I:0xX001000_0xX000000=1",
+    "I:0xX001004_0x 000000=1",
+    "I:0xX001008_0xH000000=1",
+    "I:0xX00100c&33554431_0xH000002=1",
+    "0xH1000010=3_0xX000020=1",
+  };
+  char* json = make_set(triggers, (int)(sizeof(triggers) / sizeof(triggers[0])));
+  dsc_stats_t s;
+  int idle, f, pass;
+  for (pass = 0; pass < 2; pass++) {
+    use_map = pass;
+    for (idle = 1; idle <= 9; idle += 4) {
+      rng = 1234 + idle;
+      serve_set = json;
+      start_with(1, 1024, 0);
+      serve_set = NULL;
+      for (f = 0; f < 600; f++) {
+        uint32_t a = (f % 7 == 0) ? spots[rnd() % (sizeof(spots) / sizeof(spots[0]))] : rnd() % 0x400000;
+        if (rnd() % 3 == 0 && (a & 0xFF000000u) == 0)
+          a = (rnd() & 1) ? 0x1000000 + rnd() % 0x4000 : a;
+        put32(0x1000 + 4 * (rnd() % 4), a);
+        if (a < 0x400000)
+          ram[a] = (uint8_t)(rnd() % 8);
+        if (f % 37 == 0)
+          dtcm_known = !dtcm_known;
+        if (f > 300 && f < 330)
+          put32(0x1000, 0x10);    /* quiet: repeats */
+        dsc_vblank();
+        if (f % idle == 0)
+          dsc_idle();
+      }
+      dtcm_known = 1;
+      dsc_idle();
+      dsc_get_stats(&s);
+      CHECK(s.frames_evaluated == s.frames_snapshotted);
+      CHECK(s.addresses > 100);
+      dsc_shutdown();
+    }
+  }
+  use_map = 1;
+  free(json);
+}
+
+/* A VBlank that comes while idle evaluates a frame (here: in the middle of
+ * a live read), with memory changed: it queues a frame, or counts a repeat
+ * on the newest one, never on the one being evaluated. The self-check
+ * compares every snapshot with the old copy. */
+static void irq_vblank(void)
+{
+  uint32_t a = rnd() % 0x400000;
+  in_irq = 1;
+  if (rnd() % 4)
+    ram[a] = (uint8_t)rnd();
+  put32(0x1000 + 4 * (rnd() % 4), rnd() % 2 ? rnd() % 0x400000 : 0x10);
+  dsc_vblank();
+  irq_count++;
+  in_irq = 0;
+}
+static void test_vblank_during_evaluation(void)
+{
+  static const char* const triggers[] = {
+    "K:0xX001000_I:{recall}_0xH000000=7",
+    "K:0xX001004_I:{recall}_0x 000000=7",
+    "I:0xX001008&33554431_0xH000000=1",
+    "I:0xX00100c_0xX000000=1",
+    "0xH000020=3",
+  };
+  char* json = make_set(triggers, (int)(sizeof(triggers) / sizeof(triggers[0])));
+  dsc_stats_t s;
+  int f, pass;
+  for (pass = 0; pass < 2; pass++) {
+    use_map = pass;
+    rng = 77 + pass;
+    serve_set = json;
+    start_with(1, 1024, 0);
+    serve_set = NULL;
+    irq_count = 0;
+    for (f = 0; f < 400; f++) {
+      put32(0x1000 + 4 * (rnd() % 4), rnd() % 0x400000);
+      ram[0x20] = (uint8_t)(rnd() % 4);
+      dsc_vblank();
+      in_idle = 1;
+      irq_in_idle = 1;
+      if (f % 3 == 0)
+        dsc_idle();
+      in_idle = 0;
+    }
+    irq_in_idle = 0;
+    in_idle = 1;
+    while (dsc_idle())
+      ;
+    in_idle = 0;
+    dsc_get_stats(&s);
+    CHECK(irq_count > 100);
+    CHECK(s.frames_dropped == 0);
+    CHECK(s.frames_evaluated == s.frames_snapshotted);
+    dsc_shutdown();
+  }
+  use_map = 1;
+  free(json);
+}
+
+/* Random address sets (clusters, gaps, region ends, every size) with frames
+ * queued and DTCM coming and going; the self-check compares each snapshot
+ * with the old copy. */
+static void test_random_layouts(void)
+{
+  static const char* const sizes[] = { "H", " ", "W", "X", "L", "U", "M", "I", "J", "G", "K" };
+  static const uint32_t bases[] = { 0x0, 0x1000, 0x3fff00, 0x1000000, 0x1003f00, 0x3ffff8, 0x1003ff8 };
+  enum { T = 40 };
+  static char text[T][64];
+  const char* triggers[T];
+  dsc_stats_t s;
+  int seed, i, f;
+  for (seed = 1; seed <= 40; seed++) {
+    char* json;
+    rng = 777 + seed;
+    for (i = 0; i < T; i++) {
+      uint32_t a = bases[rnd() % 7] + rnd() % (seed % 3 ? 0x40 : 0x200);
+      snprintf(text[i], sizeof text[i], "0x%s%06x=%u", sizes[rnd() % 11], a, (unsigned)(rnd() % 3));
+      triggers[i] = text[i];
+    }
+    json = make_set(triggers, T);
+    use_map = seed & 1;
+    serve_set = json;
+    start_with(1, 1024, 0);
+    serve_set = NULL;
+    for (f = 0; f < 120; f++) {
+      int k;
+      for (k = 0; k < 6; k++) {
+        uint32_t a = bases[rnd() % 7] + rnd() % 0x200;
+        if (a < 0x400000) ram[a] = (uint8_t)rnd();
+        else if (a - 0x1000000 < 0x4000) dtcm[a - 0x1000000] = (uint8_t)rnd();
+      }
+      if (f % 29 == 0)
+        dtcm_known = !dtcm_known;
+      dsc_vblank();
+      if (f % (1 + seed % 5) == 0)
+        dsc_idle();
+    }
+    dtcm_known = 1;
+    dsc_idle();
+    dsc_get_stats(&s);
+    CHECK(s.frames_evaluated == s.frames_snapshotted);
+    dsc_shutdown();
+    free(json);
+  }
+  use_map = 1;
+}
+
+/* More chain shapes: roots in DTCM and unaligned, 16-bit roots with a
+ * mask, three levels, two ANDs, MUL and ADD before a read, shared prefixes. */
+static void more_chain_mutate(int frame, int when)
+{
+  static const uint32_t ptrs[] = { 0x02002000, 0x02003001, 0x01000100, 0x023ffff4, 0x00500000, 0x00002000,
+                                   0x01003ff0, 0x3ffff1, 0x00002002, 0x00001000 };
+  int k;
+  if (when == 1) {
+    if (frame % 4 == 1)
+      put32(0x1000 + 4 * (rnd() % 8), ptrs[rnd() % 10]);
+    return;
+  }
+  if (frame > 200 && frame < 240)
+    return;
+  for (k = 0; k < 8; k++) {
+    static const uint32_t areas[] = { 0x2000, 0x3000, 0x3fffe0, 0x1000, 0x500 };
+    ram[areas[rnd() % 5] + rnd() % 0x20] = (uint8_t)(rnd() % 4);
+  }
+  dtcm[0x100 + rnd() % 0x10] = (uint8_t)(rnd() % 4);
+  dtcm[0x3ff0 + rnd() % 0x10] = (uint8_t)(rnd() % 4);
+  if (frame % 3 == 0)
+    put32(0x1000 + 4 * (rnd() % 8), ptrs[rnd() % 10]);
+  if (frame % 7 == 0) {
+    uint32_t v = ptrs[rnd() % 10];
+    memcpy(&dtcm[0x200 + 4 * (rnd() % 4)], &v, 4);
+  }
+  if (frame % 5 == 0)
+    put32(0x1001 + 4 * (rnd() % 4), ptrs[rnd() % 10]);
+}
+
+static void test_more_chain_shapes_match_rcheevos(void)
+{
+  static const char* const triggers[] = {
+    "I:0xX1000200&33554431_0xH0004=1",
+    "I:0xX1000204_0xH0000=2",
+    "I:0xX001001&33554431_0xH0002=1",
+    "I:0x 001000&65535_0xH0003=1",
+    "I:0x 001004_0x 0001=3",
+    "I:0xX001008&33554431_I:0xX0000&33554431_I:0xX0000&33554431_0xH0001=2",
+    "I:0xX00100c&33554431&4194303_0xH0002=1",
+    "I:0xX001010*2_0xH0000=1",
+    "I:0xX001014+4_0xX0000=1",
+    "I:0xX001018&33554431_0xH0004=1_I:0xX001018&33554431_0xH0008=2",
+    "I:0xX00101c&33554431_0x 0001=1_I:0xX00101c&33554431_0xX0004=0",
+    "I:0xW001000&16777215_0xH0005=1",
+    "I:0xX1003ffc_0xH0000=1",
+    "I:0xX001000&33554431_d0xH0004=1",
+    "I:0xX001004&33554431_p0x 0006=2",
+    "I:0xX001008&33554431_I:d0xX0000_0xH0002=3",
+  };
+  dsc_stats_t s;
+  int idle, pass;
+  for (pass = 0; pass < 2; pass++) {
+    for (idle = 1; idle <= 9; idle += 8) {
+      rng = 31 + idle;
+      use_map = pass;
+      CHECK(compare_with_rcheevos(triggers, (int)(sizeof(triggers) / sizeof(triggers[0])), 400, idle, more_chain_mutate, &s) >= 8);
+      CHECK(s.live_reads == 0);
+    }
+  }
+  use_map = 1;
+}
+
 int main(void)
 {
+  for (use_map = 0; use_map < 2; use_map++) {    /* the snapshot tests, without and with a memory map */
+    printf("-- memory map %s\n", use_map ? "on" : "off");
+    RUN(test_set_addresses_snapshotted_from_the_start);
+    RUN(test_first_queued_frames_use_their_own_memory);
+    RUN(test_queued_frames_follow_moved_pointers);
+    RUN(test_queued_frames_ignore_later_memory);
+    RUN(test_evaluates_frozen_snapshot);
+    RUN(test_ignores_changes_after_vblank);
+    RUN(test_pointer_chain_follows_moved_pointer);
+    RUN(test_dtcm);
+    RUN(test_dropped_frames_are_reported);
+    RUN(test_long_stretch_without_idle_is_queued);
+    RUN(test_snapshot_arena_wraps);
+    RUN(test_unchanged_frames_queue_as_repeats);
+    RUN(test_unwatched_bytes_still_repeat);
+    RUN(test_snapshot_layouts_match_rcheevos);
+    RUN(test_snapshot_without_dtcm);
+    RUN(test_any_word_breaks_a_repeat);
+    RUN(test_new_memory_map_is_not_a_repeat);
+    RUN(test_scattered_set_fits_default_arena);
+  }
+  use_map = 1;
+  RUN(test_pointer_chains_match_rcheevos);
+  RUN(test_recall_chain_reads_live);
+  RUN(test_live_read_next_to_failed_chain_read);
+  RUN(test_republish_while_queued);
+  RUN(test_vblank_during_evaluation);
+  RUN(test_random_layouts);
+  RUN(test_more_chain_shapes_match_rcheevos);
   RUN(test_session_loads_hardcore);
-  RUN(test_set_addresses_snapshotted_from_the_start);
-  RUN(test_first_queued_frames_use_their_own_memory);
-  RUN(test_queued_frames_follow_moved_pointers);
-  RUN(test_queued_frames_ignore_later_memory);
-  RUN(test_evaluates_frozen_snapshot);
-  RUN(test_ignores_changes_after_vblank);
-  RUN(test_pointer_chain_follows_moved_pointer);
-  RUN(test_dtcm);
   RUN(test_unlock_sent_in_hardcore);
   RUN(test_softcore_session);
-  RUN(test_dropped_frames_are_reported);
-  RUN(test_long_stretch_without_idle_is_queued);
-  RUN(test_snapshot_arena_wraps);
-  RUN(test_unchanged_frames_queue_as_repeats);
   RUN(test_unsupported_client_warning);
   RUN(test_reset_and_progress);
   RUN(test_unlock_retried_when_server_down);

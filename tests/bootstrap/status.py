@@ -5,7 +5,9 @@
       [--expect-list N] [--expect-journal-unsent N] [--expect-notice KIND ...]
 
 ABI v6 (module version 6 and up): also the achievement list, the notices and
-the offline journal, found through the module header.
+the offline journal, found through the module header. Modules whose status is
+big enough (the map gives its size) also report their own cost in scanlines:
+263 a frame, about 4,260 ARM9 cycles each at 67 MHz.
 """
 import argparse
 import re
@@ -96,6 +98,8 @@ ap.add_argument('--expect-rejoins', type=int, help='times the module must have r
 ap.add_argument('--expect-list', type=int,
                 help='achievements the published list must hold; also checks its unlocked ones against the status (ABI v6)')
 ap.add_argument('--expect-journal-unsent', type=int, help='journal entries the server has not answered (ABI v6)')
+ap.add_argument('--max-irq-lines', type=int, help='most scanlines one VBlank IRQ of the module may take')
+ap.add_argument('--max-irq-avg', type=float, help='average scanlines the VBlank IRQ of the module may take')
 ap.add_argument('--expect-notice', action='append', default=[], metavar='KIND',
                 help='a notice of this kind must be in the ring, e.g. unlock, session_start (ABI v6)')
 args = ap.parse_args()
@@ -105,6 +109,8 @@ if bad_kinds:
 ram = open(args.ram, 'rb').read()
 mp = open(args.map).read()
 addr = int(re.search(r'0x([0-9a-f]+)\s+dscm_g_status\b', mp).group(1), 16)
+m = re.search(r'\.bss\.dscm_g_status\s+0x[0-9a-f]+\s+0x([0-9a-f]+)', mp)
+status_size = int(m.group(1), 16) if m else 0
 o = addr - 0x02000000
 f = struct.unpack_from('<8I', ram, o)
 names = 'active hardcore snapshotted evaluated dropped missed eval_lines unlock_count'.split()
@@ -126,6 +132,20 @@ if len(ram) >= p + 84 and hdr_version(ram) >= 4:
 rejoins = struct.unpack_from('<I', ram, p + 88)[0] if hdr_version(ram) >= 5 else 0
 if hdr_version(ram) >= 5:
     print(f'rejoined the access point {rejoins} times')
+# self-timing, appended to dscm_status_t after net_rejoins
+TIMING = 'timed_frames irq_last irq_max irq_total idle_last idle_max idle_total idle_none idle_cut'.split()
+timing = None
+if status_size >= (p + 92 - o) + 4 * len(TIMING):
+    timing = dict(zip(TIMING, struct.unpack_from(f'<{len(TIMING)}I', ram, p + 92)))
+    n = timing['timed_frames']
+    irq_avg = timing['irq_total'] / n if n else 0.0
+    idle_avg = timing['idle_total'] / n if n else 0.0
+    print(f"self-timing over {n} frames, in scanlines of 263 (1 line ~4,260 ARM9 cycles at 67 MHz):")
+    print(f"  IRQ  avg {irq_avg:.2f} ({irq_avg / 263:.2%} of a frame), max {timing['irq_max']}, last {timing['irq_last']}")
+    print(f"  idle avg {idle_avg:.2f} ({idle_avg / 263:.2%} of a frame), max {timing['idle_max']}, last {timing['idle_last']};"
+          f" {timing['idle_none']} frames with no idle pass, {timing['idle_cut']} passes cut by a VBlank")
+else:
+    print('self-timing: not in this module')
 hdr = struct.unpack_from('<14I', ram, 0xD80000)
 print('header magic %08x version %d vblank_count %d' % (hdr[0], hdr[1], hdr[9]))
 
@@ -175,6 +195,16 @@ if err:
 if f[4] > args.max_dropped:
     fails.append(f'{f[4]} frames dropped')
 fails += [f'{i} did not unlock' for i in args.expect if i not in unlocked]
+if timing and f[0] and f[2] and not timing['timed_frames']:
+    fails.append('frames snapshotted, none timed')
+if args.max_irq_lines is not None or args.max_irq_avg is not None:
+    if not timing:
+        fails.append('no self-timing to check')
+    else:
+        if args.max_irq_lines is not None and timing['irq_max'] > args.max_irq_lines:
+            fails.append(f"IRQ took up to {timing['irq_max']} lines, limit {args.max_irq_lines}")
+        if args.max_irq_avg is not None and irq_avg > args.max_irq_avg:
+            fails.append(f'IRQ took {irq_avg:.2f} lines on average, limit {args.max_irq_avg}')
 if args.expect_sent is not None:
     sent_now = struct.unpack_from('<I', ram, p + 80)[0] if hdr_version(ram) >= 4 else 0
     if sent_now < args.expect_sent:

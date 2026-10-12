@@ -44,17 +44,23 @@ void hl_log(Platform::LogLevel level, const char* msg)
 }
 
 // ---- emulated game memory, RetroAchievements DS address space ----
+// As the module reads it: a read must be entirely inside main RAM or DTCM.
 static NDS* g_nds;
 static uint32_t read_memory(uint32_t a, uint8_t* buf, uint32_t n)
 {
-    for (uint32_t i = 0; i < n; i++)
-    {
-        uint32_t x = a + i;
-        if (x < 0x400000) buf[i] = g_nds->MainRAM[x & g_nds->MainRAMMask];
-        else if (x >= 0x1000000 && x < 0x1004000) buf[i] = g_nds->ARM9.DTCM[x - 0x1000000];
-        else return i;
-    }
+    if (a < 0x400000 && n <= 0x400000 - a)
+        std::memcpy(buf, g_nds->MainRAM + a, n);
+    else if (a >= 0x1000000 && a - 0x1000000 < 0x4000 && n <= 0x4000 - (a - 0x1000000))
+        std::memcpy(buf, g_nds->ARM9.DTCM + (a - 0x1000000), n);
+    else
+        return 0;
     return n;
+}
+// DScheevos' snapshot reads the same memory directly, as on the console.
+static void memory_map(const uint8_t** main_ram, const uint8_t** dtcm)
+{
+    *main_ram = g_nds->MainRAM;
+    *dtcm = g_nds->ARM9.DTCM;
 }
 
 static uint32_t g_frame;
@@ -261,6 +267,7 @@ int main(int argc, char** argv)
         // the mock serves the set for any hash; the real hash is checked by the hash tests
         std::snprintf(hash, sizeof hash, "%s", "00000000000000000000000000000000");
         dsc_platform_t p = {read_memory, millis, http_send, on_event, on_log};
+        p.memory_map = memory_map;
         dsc_config_t c = {"http://mock", "tester", "tok", hardcore ? 1 : 0, 8192, idle_every > 1 ? 1024u : 0u, 0};
         if (dsc_init(&p, &c) != 0) { std::fprintf(stderr, "dsc_init failed\n"); return 2; }
         dsc_begin_session(hash);

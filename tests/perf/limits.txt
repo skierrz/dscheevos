@@ -1,0 +1,11 @@
+# tests/perf/run.sh --gate: <set> <metric> <limit>, instructions per call.
+# Set from the measured value + 5% (perf branch, Phase 2: snapshot copy
+# program, chains run by the core, rcheevos runtime and client in ARM mode):
+#   typical vblank_max 17124, vblank_median 11635, idle_median 420250;
+#   heavy vblank_max 60651.
+# Before Phase 2: typical 133447, 120467, 1391691; heavy 448343.
+# Lower these when the snapshot gets cheaper.
+typical vblank_max     17981
+typical vblank_median  12217
+typical idle_median    441263
+heavy   vblank_max     63684

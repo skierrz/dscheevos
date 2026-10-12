@@ -44,15 +44,23 @@ OBJ := $(patsubst %.c,$(BUILD)/%.o,$(notdir $(SRC))) $(patsubst $(RCHEEVOS)/src/
 .PHONY: all clean
 all: $(BUILD)/dscheevos9.bin
 
+# flags live here: a Makefile change rebuilds everything
+$(OBJ): Makefile
+
 $(BUILD)/%.o: src/%.c include/dscheevos_module.h $(CORE)/include/dscheevos.h ../../VERSION
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
+# Code that runs every frame is ARM, not Thumb: rcheevos' runtime and client
+# (Thumb-1 has no jump tables or three-operand ALU instructions; about 30%
+# fewer instructions per frame evaluated, docs/rcheevos-arm9-footprint.md).
+# The core marks its own hot functions ARM (HOT in dscheevos.c).
+RC_ARM   := client/% runtime/%
 $(BUILD)/dscheevos.o: $(CORE)/src/dscheevos.c $(CORE)/include/dscheevos.h include/dscheevos_module.h
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 $(BUILD)/rc/%.o: $(RCHEEVOS)/src/%.c
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -w -c $< -o $@
+	$(CC) $(CFLAGS) $(if $(filter $(RC_ARM),$*),-marm) -w -c $< -o $@
 $(BUILD)/lwip/%.o: $(LWIP)/src/%.c src/net/lwipopts.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -w -c $< -o $@

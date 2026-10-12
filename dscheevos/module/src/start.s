@@ -82,10 +82,20 @@ vblank_entry:
 @ then wait for an interrupt as OS_Halt does. A game thread woken by an IRQ
 @ preempts the idle thread (and this work) as usual. If the work is already
 @ running (preempted, then OS_Halt called again), just halt.
+@ With IRQs masked (CPSR.I or IME 0) nothing could preempt the work, so it
+@ is skipped. If the work took a scanline or more, an IRQ may already have
+@ come, so return without waiting: the caller checks and calls OS_Halt again.
 	.global halt_entry
 	.type halt_entry, %function
 halt_entry:
 	push	{r4, r5, lr}
+	mrs	r0, cpsr
+	tst	r0, #0x80
+	bne	2f
+	mov	r0, #0x04000000
+	ldr	r0, [r0, #0x208]            @ REG_IME
+	tst	r0, #1
+	beq	2f
 	ldr	r5, =in_halt
 	ldr	r0, [r5]
 	cmp	r0, #0
@@ -99,11 +109,13 @@ halt_entry:
 	blx	r0
 	pop	{r4, r5}
 	mov	sp, r4
-	mov	r0, #0
-	str	r0, [r5]
+	mov	r1, #0
+	str	r1, [r5]
+	cmp	r0, #0
+	bne	3f
 2:	mov	r0, #0
 	mcr	p15, 0, r0, c7, c0, 4       @ wait for interrupt
-	pop	{r4, r5, lr}
+3:	pop	{r4, r5, lr}
 	bx	lr
 
 @ Reset: called from nds-bootstrap's reset path with IRQs off. The game's
@@ -206,6 +218,16 @@ dscm_vblank_count_read:
 	ldr	r1, =dscm_vblank_count
 	mcr	p15, 0, r1, c7, c6, 1
 	ldr	r0, [r1]
+	bx	lr
+
+@ uint32_t dscm_take(volatile uint32_t* p): return *p and clear it in one
+@ step, so an IRQ can't come between the read and the write.
+	.global dscm_take
+	.type dscm_take, %function
+dscm_take:
+	mov	r1, #0
+	swp	r2, r1, [r0]
+	mov	r0, r2
 	bx	lr
 
 @ uint32_t dscm_dtcm_base(void): the game's DTCM base from CP15.

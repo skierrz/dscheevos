@@ -112,6 +112,19 @@ typedef struct dscm_status_t {
   volatile uint32_t unlocks_sent;     /* award requests the server answered */
   volatile uint32_t tls_handshake_ms; /* last HTTPS handshake, wall time (diagnostics) */
   volatile uint32_t net_rejoins;      /* times we reassociated after a drop or a group rekey */
+  /* Self-timing, in scanlines read off REG_VCOUNT (the timers are the
+   * game's). 263 lines a frame; one line is about 4,260 ARM9 cycles at
+   * 67 MHz. A single reading is whole lines, but the start falls anywhere in
+   * a line, so total / timed_frames is a fair average below one line too. */
+  volatile uint32_t timed_frames;     /* VBlanks timed below */
+  volatile uint32_t irq_lines_last;   /* the module's VBlank work, inside the game's IPC IRQ */
+  volatile uint32_t irq_lines_max;
+  volatile uint32_t irq_lines_total;
+  volatile uint32_t idle_lines_last;  /* idle work (halt path) in the last frame */
+  volatile uint32_t idle_lines_max;
+  volatile uint32_t idle_lines_total;
+  volatile uint32_t idle_none;        /* frames in which no idle pass started or ended */
+  volatile uint32_t idle_cut;         /* idle passes a VBlank preempted; the rest of such a pass is not counted */
 } dscm_status_t;
 
 enum {

@@ -86,6 +86,14 @@ typedef struct dsc_platform_t {
   void (*publish_list)(struct dscm_list_t* list);
   /* Platform frame count, stamped on notices (may be NULL: the core's own count). */
   uint32_t (*frame)(void);
+  /* Where game memory is right now, so dsc_vblank() can read it directly:
+   * main RAM (RetroAchievements address 0) and DTCM (0x1000000), NULL for a
+   * region that can't be read. Both must be word-aligned (the snapshot
+   * loads whole words). Called once per dsc_vblank(). read_memory()
+   * must agree: the same bytes, and a read not entirely inside one region
+   * fails. May be NULL: the snapshot then reads through read_memory(),
+   * which costs more. */
+  void (*memory_map)(const uint8_t** main_ram, const uint8_t** dtcm);
 } dsc_platform_t;
 
 typedef struct dsc_config_t {
@@ -95,7 +103,7 @@ typedef struct dsc_config_t {
   int hardcore;                  /* 1: hardcore session */
   uint32_t max_addresses;        /* snapshot capacity, e.g. 4096 */
   uint32_t snapshot_slots;       /* most frames that can wait for evaluation; 0 = 2, max 1024 */
-  uint32_t snapshot_bytes;       /* memory for queued snapshots; 0 = snapshot_slots * max_addresses */
+  uint32_t snapshot_bytes;       /* memory for queued snapshots; 0 = snapshot_slots * max_addresses * 4 */
   int spectator;                 /* 1: rc_client spectator mode, nothing is sent or journaled */
 } dsc_config_t;
 
