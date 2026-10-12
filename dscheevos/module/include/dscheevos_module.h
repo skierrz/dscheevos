@@ -177,7 +177,7 @@ typedef struct dscm_boot_t {
   uint8_t net_valid;                  /* 0: no network during play */
   uint8_t reserved2;
   uint32_t ip, netmask, gateway, dns; /* network byte order */
-  uint32_t ca_offset, ca_length;      /* extra trusted CA (PEM), from the start of this struct */
+  uint32_t ca_offset, ca_length;      /* extra trusted CAs (DER, one after the other), from the start of this struct */
   /* the access point, so the module can rejoin it (no secrets in the file) */
   char ap_ssid[32];
   uint8_t ap_ssid_len;

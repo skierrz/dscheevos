@@ -3,6 +3,7 @@
 #include "net.h"
 #include "dscheevos_module.h"
 
+#include "mbedtls/x509_crt.h"
 #include "rc_client.h"
 #include "rc_consoles.h"
 #include "rc_hash.h"
@@ -232,6 +233,7 @@ int session_write(const dsc_settings_t* settings, const char* rom_path, const ch
   uint32_t offset = (sizeof(boot) + 3) & ~3u;
   static const char pad[4];
   static char ca_pem[8192];
+  static unsigned char ca_der[8192];
   size_t ca_len = 0;
   FILE* f;
   FILE* ca;
@@ -282,17 +284,27 @@ int session_write(const dsc_settings_t* settings, const char* rom_path, const ch
       boot.ap_group_cipher = ap.group_cipher;
     }
   }
-  /* extra trusted CA for a self-hosted or test server */
+  /* extra trusted CA for a self-hosted or test server: the module takes DER */
   ca = fopen(DSC_DIR "ca.pem", "rb");
   if (ca) {
-    ca_len = fread(ca_pem, 1, sizeof(ca_pem), ca);
+    size_t n = fread(ca_pem, 1, sizeof(ca_pem) - 1, ca);
+    mbedtls_x509_crt chain;
+    const mbedtls_x509_crt* c;
     fclose(ca);
-    if (ca_len > 0 && ca_len < sizeof(ca_pem)) {
+    ca_pem[n] = '\0';
+    mbedtls_x509_crt_init(&chain);
+    if (n > 0 && mbedtls_x509_crt_parse(&chain, (const unsigned char*)ca_pem, n + 1) == 0) {
+      for (c = &chain; c && c->raw.len; c = c->next) {
+        if (ca_len + c->raw.len > sizeof(ca_der)) { ca_len = 0; break; }
+        memcpy(ca_der + ca_len, c->raw.p, c->raw.len);
+        ca_len += c->raw.len;
+      }
+    }
+    mbedtls_x509_crt_free(&chain);
+    if (ca_len) {
       boot.ca_offset = offset;
       boot.ca_length = (uint32_t)ca_len;
       offset += DSCM_SESSION_PAD(ca_len);
-    } else {
-      ca_len = 0;
     }
   }
   boot.file_size = offset;
@@ -310,7 +322,7 @@ int session_write(const dsc_settings_t* settings, const char* rom_path, const ch
     fwrite(pad, 1, DSCM_SESSION_PAD(g_reply_len[i]) - g_reply_len[i], f);
   }
   if (ca_len) {
-    fwrite(ca_pem, 1, ca_len, f);
+    fwrite(ca_der, 1, ca_len, f);
     fwrite(pad, 1, DSCM_SESSION_PAD(ca_len) - ca_len, f);
   }
   i = ferror(f);

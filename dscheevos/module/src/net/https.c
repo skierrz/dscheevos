@@ -25,8 +25,7 @@
 #include <strings.h>
 
 extern dscm_net_slot_t dscm_g_net[DSCM_NET_SLOTS];
-extern const char dsc_cacerts[];
-extern const size_t dsc_cacerts_size;
+#include "dsc_cacerts.h"
 
 void* link_init(const net_config_t* config);
 void link_service(uint32_t now_ms);
@@ -242,7 +241,7 @@ static int tls_setup(void)
   mbedtls_x509_crt_init(&g_cas);
   mbedtls_ssl_config_init(&g_tls);
   if (mbedtls_ctr_drbg_seed(&g_drbg, mbedtls_entropy_func, &g_entropy, (const unsigned char*)pers, sizeof(pers) - 1) != 0
-      || mbedtls_x509_crt_parse(&g_cas, (const unsigned char*)dsc_cacerts, dsc_cacerts_size) < 0
+      || dsc_parse_der_list(&g_cas, dsc_cacerts, dsc_cacerts_size, 1) != 0   /* in place: read-only data */
       || mbedtls_ssl_config_defaults(&g_tls, MBEDTLS_SSL_IS_CLIENT, MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT) != 0) {
     g_detail = 0x400;
     return -1;
@@ -254,23 +253,13 @@ static int tls_setup(void)
   return 0;
 }
 
-/* PEM must end in a NUL that the length counts: the launcher leaves one
- * after the CA in the session file; else parse a copy. */
-void https_add_ca(const char* pem, uint32_t len)
+/* DER certificates (the launcher converts ca.pem), in the session file:
+ * copied, as the arena takes the session's place. */
+void https_add_ca(const char* der, uint32_t len)
 {
-  char* copy = NULL;
   if (!len || tls_setup() != 0)
     return;
-  if (pem[len] != '\0') {
-    copy = (char*)malloc(len + 1);
-    if (!copy)
-      return;
-    memcpy(copy, pem, len);
-    copy[len] = '\0';
-    pem = copy;
-  }
-  mbedtls_x509_crt_parse(&g_cas, (const unsigned char*)pem, len + 1);
-  free(copy);
+  dsc_parse_der_list(&g_cas, (const unsigned char*)der, len, 0);
 }
 
 /* Advance the connection one step. Returns 1 when ready for requests. */
