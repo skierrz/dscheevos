@@ -1,5 +1,6 @@
 #include "net.h"
 #include "tls.h"
+#include "inflate.h"
 
 #include <nds.h>
 #include <dswifi9.h>
@@ -245,7 +246,7 @@ void http_request(const char* url, const char* post, const char* content_type, h
   }
 
   header_len = snprintf(request, sizeof(request),
-    "%s %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: %s\r\nAccept: */*\r\nConnection: close\r\n",
+    "%s %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: %s\r\nAccept: */*\r\nAccept-Encoding: gzip\r\nConnection: close\r\n",
     post ? "POST" : "GET", path, host, g_user_agent);
   if (post)
     header_len += snprintf(request + header_len, sizeof(request) - (size_t)header_len,
@@ -280,6 +281,20 @@ void http_request(const char* url, const char* post, const char* content_type, h
     for (h = raw; *h; h++) *h = (char)tolower((unsigned char)*h);
     if (strstr(raw, "\r\ntransfer-encoding: chunked"))
       out->length = dechunk(body, out->length);
+    /* asked for: an achievement set compresses about tenfold */
+    if (strstr(raw, "\r\ncontent-encoding: gzip")) {
+      size_t len;
+      char* plain = gunzip((const uint8_t*)body, out->length, &len);
+      free(raw);
+      if (!plain) {
+        g_error = "Bad compressed reply from the server";
+        out->status = -1;
+        goto done;
+      }
+      out->body = plain;
+      out->length = len;
+      goto done;
+    }
   }
   memmove(raw, body, out->length + 1);
   out->body = raw;
