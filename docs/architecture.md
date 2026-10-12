@@ -58,11 +58,14 @@ DScheevos uses 2 MB at `0x02D80000`–`0x02F80000` (the DSi's extra RAM, cached 
 
 | Range | Use |
 |---|---|
-| `0x02D80000` + 512 KB | module image: header, code (rcheevos, lwIP, mbedTLS), data, bss (~307 KB + 107 KB today) |
-| `0x02E00000` + 256 KB | session file: boot block, server replies, optional extra CA |
-| `0x02E40000` – `0x02F7D000` | heap: rcheevos game data, address tables, snapshot ring, TLS (~1.2 MB) |
+| `0x02D80000` + 512 KB | module image: header, code (rcheevos, lwIP, mbedTLS), data, bss (~296 KB + 107 KB today); the heap's low piece after it |
+| `0x02E00000` + 1 KB | session header (`dscm_boot_t`) |
+| `0x02E00400` + 256 KB | snapshot arena. Until the set is loaded it holds the rest of the session file (server replies, optional extra CA, DER) and rcheevos' parse of the set: the arena isn't written before the first frame (`module/src/heap.h`) |
+| `0x02E40400` – `0x02F7D000` | heap's high piece: rcheevos game data, address tables, TLS (~1.2 MB) |
 | `0x02F7D000` + 4 KB | IRQ stack (`header->vblank`) |
 | `0x02F7E000` + 8 KB | idle and init stack (`header->halt`, `header->init`) |
+
+The set's raw JSON and its parsed copy cost no heap, so the load peak equals the steady state (Kirby Super Star Ultra: 293 KB of heap at either, against 604 KB at the load peak before). newlib's malloc takes the two heap pieces from `_sbrk` as one heap with a gap.
 
 It runs through the cached `0x02xxxxxx` mirror; uncached access would make rcheevos several times slower. Only DS (NTR-mode) games booted from SD use it: DSi-enhanced games in DSi mode use all 16 MB.
 
