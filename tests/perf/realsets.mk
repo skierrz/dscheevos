@@ -12,4 +12,4 @@ $(BUILD)/realsets.o: $(REAL_DIR)realsets.c $(CORE)/include/dscheevos.h include/d
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD)/realsets.elf: $(BUILD)/realsets.o $(REAL_OBJ)
-	$(CC) $(ARCH) -specs=rdimon.specs -Wl,--gc-sections $^ -lm -o $@
+	$(CC) $(ARCH) -specs=rdimon.specs -Wl,--gc-sections -Wl,--wrap=rc_client_do_frame $^ -lm -o $@

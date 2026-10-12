@@ -15,11 +15,20 @@
  * a RAM dump, game RAM is random with one word in eight shaped like a DS
  * pointer (as perf.c); a dump is 4 MB of main RAM, optionally followed by
  * 16 KB of DTCM.
+ *
+ * Both modes also print an evaluation digest (every memref value, condition
+ * hit count, trigger, leaderboard and rich presence state after each frame,
+ * taken outside the counted calls) and newlib heap figures (mallinfo: bytes in
+ * use after load and at the end, and the heap's high-water mark). With the
+ * same set, frames and RAM, the core's digest must equal rc_client's own.
  */
 #include "dscheevos.h"
 #include "dscheevos_module.h"
 #include "rc_client.h"
+#include "client/rc_client_internal.h"
+#include "runtime/rc_internal.h"
 
+#include <malloc.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -75,6 +84,104 @@ volatile int marker_sink;
 void __attribute__((noinline)) mark_begin(void) { marker_sink = 1; __asm__ volatile(""); }
 void __attribute__((noinline)) mark_end(void) { marker_sink = 0; __asm__ volatile(""); }
 
+/* ---- evaluation digest (FNV-1a), outside the counted calls ---- */
+/* Linked with --wrap=rc_client_do_frame: remembers the client the core made. */
+void __real_rc_client_do_frame(rc_client_t* client);
+static rc_client_t* seen_client;
+void __wrap_rc_client_do_frame(rc_client_t* client)
+{
+  seen_client = client;
+  __real_rc_client_do_frame(client);
+}
+
+static uint32_t digest = 2166136261u;
+static void mix(uint32_t v)
+{
+  int i;
+  for (i = 0; i < 4; i++) {
+    digest ^= (v >> (i * 8)) & 0xFF;
+    digest *= 16777619u;
+  }
+}
+static void mix_condsets(const rc_condset_t* cs)
+{
+  for (; cs; cs = cs->next) {
+    const rc_condition_t* c;
+    mix(cs->is_paused);
+    for (c = cs->conditions; c; c = c->next) {
+      mix(c->current_hits);
+      mix(c->is_true);
+    }
+  }
+}
+static void mix_trigger(const rc_trigger_t* t)
+{
+  if (!t)
+    return;
+  mix(t->state);
+  mix(t->measured_value);
+  mix(t->has_hits);
+  mix_condsets(t->requirement);
+  mix_condsets(t->alternative);
+}
+static void digest_frame(rc_client_t* client)
+{
+  const rc_client_game_info_t* g = client ? client->game : NULL;
+  const rc_client_subset_info_t* sub;
+  const rc_memref_list_t* ml;
+  const rc_modified_memref_list_t* mml;
+  char rp[256];
+  uint32_t i;
+  if (!g)
+    return;
+  for (ml = &g->runtime.memrefs->memrefs; ml; ml = ml->next)
+    for (i = 0; i < ml->count; i++) {
+      mix(ml->items[i].value.value);
+      mix(ml->items[i].value.prior);
+      mix(ml->items[i].value.changed);
+      mix(ml->items[i].value.type);
+    }
+  for (mml = &g->runtime.memrefs->modified_memrefs; mml; mml = mml->next)
+    for (i = 0; i < mml->count; i++) {
+      mix(mml->items[i].memref.value.value);
+      mix(mml->items[i].memref.value.prior);
+      mix(mml->items[i].memref.value.changed);
+    }
+  for (sub = g->subsets; sub; sub = sub->next) {
+    for (i = 0; i < sub->public_.num_achievements; i++) {
+      const rc_client_achievement_info_t* a = &sub->achievements[i];
+      mix(a->public_.state);
+      mix(a->public_.unlocked);
+      mix_trigger(a->trigger);
+    }
+    for (i = 0; i < sub->public_.num_leaderboards; i++) {
+      const rc_client_leaderboard_info_t* l = &sub->leaderboards[i];
+      mix(l->public_.state);
+      mix((uint32_t)l->value);
+      if (l->lboard) {
+        mix(l->lboard->state);
+        mix_trigger(&l->lboard->start);
+        mix_trigger(&l->lboard->submit);
+        mix_trigger(&l->lboard->cancel);
+      }
+    }
+  }
+  rp[0] = '\0';
+  rc_client_get_rich_presence_message(client, rp, sizeof(rp));
+  for (i = 0; rp[i]; i++)
+    mix((uint8_t)rp[i]);
+}
+
+/* newlib heap: bytes in use (mallinfo), and the heap's high-water mark
+ * (newlib's own record of the most memory malloc took from sbrk). */
+extern unsigned long __malloc_max_sbrked_mem;
+static void heap_line(const char* what)
+{
+  struct mallinfo mi = mallinfo();
+  out("INFO heap %s used %u top %u max %u\n", what, (unsigned)mi.uordblks, (unsigned)mi.arena,
+    (unsigned)__malloc_max_sbrked_mem);
+}
+
 /* ---- fake game memory: 4 MB main RAM + 16 KB DTCM ---- */
 static uint8_t ram[0x400000] __attribute__((aligned(4))), dtcm[0x4000];
 static uint32_t rng = 12345;
@@ -93,7 +200,7 @@ static uint32_t platform_read_memory(uint32_t address, uint8_t* buffer, uint32_t
   }
   return 0;
 }
-static uint32_t rc_read_memory(uint32_t address, uint8_t* buffer, uint32_t num_bytes, rc_client_t* client)
+static uint32_t fake_read_memory(uint32_t address, uint8_t* buffer, uint32_t num_bytes, rc_client_t* client)
 {
   (void)client;
   return platform_read_memory(address, buffer, num_bytes);
@@ -242,6 +349,7 @@ static void run_core(int n, int mutate)
   config.capture_at_halt = 1;
   config.idle_max_frames = 4;
 
+  heap_line("start");
   if (dsc_init(&platform, &config) != 0 || dsc_begin_session("0123456789ABCDEF0123456789ABCDEF") != 0) {
     out("FAIL init\n");
     quit(1);
@@ -256,11 +364,13 @@ static void run_core(int n, int mutate)
   }
   dsc_get_stats(&s);
   out("INFO core addresses %u\n", (unsigned)s.addresses);
+  heap_line("load");
 
   /* the first frame is copied in the VBlank (nothing captured yet) */
   frames++;
   dsc_vblank();
   dsc_idle();
+  digest_frame(seen_client);
 
   for (i = 0; i < n; i++) {
     frames++;
@@ -273,7 +383,10 @@ static void run_core(int n, int mutate)
     mark_begin();
     dsc_idle();       /* one frame evaluated */
     mark_end();
+    digest_frame(seen_client);
   }
+  heap_line("end");
+  out("INFO digest %08x\n", (unsigned)digest);
   dsc_get_stats(&s);
   out("INFO snapshotted %u evaluated %u repeated %u dropped %u live_reads %u unlocks %u\n",
     (unsigned)s.frames_snapshotted, (unsigned)s.frames_evaluated, (unsigned)s.frames_repeated,
@@ -283,8 +396,10 @@ static void run_core(int n, int mutate)
 
 static void run_rc(int n, int mutate)
 {
-  rc_client_t* c = rc_client_create(rc_read_memory, rc_server);
+  rc_client_t* c;
   int i;
+  heap_line("start");
+  c = rc_client_create(fake_read_memory, rc_server);
   rc_client_set_event_handler(c, rc_event);
   rc_client_set_get_time_millisecs_function(c, rc_clock);
   rc_client_set_hardcore_enabled(c, 1);
@@ -294,13 +409,21 @@ static void run_rc(int n, int mutate)
     out("FAIL game not loaded\n");
     quit(1);
   }
+  heap_line("load");
+  /* as the core's first frame (copied in the VBlank) */
+  frames++;
+  rc_client_do_frame(c);
+  digest_frame(c);
   for (i = 0; i < n; i++) {
     frames++;
     change_memory(mutate);
     mark_begin();
     rc_client_do_frame(c);
     mark_end();
+    digest_frame(c);
   }
+  heap_line("end");
+  out("INFO digest %08x\n", (unsigned)digest);
   rc_client_destroy(c);
 }
 

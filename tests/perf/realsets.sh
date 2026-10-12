@@ -21,7 +21,7 @@ IDS="$*"
 [ -n "$IDS" ] || IDS=$(ls "$SETS" | sed -n 's/^sets-\([0-9]*\)-.*\.json$/\1/p' | sort -n | tr '\n' ' ')
 FRAMES=${FRAMES:-60} BYTES=${BYTES:-512}
 QIMAGE=dscheevos-qplug:8.2.2
-OUT=build/realsets
+OUT=${OUT:-build/realsets}
 VARIANTS="stock"; [ "${FLOAT:-0}" = 1 ] && VARIANTS="stock float"
 
 docker image inspect $QIMAGE >/dev/null 2>&1 || docker build -t $QIMAGE tests/perf/qplug

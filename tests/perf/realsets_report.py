@@ -36,6 +36,10 @@ def main():
         r = rows.setdefault((variant, gid), {"ram": ram or "random", "ok": True, "info": ""})
         if "DONE" not in out:
             r["ok"] = False
+        d = re.search(r"INFO digest ([0-9a-f]+)", out)
+        r[mode + "_digest"] = d.group(1) if d else None
+        for what, used, top, mx in re.findall(r"INFO heap (\w+) used (\d+) top (\d+) max (\d+)", out):
+            r[mode + "_heap_" + what] = (int(used), int(top), int(mx))
         if mode == "core":
             r["capture"] = phases[0::2][1:]
             r["idle"] = phases[1::2][1:]
@@ -72,8 +76,28 @@ def main():
             lo133, hi133 = per * 1.3 / FRAME133, per * 2.0 / FRAME133
             note = r["info"] + ("" if r["ok"] else "; RUN FAILED")
             print("| %s | %s | %s | %s | %s | %s | %s | %.2f-%.2f | %.2f-%.2f | %s |" % (
-                titles.get(gid, "?")[:40], gid, f"{im:,}", f"{ip:,}", f"{cm:,}", f"{rm:,}", f"{rp:,}",
+                titles.get(gid, "?").replace("|", "/")[:40], gid, f"{im:,}", f"{ip:,}", f"{cm:,}", f"{rm:,}", f"{rp:,}",
                 lo67, hi67, lo133, hi133, note))
+
+        print("\n### %s build: core heap (newlib, bytes) and evaluation digest\n" % variant)
+        print("Core heap = core run minus rc_client alone, same set: bytes in use after load, "
+              "and the heap's high-water mark (highest heap break).\n")
+        print("| Set | game id | core heap after load | core high-water | rcheevos after load | digest core | digest rc | match |")
+        print("|---|---:|---:|---:|---:|---|---|---|")
+        for gid, r in keyed:
+            cl, rl = r.get("core_heap_load"), r.get("rc_heap_load")
+            ce, re_ = r.get("core_heap_end"), r.get("rc_heap_end")
+            cs, rs = r.get("core_heap_start"), r.get("rc_heap_start")
+            if cl and rl and ce and re_ and cs and rs:
+                load = f"{(cl[0] - cs[0]) - (rl[0] - rs[0]):,}"
+                high = f"{ce[2] - re_[2]:,}"
+                rcl = f"{rl[0] - rs[0]:,}"
+            else:
+                load = high = rcl = "?"
+            dc, dr = r.get("core_digest"), r.get("rc_digest")
+            print("| %s | %s | %s | %s | %s | %s | %s | %s |" % (
+                titles.get(gid, "?").replace("|", "/")[:40], gid, load, high, rcl, dc, dr,
+                "yes" if dc and dc == dr else "**NO**"))
 
 
 if __name__ == "__main__":
