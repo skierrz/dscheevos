@@ -153,6 +153,23 @@ if timing and status_size >= (p + 92 - o) + 4 * (len(TIMING) + len(HALT)):
     print(f"capture at halt: {halt['captures']} snapshots, {halt['captures_stopped']} stopped for an interrupt,"
           f" {halt['frames_stale']} frames with no snapshot (evaluated with the last)")
     print(f"OS_Halt calls: {halt['halts_idle']} from the idle thread, {halt['halts_other']} from game threads (left alone)")
+# module memory (dscm_g_heap, heap.h): not ABI, read by name
+mh = re.search(r'0x([0-9a-f]+)\s+dscm_g_heap\b', mp)
+if mh:
+    HEAP = 'low_base low_top high_base high_top load_low_top load_high_top load_in_use arena lent parse_base parse_top parse_heap load_left'.split()
+    hp = dict(zip(HEAP, struct.unpack_from(f'<{len(HEAP)}I', ram, int(mh.group(1), 16) - 0x02000000)))
+    zone_end = 0x02E00000 + 0x400 + 256 * 1024     # DSCM_SESSION + HEAP_SESSION_HEAD + HEAP_ARENA_BYTES
+
+    def used(low_top, high_top):
+        """bytes from the module base to the heap's high-water: the arena at least"""
+        return max(high_top, zone_end) - 0x02D80000
+    print(f"memory: image+bss {hp['low_base'] - 0x02D80000}, low heap {hp['low_top'] - hp['low_base']}"
+          f" (load {hp['load_low_top'] - hp['low_base']}), high heap {max(hp['high_top'] - zone_end, 0)}"
+          f" (load {max(hp['load_high_top'] - zone_end, 0)}), malloc'd at load end {hp['load_in_use']}")
+    print(f"  region used from the module base, incl. session header + arena: load {used(hp['load_low_top'], hp['load_high_top'])},"
+          f" whole run {used(hp['low_top'], hp['high_top'])} (+12 KB stacks at the top)")
+    print(f"  arena {'in the session area' if hp['arena'] else 'on the heap'}, replies lent {hp['lent']},"
+          f" parsed set in the arena {hp['parse_top'] - hp['parse_base']}, on the heap {hp['parse_heap']}, left {hp['load_left']}")
 hdr = struct.unpack_from('<14I', ram, 0xD80000)
 print('header magic %08x version %d vblank_count %d' % (hdr[0], hdr[1], hdr[9]))
 
