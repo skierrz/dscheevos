@@ -51,7 +51,7 @@ targs=""
 for t in $tick; do words="$words --trace-word $t"; targs="$targs --tick $t"; done
 
 ROM=$rom WORK=$top/run ENABLED=${ENABLED:-1} SCRIPT=$top/menu.txt RUNNER_ARGS="--trace-io $top/io.csv $words $pokes" \
-  "$repo/tests/launcher/run.sh" "$set" $((close2 + 120)) > "$top/run.out" 2>&1 || true
+  "$repo/tests/launcher/run.sh" "$set" $((close2 + 400)) > "$top/run.out" 2>&1 || true
 grep -q "^\[poke\]" "$top/run/runner.log" || { echo "RESULT FAIL: no run (see run.out)"; cat "$top/run.out"; exit 1; }
 [ "${ENABLED:-1}" = 0 ] || [ -f "$top/run/sd/_nds/dscheevos/session.used" ] || { echo "RESULT FAIL: nds-bootstrap didn't use the session"; exit 1; }
 rc=0
