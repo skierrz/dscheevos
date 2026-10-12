@@ -7,7 +7,8 @@
 # Optional: OPEN (frame of the first open, default 4500), ENABLED=0 (no
 #   DScheevos session: nds-bootstrap's own menu path), TICK=addr (the game's
 #   OS tick counter; default: found from RAM dumps in a first, shorter run),
-#   KEEP=1 (keep the work folder). Runs the emulator twice; wrap it in emu-lock.
+#   DISPCNT_B=value (also write the sub engine's DISPCNT before each open, e.g. to
+#   show BG3 as a text BG), KEEP=1 (keep the work folder). Runs the emulator twice; wrap it in emu-lock.
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$here/../..
@@ -44,18 +45,24 @@ for o in $open1 $open2; do
   done
   pokes="$pokes --poke $p:9:0x04001050:0x0C48:16 --poke $p:9:0x04001052:0x0808:16 --poke $p:9:0x04001054:6:16"
   pokes="$pokes --poke $p:9:0x0400104C:0x11:16 --poke $p:7:0x04000500:100:8"
+  [ -z "${DISPCNT_B:-}" ] || pokes="$pokes --poke $p:9:0x04001000:$DISPCNT_B:32"
 done
 printf '%s 0x284 20\n%s 0x2 5\n%s 0x284 20\n%s 0x2 5\n' $open1 $close1 $open2 $close2 > "$top/menu.txt"
 words="--trace-word 0x027FFC3C"
 targs=""
 for t in $tick; do words="$words --trace-word $t"; targs="$targs --tick $t"; done
 
-ROM=$rom WORK=$top/run ENABLED=${ENABLED:-1} SCRIPT=$top/menu.txt RUNNER_ARGS="--trace-io $top/io.csv $words $pokes" \
+ROM=$rom WORK=$top/run ENABLED=${ENABLED:-1} SCRIPT=$top/menu.txt RUNNER_ARGS="--trace-io $top/io.csv --trace-sd $((open1 - 5)) $words $pokes" \
   "$repo/tests/launcher/run.sh" "$set" $((close2 + 400)) > "$top/run.out" 2>&1 || true
 grep -q "^\[poke\]" "$top/run/runner.log" || { echo "RESULT FAIL: no run (see run.out)"; cat "$top/run.out"; exit 1; }
 [ "${ENABLED:-1}" = 0 ] || [ -f "$top/run/sd/_nds/dscheevos/session.used" ] || { echo "RESULT FAIL: nds-bootstrap didn't use the session"; exit 1; }
 rc=0
 echo "== first open"; python3 "$here/check.py" "$top/io.csv" $open1 $close1 $targs || rc=1
 echo "== second open"; python3 "$here/check.py" "$top/io.csv" $open2 $close2 $targs || rc=1
+# the menu's SD traffic: open (journal write, paging) and close (paging); none while it's just open
+python3 "$here/sd_count.py" "$top/run/runner.log" $((open1 - 2)) $((open1 + 20))
+python3 "$here/sd_count.py" "$top/run/runner.log" $((close1 - 2)) $((close1 + 20))
+python3 "$here/sd_count.py" "$top/run/runner.log" $((open2 - 2)) $((open2 + 20))
+python3 "$here/sd_count.py" "$top/run/runner.log" $((close2 - 2)) $((close2 + 20))
 [ $rc = 0 ] && echo "RESULT PASS" || echo "RESULT FAIL"
 exit $rc
