@@ -68,3 +68,30 @@ instead, and `report.py` stops if a call counts as 0.
 `vblank_median`, `idle_median`. `--gate` fails if a measured value is over
 its limit. Lower the limits when a change makes the snapshot cheaper, so it
 can't drift back up unnoticed.
+
+## Real sets (realsets.sh)
+
+```
+tests/perf/realsets.sh <dir of achievementsets replies> [game id...]
+FLOAT=1 FRAMES=60 tests/perf/realsets.sh ../private/sets
+```
+
+Same idea with real RetroAchievements sets: `realsets.c` reads a set file
+(`sets-<game>-<hash>.json`, the server's `achievementsets` reply; not in the
+repo) at run time, so one build covers every set. Per frame it counts
+`dsc_capture` and `dsc_idle` through the core (as the module drives it) and,
+in a second run, `rc_client_do_frame` alone. `realsets_report.py` prints
+median and p95 instructions per frame and the ARM9 time that is at CPI
+1.3-2.0, at 67 and 133 MHz.
+
+- Game RAM is random with pointer-shaped words unless `RAM_<game id>=<dump>`
+  gives a 4 MB main RAM dump (optionally followed by 16 KB of DTCM). Random
+  RAM changes which conditions are true and where pointer chains lead, so
+  treat the counts as an estimate of the real evaluation cost.
+- Counting uses a qemu TCG plugin (`qplug/icount.c`): the per-call counts are
+  exact, and runs are fast enough for the biggest sets. `realsets.sh` builds
+  the `dscheevos-qplug` image from `qplug/Dockerfile` on first use (qemu
+  8.2.2 from source, a few minutes).
+- `FLOAT=1` adds a variant built with `realsets-float.h` force-included
+  (rcheevos' operand constants stored as float). It is for information only:
+  not shipped, and it would need RetroAchievements' agreement.
