@@ -1,6 +1,6 @@
 /*
- * Minimal C library support for the module: a heap in the reserved RAM and
- * stubs for the system calls newlib may reference. The module has no files,
+ * Minimal C library support for the module: stubs for the system calls
+ * newlib may reference (the heap is heap.c). The module has no files,
  * no console and never exits.
  */
 #include "dscheevos_module.h"
@@ -14,21 +14,8 @@
 #include <time.h>
 
 extern uint32_t dscm_unix_time(void);
-static char* heap_end;
 
-void* _sbrk_r(struct _reent* r, ptrdiff_t incr)
-{
-  char* prev;
-  if (!heap_end) heap_end = (char*)DSCM_HEAP;
-  if (heap_end + incr > (char*)DSCM_HEAP_END || heap_end + incr < (char*)DSCM_HEAP) {
-    r->_errno = ENOMEM;
-    return (void*)-1;
-  }
-  prev = heap_end;
-  heap_end += incr;
-  return prev;
-}
-void* _sbrk(ptrdiff_t incr) { return _sbrk_r(_REENT, incr); }
+/* _sbrk is in heap.c */
 
 int _gettimeofday_r(struct _reent* r, struct timeval* tv, void* tz)
 {

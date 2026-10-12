@@ -248,10 +248,12 @@ int session_write(const dsc_settings_t* settings, const char* rom_path, const ch
   boot.hardcore = (uint8_t)(settings->hardcore != 0);
   boot.flags = settings->spectator ? DSCM_BOOT_SPECTATOR : 0;
   boot.unix_time = (uint32_t)time(NULL);
+  /* Each reply and the CA end in at least one NUL (DSCM_SESSION_PAD): the
+   * module uses them in place. */
   for (i = 0; i < DSCM_PRELOAD_COUNT; i++) {
     boot.preload_offset[i] = offset;
     boot.preload_length[i] = (uint32_t)g_reply_len[i];
-    offset += ((uint32_t)g_reply_len[i] + 3) & ~3u;
+    offset += DSCM_SESSION_PAD(g_reply_len[i]);
   }
 
   /* The game keeps using this Wi-Fi connection: pass its settings (no keys;
@@ -288,7 +290,7 @@ int session_write(const dsc_settings_t* settings, const char* rom_path, const ch
     if (ca_len > 0 && ca_len < sizeof(ca_pem)) {
       boot.ca_offset = offset;
       boot.ca_length = (uint32_t)ca_len;
-      offset += ((uint32_t)ca_len + 3) & ~3u;
+      offset += DSCM_SESSION_PAD(ca_len);
     } else {
       ca_len = 0;
     }
@@ -305,11 +307,11 @@ int session_write(const dsc_settings_t* settings, const char* rom_path, const ch
   for (i = 0; i < DSCM_PRELOAD_COUNT; i++) {
     if (g_reply_len[i])
       fwrite(g_reply[i], 1, g_reply_len[i], f);
-    fwrite(pad, 1, ((g_reply_len[i] + 3) & ~3u) - g_reply_len[i], f);
+    fwrite(pad, 1, DSCM_SESSION_PAD(g_reply_len[i]) - g_reply_len[i], f);
   }
   if (ca_len) {
     fwrite(ca_pem, 1, ca_len, f);
-    fwrite(pad, 1, ((ca_len + 3) & ~3u) - ca_len, f);
+    fwrite(pad, 1, DSCM_SESSION_PAD(ca_len) - ca_len, f);
   }
   i = ferror(f);
   fclose(f);
