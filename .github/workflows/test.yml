@@ -11,8 +11,8 @@ jobs:
         run: git submodule update --init --depth 1 external/rcheevos external/mbedtls external/nds-bootstrap
       - name: Core unit tests
         run: make -C dscheevos/core test
-      - name: Display library tests (scheduler, golden images)
-        run: make -C dscheevos/display test
+      - name: Display library tests (scheduler, golden images, badge pipeline)
+        run: make -C dscheevos/display test BADGES=1
       - name: WPA2 supplicant tests
         run: make -C dscheevos/module/tests -j4 test
       - name: Session file layout matches mksession.py

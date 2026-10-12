@@ -64,7 +64,7 @@ static void raise_notice(uint16_t kind, uint32_t id, int32_t value) {
 }
 
 static void init(dsd_t* d, int hardcore) {
-  dsd_config_t cfg = { &dsd_font_latin, fake_text, 0, (uint8_t)hardcore };
+  dsd_config_t cfg = { .font = &dsd_font_latin, .text = fake_text, .hardcore = (uint8_t)hardcore };
   dsd_init(d, &cfg);
 }
 

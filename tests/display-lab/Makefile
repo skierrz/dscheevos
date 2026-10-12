@@ -11,7 +11,7 @@ ARCH9     := -march=armv5te -mtune=arm946e-s -mthumb -mthumb-interwork
 ARCH7     := -mcpu=arm7tdmi -mtune=arm7tdmi -mthumb -mthumb-interwork
 CFLAGS9   := $(ARCH9) -O2 -Wall -DARM9 -I$(LIBNDS)/include -I$(DISPLAY)/include -I../../dscheevos/module/include
 CFLAGS7   := $(ARCH7) -O2 -Wall -DARM7 -I$(LIBNDS)/include
-SRC9      := arm9/main.c $(DISPLAY)/src/dsd_sched.c $(DISPLAY)/src/dsd_render.c $(OUT)/font_latin.c
+SRC9      := arm9/main.c $(DISPLAY)/src/dsd_sched.c $(DISPLAY)/src/dsd_render.c $(DISPLAY)/src/dsd_badge.c $(OUT)/font_latin.c
 
 all: $(OUT)/display-lab.nds
 

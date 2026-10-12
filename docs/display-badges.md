@@ -1,6 +1,12 @@
 # Badge pipeline (display phase 2): design
 
-Status: design only, 2026-10-12. Nothing here is built.
+Status, 2026-10-12: the host side is built behind a build flag (`make -C dscheevos/display test BADGES=1`) and isn't wired into the launcher:
+- PNG decoding, 64→32 downscale, the 16-colour median cut;
+- the pack writer and reader (written to tmp, then renamed);
+- the module's blit and the locked look;
+- badges in the strip renderer.
+
+The download step needs the owner's OK. Fetching, the launcher flow and the in-play SD read aren't built.
 
 During play, phase 1 of the display shows text only. This document covers how badge images get from RetroAchievements onto the SD card, and from there into a notice. The launcher does all fetching, converting and SD writing before the game boots. During play, the module only reads, through an nds-bootstrap SD read path the perf session has yet to design.
 
@@ -51,6 +57,54 @@ sd:/_nds/dscheevos/badges/<game_id>.pak     one per game, rebuilt by the launche
 | 250 (heavy) | 136 KB | ~141 KB | ~661 KB |
 
 A missing slot (download failed, set changed during play) means the notice shows the built-in icon instead, as in phase 1.
+
+### Real sets (the 31 RA sets matched in our ROM library, `tools/badge_sizes.py`)
+
+The 64x64 column adds the optional section. "First download" is unlocked badges only, at the 5.7 KB mean.
+
+| Game | Achievements | Badges | Pack (32x32) | + 64x64 | First download |
+|---|---|---|---|---|---|
+| Golden Sun: Dark Dawn | 151 | 131 | 83 KB | 390 KB | 725 KB |
+| Resident Evil: Deadly Silence | 150 | 150 | 83 KB | 387 KB | 830 KB |
+| Phoenix Wright: Ace Attorney | 141 | 141 | 78 KB | 364 KB | 780 KB |
+| Pokémon HeartGold Version \| Pokémon SoulSilver Version | 136 | 136 | 75 KB | 352 KB | 753 KB |
+| Mario Kart DS | 132 | 132 | 73 KB | 341 KB | 731 KB |
+| Pokémon Black Version | 118 | 118 | 65 KB | 305 KB | 653 KB |
+| Tetris DS | 102 | 102 | 57 KB | 264 KB | 565 KB |
+| Pokémon Platinum Version | 101 | 101 | 56 KB | 261 KB | 559 KB |
+| The World Ends with You | 98 | 98 | 54 KB | 253 KB | 542 KB |
+| Spore Creatures | 93 | 76 | 51 KB | 240 KB | 421 KB |
+| Kirby: Squeak Squad | 86 | 86 | 48 KB | 222 KB | 476 KB |
+| Pac'n Roll | 79 | 79 | 44 KB | 204 KB | 437 KB |
+| The Legend of Zelda: Spirit Tracks | 70 | 70 | 39 KB | 181 KB | 387 KB |
+| The Legend of Zelda: Phantom Hourglass | 67 | 67 | 37 KB | 173 KB | 371 KB |
+| Plants vs. Zombies | 64 | 64 | 36 KB | 166 KB | 354 KB |
+| The Legendary Starfy | 58 | 58 | 32 KB | 150 KB | 321 KB |
+| Trauma Center: Under the Knife 2 | 54 | 54 | 30 KB | 140 KB | 299 KB |
+| Kirby Super Star Ultra | 50 | 50 | 28 KB | 130 KB | 277 KB |
+| Mario vs. Donkey Kong: Mini-Land Mayhem! | 49 | 49 | 27 KB | 127 KB | 271 KB |
+| Digimon World DS | 49 | 49 | 27 KB | 127 KB | 271 KB |
+| Peggle: Dual Shot | 49 | 49 | 27 KB | 127 KB | 271 KB |
+| Sonic Rush Adventure | 48 | 48 | 26 KB | 124 KB | 266 KB |
+| Rhythm Heaven | 46 | 46 | 25 KB | 119 KB | 255 KB |
+| Sonic Colors | 42 | 42 | 23 KB | 109 KB | 232 KB |
+| Professor Layton and the Curious Village | 42 | 42 | 23 KB | 109 KB | 232 KB |
+| Drawn To Life | 39 | 39 | 22 KB | 101 KB | 216 KB |
+| Sonic Rush | 34 | 34 | 19 KB | 88 KB | 188 KB |
+| Ghost Trick: Phantom Detective | 33 | 33 | 19 KB | 86 KB | 183 KB |
+| Cory in the House | 32 | 32 | 18 KB | 83 KB | 177 KB |
+| 999: Nine Hours, Nine Persons, Nine Doors | 23 | 23 | 13 KB | 59 KB | 127 KB |
+| Cooking Mama | 16 | 16 | 9 KB | 42 KB | 89 KB |
+
+31 sets; achievements median 58, max 151; pack median 32 KB, max 83 KB; all packs together 1248 KB
+
+Every id table fits the module's 1 KB cap (the largest set has 151 ids = 604 B).
+
+### Conversion quality (host tests)
+
+- **Synthetic 64x64 gradient badge:** mean error 0.53 per channel in 5-bit units.
+- **Exact images (≤ 16 colours in 2x2 blocks):** every pixel is preserved.
+- **14 real RA badges, checked by eye** (local only; RA's images aren't committed): readable at 32x32. Photographic badges lose fine detail, as expected at 16 colours.
 
 ## Launcher flow (pre-boot, online, a safe point for SD writes)
 

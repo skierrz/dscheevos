@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 static uint32_t png_crc_table[256];
 
@@ -37,20 +38,15 @@ static void png_chunk(FILE* f, const char* type, const uint8_t* data, uint32_t n
   fwrite(c, 1, 4, f);
 }
 
-/* Writes BGR555 pixels (the DS format) as an RGB8 PNG. Returns 0 on success. */
-static int png_write_bgr555(const char* path, const uint16_t* px, int w, int h, int stride) {
-  const size_t raw_n = (size_t)h * (1 + 3 * (size_t)w);
+/* Writes 8-bit RGB (comp 3) or RGBA (comp 4) pixels as a PNG. Returns 0 on success. */
+static int png_write_rgb(const char* path, const uint8_t* px, int w, int h, int comp) {
+  const size_t raw_n = (size_t)h * (1 + (size_t)comp * w);
   uint8_t* raw = malloc(raw_n);
   size_t r = 0;
   for (int y = 0; y < h; y++) {
     raw[r++] = 0;                                   /* filter: none */
-    for (int x = 0; x < w; x++) {
-      const uint16_t c = px[y * stride + x];
-      const int cr = c & 31, cg = (c >> 5) & 31, cb = (c >> 10) & 31;
-      raw[r++] = (uint8_t)(cr << 3 | cr >> 2);
-      raw[r++] = (uint8_t)(cg << 3 | cg >> 2);
-      raw[r++] = (uint8_t)(cb << 3 | cb >> 2);
-    }
+    memcpy(raw + r, px + (size_t)y * w * comp, (size_t)w * comp);
+    r += (size_t)w * comp;
   }
   const size_t blocks = (raw_n + 65534) / 65535;
   const size_t z_n = 2 + raw_n + blocks * 5 + 4;
@@ -76,7 +72,7 @@ static int png_write_bgr555(const char* path, const uint16_t* px, int w, int h, 
   uint8_t ihdr[13];
   png_be32(ihdr, (uint32_t)w);
   png_be32(ihdr + 4, (uint32_t)h);
-  ihdr[8] = 8; ihdr[9] = 2; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
+  ihdr[8] = 8; ihdr[9] = comp == 4 ? 6 : 2; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
   png_chunk(f, "IHDR", ihdr, 13);
   png_chunk(f, "IDAT", z, (uint32_t)o);
   png_chunk(f, "IEND", 0, 0);
@@ -84,6 +80,23 @@ static int png_write_bgr555(const char* path, const uint16_t* px, int w, int h, 
   free(raw);
   free(z);
   return 0;
+}
+
+/* Writes BGR555 pixels (the DS format) as an RGB8 PNG. Returns 0 on success. */
+static int png_write_bgr555(const char* path, const uint16_t* px, int w, int h, int stride) {
+  uint8_t* rgb = malloc((size_t)w * h * 3);
+  for (int y = 0; y < h; y++)
+    for (int x = 0; x < w; x++) {
+      const uint16_t c = px[y * stride + x];
+      const int cr = c & 31, cg = (c >> 5) & 31, cb = (c >> 10) & 31;
+      uint8_t* o = rgb + ((size_t)y * w + x) * 3;
+      o[0] = (uint8_t)(cr << 3 | cr >> 2);
+      o[1] = (uint8_t)(cg << 3 | cg >> 2);
+      o[2] = (uint8_t)(cb << 3 | cb >> 2);
+    }
+  const int rc = png_write_rgb(path, rgb, w, h, 3);
+  free(rgb);
+  return rc;
 }
 
 #endif
