@@ -164,3 +164,27 @@ Mario Kart DS, real set, network live, 6000 intervals, after the fix:
 | cache model, stock nds-bootstrap with the same trimmed preload | 208, 205, 204 | |
 
 The two short loads are now the same length in every run (22 and 14 intervals flat, 34 and 17 with the cache model); the three long ones vary by up to 8 intervals between runs in both modes. With the flat cache the two match. With the cache model, achievements on equals stock nds-bootstrap with the same trimmed preload, so the module itself adds nothing. What is left, about 4 intervals in 6000 on average, all in loading screens, is the 0.9 MB of preload that doesn't fit beside the module's 2 MB: about 30 more SD reads. Only a smaller module region would win that back. Evaluation: 0 frames dropped with the flat cache, about 1,600 of 6,000 with the cache model (evaluation speed, a separate item).
+
+### Boot: nds-bootstrap loads over the module (`perf-boot-overlap`)
+
+Three ways nds-bootstrap could write over the module while booting a game, all after the module was loaded:
+
+1. **ROM-in-RAM.** The size check allowed `0xBE0000 - 0x260000 + 0x88000 = 0x9E8000` bytes, but only 0x964000 fit below `0x0CD80000` once nds-bootstrap's holes are skipped, and `loadROMintoRAM` ran after `dscheevosSetup`. A ROM whose mapped size fell in between was loaded over the module.
+2. **AP-fix overlays.** For a game whose AP-fix patch touches overlays (and Super Mario 64 DS), `loadOverlaysintoRAM` reads the overlays to `0x0C800000`, patches them, writes them to `apfixOverlays.bin` and zeroes that RAM. With an overlay span over 5.5 MB that range reaches the module. The overlays are only passing through: the card engine serves them from the file afterwards.
+3. **The reserve constant.** `DSCHEEVOS_CACHE_RESERVE` was 0x260000; the cut actually costs 159 of 760 slots, 0x27C000, in every layout (stock vs cut slot tables for both SDK variants and the VRAM Wi-Fi start). The preload check was 112 KB too generous.
+
+Reproducers (melonDS, launcher flow, the module's text and rodata in the RAM dump compared with `dscheevos9.bin`, apart from `.data.irq`, which is writable state placed next to the code):
+
+| Case | Before | After |
+|---|---|---|
+| Clubhouse Games with the header's ROM size raised by 0x50000 (mapped 0x983370, ROM-in-RAM) | module not loaded, 35,948 words overwritten | cache mode, module active, evaluating, intact |
+| Super Princess Peach (overlay span 5.56 MB) with a one-byte AP-fix IPS that rewrites an overlay byte with its own value | module not loaded, 16,260 words overwritten | module active, evaluating, intact |
+| Super Princess Peach without the IPS (control) | passes | passes |
+
+The fix (nds-bootstrap `retail/bootloaderi/source/arm7/main.arm7.c`):
+- `dscheevosRomMapFits` builds the ROM map as `buildRomMap` will and checks that every piece ends by `DSCHEEVOS_CACHE_END`. ROM-in-RAM is only used when it does (otherwise cache mode), and `dscheevosTrimPreload` trims until the real map fits, not only the arithmetic check.
+- `buildRomMap` stops instead of writing past the card engine's 8 map lines.
+- `dscheevosSetup` moved after the ROM, overlay, preload and FNT/FAT loads, and before the page file saves the ARM9 binary.
+- `DSCHEEVOS_CACHE_RESERVE` = 0x27C000.
+
+Mario Kart DS (real set, 6,000 intervals, cache model): stock 197, 206, 198; achievements on 206, 205, 199, the same band as before the change (199-206 / 200-210).
