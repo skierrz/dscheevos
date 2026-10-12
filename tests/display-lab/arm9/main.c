@@ -97,7 +97,7 @@ static const char* lab_text(void* ctx, const dsd_item_t* it, int which) {
 static void make_banner(void) {
 	static dsd_t d;
 	static dscm_notices_t n;
-	const dsd_config_t cfg = { &dsd_font_latin, lab_text, 0, 1 };
+	const dsd_config_t cfg = { .font = &dsd_font_latin, .text = lab_text, .hardcore = 1 };
 	dsd_init(&d, &cfg);
 	memset(&n, 0, sizeof n);
 	n.magic = DSCM_NOTICES_MAGIC;

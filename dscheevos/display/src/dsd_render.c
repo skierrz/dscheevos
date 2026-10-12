@@ -1,7 +1,7 @@
 /* Renderer: lays out the visible item once, then rasterises it a band of rows
  * at a time into a BGR555 surface. No stdio, no malloc. */
 #include <string.h>
-#include "dsd.h"
+#include "dsd_badge.h"
 
 #define RGB(r, g, b) ((uint16_t)((r) | (g) << 5 | (b) << 10))
 
@@ -128,6 +128,7 @@ static int append_int(uint8_t* out, int n, int32_t v) {
  *   2: detail (grey)
  * A compact strip (< 32 rows) keeps one line: "label: title", value at right. */
 #define TEXT_X 26
+#define TEXT_X_BADGE 40               /* after a 32x32 badge */
 #define RIGHT_PAD 6
 
 static const char* text(const dsd_t* d, const dsd_item_t* it, int which) {
@@ -136,6 +137,8 @@ static const char* text(const dsd_t* d, const dsd_item_t* it, int which) {
 }
 
 static void layout(dsd_t* d, const dsd_item_t* it, int compact, int w) {
+  d->badge = !compact && d->cfg.badge ? d->cfg.badge(d->cfg.badge_ctx, it) : 0;
+  const int text_x = d->badge ? TEXT_X_BADGE : TEXT_X;
   uint8_t value[DSD_LINE_MAX];
   int nv = 0;
   if (it->kind == DSD_ITEM_UNLOCK) {
@@ -154,7 +157,7 @@ static void layout(dsd_t* d, const dsd_item_t* it, int compact, int w) {
   const char* label = compact || it->more ? styles[it->kind].short_label : styles[it->kind].label;
   if (it->kind == DSD_ITEM_MODE && !it->value) label = "Softcore";
 
-  const int avail = w - TEXT_X - RIGHT_PAD;
+  const int avail = w - text_x - RIGHT_PAD;
   int n0 = append_ascii(d->line[0], 0, label);
   if (it->more) {
     n0 = append_ascii(d->line[0], n0, " (+");
@@ -179,7 +182,7 @@ static void layout(dsd_t* d, const dsd_item_t* it, int compact, int w) {
   /* The value goes at the right of line 0; the label gives way to it. */
   const int vw = width_of(d, value, nv);
   d->line_len[0] = (uint8_t)fit(d, d->line[0], n0, avail - (nv ? vw + 8 : 0));
-  d->line_x[0] = d->line_x[1] = d->line_x[2] = TEXT_X;
+  d->line_x[0] = d->line_x[1] = d->line_x[2] = (uint8_t)text_x;
   if (nv) {
     /* Stored after the label in the same buffer, drawn from its own x. */
     const int at = d->line_len[0];
@@ -232,7 +235,9 @@ int dsd_render(dsd_t* d, dsd_surface_t* s, int max_rows) {
     for (int x = 0; x < s->w; x++) row[x] = bg;
     row[0] = row[1] = row[2] = palette[accent];
 
-    if (y >= icon_y && y < icon_y + 16) {
+    if (d->badge) {
+      /* drawn below, after the row loop */
+    } else if (y >= icon_y && y < icon_y + 16) {
       uint16_t bits = icons[styles[it->kind].icon][y - icon_y];
       for (int j = 0; bits; j++, bits >>= 1)
         if (bits & 1) row[6 + j] = palette[accent];
@@ -251,6 +256,13 @@ int dsd_render(dsd_t* d, dsd_surface_t* s, int max_rows) {
         x += d->widths[g];
       }
     }
+  }
+  if (d->badge) {
+    /* The badge's rows in this band: a progress or challenge notice is about
+     * an achievement not yet unlocked, so it shows the locked look. */
+    const int locked = it->kind == DSD_ITEM_PROGRESS || it->kind == DSD_ITEM_CHALLENGE;
+    dsd_surface_t band = { s->pixels + d->render_row * s->stride, s->w, (uint16_t)(end - d->render_row), s->stride };
+    dsd_badge_blit(d->badge, locked, &band, 4, (s->h - DSD_BADGE_SIZE) / 2 - d->render_row);
   }
   d->render_row = (uint16_t)end;
   return d->render_row >= s->h;
