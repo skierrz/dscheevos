@@ -25,6 +25,7 @@ answers awardachievement and submitlbentry with HTTP 503 (rcheevos retries
 those later), logged as "refused", to test the offline queue.
 """
 import copy
+import gzip
 import argparse
 import json
 import time
@@ -160,6 +161,9 @@ def main():
                 body, status = b"<html><body>503 Service Temporarily Unavailable</body></html>", 503
             self.send_response(status)
             self.send_header("Content-Type", "application/json" if status == 200 else "text/html")
+            if "gzip" in self.headers.get("Accept-Encoding", ""):   # as the real server (Cloudflare) does
+                body = gzip.compress(body)
+                self.send_header("Content-Encoding", "gzip")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
