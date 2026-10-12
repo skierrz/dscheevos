@@ -36,6 +36,7 @@ extern char __bss_end[];
 
 static char* g_brk;
 static int g_high;
+static uint32_t g_gap;          /* newlib counts the gap as allocated */
 
 void* _sbrk_r(struct _reent* r, ptrdiff_t incr)
 {
@@ -54,6 +55,7 @@ void* _sbrk_r(struct _reent* r, ptrdiff_t incr)
     /* Doesn't fit below the session: go on above the arena. newlib's malloc
      * sees a gap ("foreign sbrk"), fences off the old top and frees it. */
     g_high = 1;
+    g_gap = (uint32_t)(HIGH_BASE - g_brk);
     g_brk = HIGH_BASE;
     dscm_g_heap.high_base = (uint32_t)g_brk;
   }
@@ -249,7 +251,7 @@ int heap_load_end(void)
   dscm_g_heap.load_low_top = dscm_g_heap.low_top;
   dscm_g_heap.load_high_top = dscm_g_heap.high_top;
 #ifndef DSCM_HEAP_HOST_TEST
-  dscm_g_heap.load_in_use = (uint32_t)mallinfo().uordblks;
+  dscm_g_heap.load_in_use = (uint32_t)mallinfo().uordblks - g_gap;
 #endif
   dscm_g_heap.load_left = (uint32_t)left;
   return left ? -1 : 0;
