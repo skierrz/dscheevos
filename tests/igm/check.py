@@ -47,10 +47,13 @@ def check(name, ok, text):
 print("menu: game frozen frames %d-%d (%d frames; hotkey at %d, B at %d: %d frames of open/close overhead)"
       % (start, end - 1, frozen, open_f, close_f, frozen - held))
 
-# a register the game rewrites every frame proves nothing: it must hold still before the menu
+# what run.sh writes 120 frames before each open (--poke). A register that doesn't hold
+# that value up to the menu was rewritten by the game, and then proves nothing
+POKED = {"bg%d%sofs_b" % (bg, ax): (0x30 if ax == "h" else 0x50) + bg for bg in range(4) for ax in "hv"}
+POKED.update({"bldcnt_b": 0x0C48, "bldalpha_b": 0x0808, "bldy_b": 6, "mosaic_b": 0x0101})
+
 def steady(col):
-    vals = {rows[f][col] for f in range(start - 40, start - 1) if f in rows}
-    return len(vals) == 1
+    return all(num(rows[f], col) == POKED[col] for f in range(start - 100, start - 1) if f in rows)
 
 # 2. scroll: every BG the game shows as a text BG must keep its scroll (BGxHOFS/VOFS are write-only)
 disp = num(before, "dispcnt_b")
@@ -62,7 +65,7 @@ for bg in range(4):
         col = "bg%d%sofs_b" % (bg, ax)
         b, a = num(before, col), num(after, col)
         if not steady(col):
-            print("%-26s skip  the game rewrites it" % col)
+            print("%-26s skip  the game rewrote it: %x -> %x" % (col, num(before, col), num(after, col)))
         elif shown:
             check(col, a == b, "%d -> %d (text BG the game shows)" % (b, a))
         else:
@@ -72,7 +75,7 @@ for bg in range(4):
 for col in ("bldcnt_b", "bldalpha_b", "bldy_b", "mosaic_b"):
     b, a = num(before, col), num(after, col)
     if not steady(col):
-        print("%-26s skip  the game rewrites it" % col)
+        print("%-26s skip  the game rewrote it: %x -> %x" % (col, num(before, col), num(after, col)))
     else:
         check(col, a == b, "%x -> %x" % (b, a))
 
