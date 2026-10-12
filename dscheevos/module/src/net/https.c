@@ -254,14 +254,23 @@ static int tls_setup(void)
   return 0;
 }
 
+/* PEM must end in a NUL that the length counts: the launcher leaves one
+ * after the CA in the session file; else parse a copy. */
 void https_add_ca(const char* pem, uint32_t len)
 {
-  static char copy[8192];
-  if (!len || len >= sizeof(copy) || tls_setup() != 0)
+  char* copy = NULL;
+  if (!len || tls_setup() != 0)
     return;
-  memcpy(copy, pem, len);
-  copy[len] = '\0';
-  mbedtls_x509_crt_parse(&g_cas, (const unsigned char*)copy, len + 1);
+  if (pem[len] != '\0') {
+    copy = (char*)malloc(len + 1);
+    if (!copy)
+      return;
+    memcpy(copy, pem, len);
+    copy[len] = '\0';
+    pem = copy;
+  }
+  mbedtls_x509_crt_parse(&g_cas, (const unsigned char*)pem, len + 1);
+  free(copy);
 }
 
 /* Advance the connection one step. Returns 1 when ready for requests. */

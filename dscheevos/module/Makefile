@@ -21,7 +21,10 @@ CFLAGS   := $(ARCH) -Os -ffunction-sections -fdata-sections -fno-strict-aliasing
             -Isrc/net -I$(LWIP)/src/include -I$(TLSCONF) -I$(MBEDTLS)/include '-DMBEDTLS_CONFIG_FILE="dsc_mbedtls_config.h"'
 VERSION  := $(shell cat ../../VERSION)
 CFLAGS   += '-DDSC_VERSION="$(VERSION)"'
-LDFLAGS  := $(ARCH) -nostartfiles -T module.ld -Wl,--gc-sections -Wl,-Map,$(BUILD)/dscheevos9.map
+# heap.c places load-time memory (heap.h): it wraps malloc and rc_api's parse of the set
+WRAPS    := malloc free calloc realloc rc_api_process_fetch_game_sets_server_response
+LDFLAGS  := $(ARCH) -nostartfiles -T module.ld -Wl,--gc-sections -Wl,-Map,$(BUILD)/dscheevos9.map \
+            $(foreach w,$(WRAPS),-Wl,--wrap=$(w))
 
 RC_SRC := $(addprefix $(RCHEEVOS)/src/, client/rc_client.c \
   runtime/rc_alloc.c runtime/rc_condition.c runtime/rc_condset.c runtime/rc_consoleinfo.c \
@@ -36,7 +39,7 @@ LWIP_SRC := $(addprefix $(LWIP)/src/, core/init.c core/def.c core/dns.c core/ine
   core/ipv4/ip4_addr.c core/ipv4/ip4_frag.c netif/ethernet.c)
 TLS_SRC := $(wildcard $(MBEDTLS)/library/*.c)
 NET_SRC := $(wildcard src/net/*.c) $(TLSCONF)/cacerts.c
-SRC := src/module.c src/syscalls.c $(CORE)/src/dscheevos.c
+SRC := src/module.c src/syscalls.c src/heap.c $(CORE)/src/dscheevos.c
 OBJ := $(patsubst %.c,$(BUILD)/%.o,$(notdir $(SRC))) $(patsubst $(RCHEEVOS)/src/%.c,$(BUILD)/rc/%.o,$(RC_SRC)) $(BUILD)/start.o \
   $(patsubst $(LWIP)/src/%.c,$(BUILD)/lwip/%.o,$(LWIP_SRC)) $(patsubst $(MBEDTLS)/library/%.c,$(BUILD)/tls/%.o,$(TLS_SRC)) \
   $(patsubst %.c,$(BUILD)/net/%.o,$(notdir $(NET_SRC)))
@@ -47,7 +50,7 @@ all: $(BUILD)/dscheevos9.bin
 # flags live here: a Makefile change rebuilds everything
 $(OBJ): Makefile
 
-$(BUILD)/%.o: src/%.c include/dscheevos_module.h $(CORE)/include/dscheevos.h ../../VERSION
+$(BUILD)/%.o: src/%.c src/heap.h include/dscheevos_module.h $(CORE)/include/dscheevos.h ../../VERSION
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 # Code that runs every frame is ARM, not Thumb: rcheevos' runtime and client

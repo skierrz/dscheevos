@@ -8,7 +8,8 @@ the same file offline for tests (mock server replies, test sets).
       [--login login.json] [--session start.json] [--softcore] [--spectator] -o session.bin
 
 Layout: dscm_boot_t (see dscheevos/module/include/dscheevos_module.h), then
-the login2, achievementsets and startsession replies, 4-byte aligned.
+the login2, achievementsets and startsession replies, each followed by
+1 to 4 NULs up to a multiple of 4 (DSCM_SESSION_PAD).
 """
 import argparse
 import struct
@@ -43,7 +44,7 @@ def build(args):
     for reply in replies:
         offsets.append(offset)
         lengths.append(len(reply))
-        pad = (-len(reply)) % 4
+        pad = 4 - len(reply) % 4      # DSCM_SESSION_PAD: at least one NUL
         body += reply + b"\0" * pad
         offset += len(reply) + pad
     file_size = offset

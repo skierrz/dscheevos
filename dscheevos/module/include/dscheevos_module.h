@@ -170,7 +170,7 @@ typedef struct dscm_boot_t {
   uint8_t reserved;
   uint32_t dtcm_base;                 /* 0: read the game's DTCM base from CP15 */
   uint32_t unix_time;                 /* RTC time at boot, for unlock timestamps */
-  uint32_t preload_offset[DSCM_PRELOAD_COUNT];  /* from the start of this struct */
+  uint32_t preload_offset[DSCM_PRELOAD_COUNT];  /* from the start of this struct; each reply is followed by DSCM_SESSION_PAD's NULs */
   uint32_t preload_length[DSCM_PRELOAD_COUNT];
   /* the launcher's Wi-Fi connection, which the game keeps using (no secrets) */
   uint8_t mac[6];
@@ -189,6 +189,11 @@ typedef struct dscm_boot_t {
   uint8_t pmk_valid;                  /* the two pmk fields are 0 in the file: nds-bootstrap */
   uint8_t pmk[32];                    /* fills them in RAM from the console's own Wi-Fi settings */
 } dscm_boot_t;
+
+/* Bytes a reply (or the CA) of n bytes takes in the session file: itself,
+ * then 1 to 4 NULs up to a multiple of 4. The module uses the replies in
+ * place: the NUL ends them as C strings. */
+#define DSCM_SESSION_PAD(n) (((uint32_t)(n) + 4u) & ~3u)
 
 /* dscm_boot_t.flags */
 #define DSCM_BOOT_SPECTATOR 0x01      /* rc_client spectator mode: evaluate and show, send no unlocks or entries (bench runs on a real account) */

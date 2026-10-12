@@ -5,6 +5,7 @@
 #include "dscheevos_module.h"
 #include "dscheevos.h"
 #include "net/net.h"
+#include "heap.h"
 #include "util/rc_version.h"
 
 #include <stddef.h>
@@ -223,8 +224,14 @@ static void http_send(const dsc_http_request_t* request)
 
   if (preload >= 0) {
     if (g_boot.preload_length[preload]) {
-      const char* body = g_session + g_boot.preload_offset[preload];
-      dsc_http_done(request->handle, 200, body, g_boot.preload_length[preload]);
+      uint32_t offset = g_boot.preload_offset[preload], length = g_boot.preload_length[preload];
+      const char* body = g_session + offset;
+      /* With a spare NUL after it in the file, the core's copy of the reply
+       * is the reply itself (heap.h): no heap for it. */
+      if (offset + length < g_boot.file_size && body[length] == '\0')
+        heap_lend(body, length);
+      dsc_http_done(request->handle, 200, body, length);
+      heap_lend(NULL, 0);
     }
     else {
       static const char missing[] = "{\"Success\":false,\"Error\":\"Not fetched at session start\"}";
@@ -381,6 +388,7 @@ int module_init(const dscm_boot_t* boot)
   }
   g_boot = *boot;
   g_session = (const char*)boot;
+  heap_load_begin(boot->file_size);   /* before the first malloc */
   g_boot.host[sizeof(g_boot.host) - 1] = '\0';
   g_boot.username[sizeof(g_boot.username) - 1] = '\0';
   g_boot.token[sizeof(g_boot.token) - 1] = '\0';
@@ -410,11 +418,14 @@ int module_init(const dscm_boot_t* boot)
   config.spectator = (g_boot.flags & DSCM_BOOT_SPECTATOR) ? 1 : 0;
   config.max_addresses = 4096;
   config.snapshot_slots = 1024;          /* ~17 s of frames with no idle time (loading, save writes) */
-  config.snapshot_bytes = 256 * 1024;    /* shared by queued frames: a few hundred bytes each, typically */
+  config.snapshot_bytes = HEAP_ARENA_BYTES;  /* shared by queued frames: a few hundred bytes each, typically */
   config.capture_at_halt = 1;            /* snapshot when the game halts, not in its VBlank interrupt */
   config.idle_max_frames = 4;            /* then the network and a fresh snapshot get their turn */
 
-  if (dsc_init(&platform, &config) != 0) {
+  heap_arena_window(1);                  /* the arena goes where the session's replies are */
+  i = dsc_init(&platform, &config);
+  heap_arena_window(0);
+  if (i != 0) {
     dscm_g_status.error = DSCM_ERROR_NO_MEMORY;
     return -1;
   }
@@ -425,6 +436,16 @@ int module_init(const dscm_boot_t* boot)
   /* session-start replies are preloaded, so this settles in a few passes */
   for (i = 0; i < 8 && !dsc_is_active() && !dscm_g_status.error; i++)
     dsc_idle();
+  /* The replies and rc_api's parse of the set are in the arena's place, which
+   * the first frame overwrites: the load must be over, and nothing may
+   * answer from the session again (later requests get "Not fetched"). An
+   * unfinished load never resumes: module_idle runs only when active. */
+  for (i = 0; i < DSCM_PRELOAD_COUNT; i++)
+    g_boot.preload_length[i] = 0;
+  if (heap_load_end() != 0 && dsc_is_active()) {
+    dsc_shutdown();
+    dscm_g_status.error = DSCM_ERROR_NO_MEMORY;
+  }
 
   dscm_g_status.active = dsc_is_active();
   if (dscm_g_status.active)
@@ -462,6 +483,7 @@ int module_init(const dscm_boot_t* boot)
     memset(g_boot.pmk, 0, sizeof(g_boot.pmk));
     memset(((dscm_boot_t*)g_session)->pmk, 0, sizeof(g_boot.pmk));
     dscm_dc_clean(((dscm_boot_t*)g_session)->pmk, sizeof(g_boot.pmk));
+    /* still in the session: nothing writes the arena before the first frame */
     if (g_boot.ca_length && g_boot.ca_offset <= g_boot.file_size && g_boot.ca_length <= g_boot.file_size - g_boot.ca_offset)
       https_add_ca(g_session + g_boot.ca_offset, g_boot.ca_length);
     dscm_publish_net_ring(ring);
