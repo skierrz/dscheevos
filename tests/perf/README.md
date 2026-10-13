@@ -102,3 +102,28 @@ median and p95 instructions per frame and the ARM9 time that is at CPI
   equal rc_client's; the report flags any set where it doesn't, and shows
   the core's own heap (core run minus rc_client alone, the snapshot arena
   included). `OUT=build/<dir>` keeps several runs apart.
+
+## Idle budget (idle.sh)
+
+How much of each VBlank interval a game leaves the ARM9 idle with achievements
+off: the time DScheevos' idle work can use. `idle.sh` runs a game through the
+launcher flow (`ENABLED = 0`) in melonDS with the cache model, and the runner
+(`tools/melonDS`, branch `dscheevos-idle-budget` or later) logs per interval the
+cycles the ARM9 spent halted, and how many of them were BIOS waits. Only halts
+outside the BIOS (the SDK's `OS_Halt`, which nds-bootstrap points at the
+module) are time the module gets.
+
+```sh
+python3 tests/perf/idle_script.py kirby.txt 6000 "0-1200:generic" "1200-6000:play:holdRi,A@45/8"
+DUMPS=../private/ramdumps/kirby emu-lock -l idle-kirby \
+  tests/perf/idle.sh "$ROM_KIRBY" 6000 out/kirby kirby.txt
+python3 tests/perf/idle_report.py out/kirby/prof.csv play:1500- --need 61000
+python3 tests/perf/idle_sheet.py out/kirby out/kirby/sheet.png   # what the run reached
+```
+
+Input scripts take `F SHOT` (screenshot), `F DUMP` (main RAM, plus the DTCM in
+`.dtcm`; for `RAM_<id>=` in `realsets.sh`, use the first 4 MB and append the
+DTCM) and `F TOUCH X Y HOLD` besides key presses. `idle_report.py` prints
+median, p10 and minimum idle cycles per interval at 67 MHz, 1 s and 10 s
+window means, the BIOS-halt share and, with `--need`, whether an instruction
+count fits at CPI 1.3 and 2.0.
