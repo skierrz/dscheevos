@@ -4,7 +4,7 @@ Which rcheevos DScheevos builds, and why. Checked 2026-10-12.
 
 ## Where we are
 
-- Submodule `external/rcheevos`: upstream `develop` at `683197d` ("restructure src folder", 2026-10-04), unmodified. `git describe`: `v12.5.0-9-g683197d`.
+- Submodule `external/rcheevos`: upstream `develop` at `683197d` ("restructure src folder", 2026-10-04), unmodified today. `git describe`: `v12.5.0-9-g683197d`.
 - `RCHEEVOS_VERSION_STRING` still says 12.5.0, so the user agent says `rcheevos/12.5.0` while we run 9 commits past it.
 - Latest release tag: **v12.5.0**. Upstream `develop` is 3 commits past us: `aed817f` (runtime types made internal), `23bcf47` (project files), `116d018` (a test script).
 
@@ -35,7 +35,21 @@ Our code uses four of these commits (`ca7746b`, `e3f7b7d`, `f87c0de`, `683197d`)
 
 ## Recommendation
 
-1. **Stay on `683197d` now.** It is upstream code, unmodified, and every change since v12.5.0 is either something we use or harmless for a DS client. Don't move to newer `develop` until the next release: `aed817f` needs a planned port of the core.
+1. **Stay on `683197d` now.** It is upstream code with no local patches, and every change since v12.5.0 is either something we use or harmless for a DS client. Don't move to newer `develop` until the next release: `aed817f` needs a planned port of the core.
 2. **Before the first public release, move to the first release tag that contains `683197d`** (expected v12.6.0). Port the core to the new private headers, rerun the core tests, the module tests, `tests/games`, the perf gate and the 32-set digest, then pin that tag. The user agent then names the exact rcheevos shipped.
 3. **If no such tag exists by release day**, ship `683197d`, and say so where RA and users can see it: `SOURCES.txt` already names exact commits; add "rcheevos 12.5.0 + 9 commits (683197d)" to the release notes. We can't change rcheevos' version string (rcheevos stays unmodified), and the user agent's rcheevos part comes from `rc_client_get_user_agent_clause`.
 4. Never pin a `develop` commit that isn't in a tag for a release that RA validates, if a tag is available: it's the cleanest answer to "which rcheevos is this?"
+
+## Carrying local patches (rule changed 2026-10-12)
+
+The owner's rule now allows rcheevos changes only where evaluation results are proven identical to stock rcheevos (differential tests on every real set with real RAM dumps), kept minimal and offered upstream. Never a reimplementation. How to carry such a patch:
+
+- **Where:** a fork, `skierrz/rcheevos`, on a branch named after its base, e.g. `dscheevos-v12.6.0` = the upstream tag plus our patch commits on top. The submodule points at the fork's commit. Each patch is one small commit, and each is opened as a pull request upstream with the same diff, linked from its commit message. (Patch files applied at build time were the alternative. They keep the submodule pristine, but they need applying in nine Makefiles and the launcher's 24 wrapper files. The fork branch is simpler and just as visible, since `git diff <tag>..` shows every byte we changed.)
+- **What CI checks:**
+  - `git diff <base>..<pin> --stat` lists only the files the patch list allows;
+  - rcheevos' own test suite passes;
+  - the differential suite passes ("Evaluating one set on two CPUs" in `docs/compliance.md`): patched rcheevos with each patch's feature off is identical to stock, and with it on, identical on every real set;
+  - the float-operand digest, if that build flag is in use.
+- **Moving the base:** rebase the patch commits onto the new tag, rerun everything above, and drop any patch upstream has taken.
+- **Version string:** unchanged. `RCHEEVOS_VERSION_STRING` and the user agent's rcheevos part stay upstream's. Our build is identified by `DScheevos/<version>`, and `SOURCES.txt` and the release notes name the base tag, the fork commit and each patch with its upstream pull request.
+- **Builds and the launcher wrappers:** the comment `Built from the rcheevos submodule, unmodified.` in `dscheevos/launcher/rcheevos/*.c` becomes `Built from the rcheevos submodule (docs/rcheevos-pin.md).` when the first patch lands.

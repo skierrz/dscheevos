@@ -17,7 +17,7 @@ Status: **done**, **partial**, **missing**, or **n/a** (the feature doesn't exis
 | Requirement | Status | Where / what's left |
 |---|---|---|
 | Achievement list reachable in the client | **done** | In-game menu > "Achievements..." (`nds-bootstrap: arm9_igm/dscheevosMenu.c`): a summary page (game, mode, totals, this session's unlocks, network), then every achievement of the set with its state, points and measured progress, and a detail page with the description. The module publishes the list (`dscm_list_t`, ABI v6). |
-| Triggers evaluate correctly | **done** | rcheevos `rc_client`, unmodified. `tests/games` checks unlock frames against rcheevos reading live memory every frame, with and without a 10 s backlog. |
+| Triggers evaluate correctly | **done** | rcheevos `rc_client`, unmodified today (any future patch must be proven identical to stock, kept minimal and offered upstream: "Evaluating one set on two CPUs"). `tests/games` checks unlock frames against rcheevos reading live memory every frame, with and without a 10 s backlog. |
 | Measured and Trigger (challenge) indicators shown in the list and during play | **partial** | In the list: measured progress and an active-challenge mark per achievement, plus the active challenges and leaderboard trackers on the summary page. During play (DSi): Wi-Fi LED cues from the module's notices: 3 blinks per unlock, 1 per measured-progress update, 2 per leaderboard start/fail/submit, held while a challenge is primed. Nothing is drawn over the game; whether RA accepts this is question 1 in `docs/ra-questions.md`. |
 | Rich presence works | **done** | rc_client pings every 2 minutes during play. A hardcore session always keeps the Wi-Fi connection for it; softcore does when "Send unlocks during play" is on. |
 | Leaderboards work | **partial** | Evaluated, submitted and queued offline like unlocks; trackers and results show in the in-game menu. No on-screen tracker or start/fail notice during play (see the indicators row). |
@@ -138,42 +138,52 @@ So RA's own validation accepts that the client shows the indicators by default a
 
 ## Evaluating one set on two CPUs (ARM9 + ARM7)
 
-Question (2026-10-12, eval-speed's ARM7 lane, `evalspeed-team/arm7-notes.md`): may one game's set be evaluated by two unmodified rcheevos instances, one on the ARM9 and one on the ARM7, each with a disjoint subset of the achievements, on the same snapshot of each frame? RA's list doesn't mention evaluation layout. The rules that decide it are A ("triggers ... must work properly"; rich presence and leaderboards "must function"), C (one client identity), and ours: rcheevos unmodified, "use rcheevos for evaluation, don't reimplement it". Checked against rcheevos `683197d`.
+Question (2026-10-12, eval-speed's ARM7 lane, `evalspeed-team/arm7-notes.md`): may one game's set be evaluated on both CPUs, the ARM9 and the ARM7, each evaluating a disjoint subset of the achievements from the same snapshot of each frame? RA's list says nothing about how a client lays out evaluation, and nothing about where its rcheevos comes from: sections A-G judge behaviour and identity. The rules that decide it are A ("triggers ... must work properly"; rich presence and leaderboards "must function"), C (one client identity), and ours (CLAUDE.md, changed by the owner on 2026-10-12): rcheevos may be modified only where its evaluation results are proven identical to stock rcheevos (differential tests on every real set with real RAM dumps), kept minimal and offered upstream, and never reimplemented. Checked against rcheevos `683197d`.
 
-**1. Per-achievement results would be identical.** An achievement's state depends only on its own conditions and on its memrefs' values. Each memref's current, delta and prior values are a function of the frames' memory alone, and `rc_runtime_do_frame` updates every memref of its instance every frame. A memref shared by achievements on both sides is duplicated, one copy per instance, and both copies follow the same frames. So they hold the same delta and prior values, provided **both instances evaluate every frame, in order, from the same snapshot**, with resets applied to both at the same frame. Hit counts, Remember/Recall and measured values are per condition set, so nothing crosses the split.
+**1. Per-achievement results can be identical.** An achievement's state depends only on its own conditions and on its memrefs' values. Each memref's current, delta and prior values come from the frames' memory alone, and rcheevos updates every memref of an instance every frame (`rc_runtime_do_frame` calls `rc_update_memref_values` first). A memref used on both sides is duplicated, one copy per CPU, and both copies follow the same frames. That holds if **both sides evaluate every frame, in order, from the same snapshot**, with resets and mode changes applied to both at the same frame. Hit counts, Remember/Recall and measured values are per condition set, so nothing crosses the split.
 
-**2. Rich presence and leaderboards stay with the rc_client instance.** The rich-presence string goes into rc_client's pings. rc_client owns leaderboard start, submit and cancel, the trackers, and submission. Measured-progress and challenge-indicator events are rc_client's work on the runtime's events. None of them can move to an instance that isn't the session's rc_client without reimplementing rc_client.
+**2. One rc_client keeps everything that isn't trigger evaluation.** That covers the server session and requests, the award path (retries, the offline queue, the hardcore and casual bookkeeping, mastery), rich presence (it goes into the pings), leaderboards (start, submit and cancel, trackers), and the measured-progress and challenge-indicator events. rc_client's public API can't evaluate only part of a set or take a result evaluated elsewhere (`rc_client_award_achievement` is `static`). So the split needs an rc_client change.
 
-**3. The server session: this is the blocker.** rc_client's public API has no way to evaluate only part of a loaded set, and no way to report a trigger evaluated elsewhere. The award path (`rc_client_award_achievement`, with retries, the offline queue, the hardcore and casual bookkeeping, mastery and notices) is internal. So:
+**3. Variants**
 
 | Variant | Verdict |
 |---|---|
-| Two rc_clients, each logged in and starting a session | **ruled out**: two server sessions for one play (two `startsession`, two ping streams with different rich presence), and the two would contradict each other on the server |
-| ARM7 runs the bare `rc_runtime` on its subset, and our glue sends its unlocks with `rc_api` requests | **ruled out**: it reimplements rc_client's award, retry, mastery, hardcore and notice logic. rc_client would never know those achievements unlocked (menu, mastery, "already unlocked" state) |
-| One rc_client, with our glue writing its internal state (deactivating ARM7-owned triggers in its runtime, injecting triggers) | **ruled out**: it writes rcheevos' private structures to change rcheevos' behaviour, which is modifying rcheevos in effect. It would also break with upstream `aed817f` (runtime types made internal) |
-| **One rc_client instance, run by whichever CPU is free, one frame at a time** (ownership passes between the CPUs; never both at once) | **compliant**: one instance, one session, results identical by construction. Engineering conditions: rc_client keeps function pointers (callbacks, scheduled callbacks into rcheevos' own static functions, and `server_call`, which can't be reset publicly). So both CPUs must run **one image** at one address, built for armv4t (the ARM9 runs it too), in RAM both CPUs see. The ARM9 cleans and invalidates its D-cache (4 KB, all of it) at each hand-over, and the ARM7 lane measures the speed cost (ARM7 code in main RAM ran about 2.5x slower than from WRAM) |
-| Everything on the ARM7 (one instance, the ARM9 only captures and sends) | compliant; capacity is eval-speed's question |
+| **A partitioned-evaluation patch to rc_client.** One rc_client, one server session. Achievements are assigned to a local or a remote partition. In each frame the remote partition's triggers are evaluated by rcheevos' own runtime code on the ARM7, from the same snapshot. rc_client merges the remote results (state changes, measured values) at each achievement's place in its own order within the same `rc_client_do_frame`, then raises every event and request itself | **compliant under the new rule**, if it is small, offered upstream, and passes the equivalence below on every real set. Nothing is reimplemented: the triggers are evaluated by rcheevos' code on both CPUs, and every event, request and state change comes from rc_client. Frame f's results are merged in frame f (the ARM9 waits for the ARM7's frame-f result, never later). If the ARM7 falls behind, the frame isn't evaluated, and `docs/dropped-frames.md` applies as on one CPU |
+| Two rc_clients, each logged in and starting a session | **ruled out**: two server sessions for one play (two `startsession`, two ping streams with different rich presence). This is a server-side identity problem, whatever rcheevos' provenance |
+| ARM7 runs the bare `rc_runtime` on its subset, and our glue sends its unlocks with `rc_api` requests | **ruled out**: it reimplements rc_client's award, retry, mastery, hardcore and notice logic |
+| Our glue writes rc_client's private state (deactivating or injecting triggers) without a patch | **ruled out**: an undeclared modification. If rc_client must change, it changes as a reviewed, upstreamable patch with the equivalence proof |
+| One rc_client run by whichever CPU is free, one frame at a time (no patch) | compliant; conditions as before: one image at one address both CPUs run, with an ARM9 D-cache clean at each hand-over |
+| Everything on the ARM7 (one instance; the ARM9 only captures and sends) | compliant |
 
-**What a determinism proof must show** (for the hand-over variant, or any other that gets proposed):
-- **Inputs:** all 32 real sets, each with a recorded per-frame snapshot stream of at least 10,000 frames from real play (`private/ramdumps` and the idle-budget scripts), plus synthetic streams that hit every condition type.
-- **Compared against** a single stock rc_client on the ARM9 (or on the host), the per-frame event stream must be **byte-identical** frame by frame:
-  - unlock IDs;
-  - measured progress values and strings;
-  - challenge show and hide;
-  - leaderboard start, fail and submit with values, and tracker values;
-  - the rich-presence string every frame;
-  - each server request in order, with its parameters, timestamps excepted;
-  - the order of events within a frame.
-- **Scenarios** that must be covered:
-  - hand-over at every frame (alternating), at random frames, and never;
-  - a reset mid-stream;
-  - a hardcore-to-casual switch, as in `docs/dropped-frames.md`;
-  - the in-game menu pause;
-  - a session starting with achievements already unlocked;
+**4. The equivalence the differential tests must prove** (for the partition patch; the hand-over variants use the same tests).
+
+- **Reference:** stock rcheevos at the pinned upstream commit, no patches: one rc_client on the host, fed the same per-frame snapshots through its read callback.
+- **Candidates:**
+  - the patched rcheevos with partitioning **off**, which must be identical to stock: an inert patch;
+  - partitioning **on**, with the production split and at least 20 random splits per set, both partitions run in lockstep on the host;
+  - the console build in melonDS, whose logged events are compared with a host replay of its own captured snapshots, to catch compiler and architecture differences (armv4t vs armv5te).
+- **Data:** every real set we have (32 today, more as dumps arrive), each with at least 10,000 frames of per-frame snapshots from real play. These are the module's captured snapshots, which is exactly what evaluation sees, from the idle-budget input scripts with real RAM dumps. Add at least 100,000 frames per set of fuzzed streams: real streams with the watched bytes mutated, to reach the edges.
+- **Equal at every frame f, with zero differences allowed:**
+  1. **Events:** the ordered list rc_client's event handler receives during frame f's `rc_client_do_frame`, by type and id, with every payload field byte for byte: achievement state, `measured_progress` and `measured_percent`, the leaderboard tracker's display text and value, the submitted score, and game completed. Same frame, same order. That is "timing to the frame".
+  2. **State after frame f:** for every achievement, its state, unlock flags and bucket, `measured_progress` and `measured_percent`; for every leaderboard, its state and tracker; the rich-presence string from `rc_client_get_rich_presence_message`; and the user game summary.
+  3. **Server traffic:** each request's API name and post data, byte for byte, in order, tagged with the frame that issued it.
+- **Lifecycle cases in the run:**
+  - loading with earlier unlocks (hardcore and casual);
+  - `rc_client_reset` at random frames;
+  - hardcore to casual mid-session;
   - mastery;
-  - a pointer-chain-heavy set (HG/SS) and a leaderboard-heavy one.
-- **Hardware:** the same comparison on the DSi with the event stream logged, at least one set over 30 minutes.
-- **CI:** the host part of the comparison runs in CI, as the float-operand digest does.
+  - achievements disabled by a short read;
+  - leaderboards whose start and submit sit in different partitions;
+  - rich presence whose memrefs are shared with remote achievements;
+  - unload.
+- **Also:** rcheevos' own test suite passes on the patched tree, and CI runs the host part on every change to the patch, the pin or the core.
+
+**5. User agent.** Keep the rcheevos part exactly as rcheevos builds it (`rc_client_get_user_agent_clause`, today `rcheevos/12.5.0`), with no suffix:
+- the patch must not change `RCHEEVOS_VERSION_STRING`;
+- the server reads that version, so a nonstandard string risks being parsed as unknown;
+- results are proven identical to that version.
+
+The patched build is identified by **our** version: `DScheevos/<version>` names one exact rcheevos commit and patch set. `SOURCES.txt` and the release notes list the upstream base, our fork commit and each patch with its upstream pull request. Say so when applying to RA (C asks for disclosure).
 
 ## Request options
 
@@ -219,7 +229,7 @@ Against RA's page as of 2026-10-12 (it now says "Casual" for softcore, and asks 
 **Other findings:**
 - **Offline queue "securely cached".** `pending.bin` and the set in `session.bin` are plain files beside the login token; a checksum on the console would protect nothing the token doesn't already expose. RA question 13 is on hold: see "Strict reading".
 - **User agent on 3DS** says "Nintendo DSi". Send "(Nintendo 3DS)" there, so the two can be told apart without asking (RA question 16, on hold).
-- **rcheevos version.** The submodule is upstream `develop` at `683197d` (v12.5.0 plus 9 commits, unmodified), which reports itself as 12.5.0. Pin a release tag before applying, so the user agent's version names exactly the code shipped.
+- **rcheevos version.** The submodule is upstream `develop` at `683197d` (v12.5.0 plus 9 commits, unmodified today), which reports itself as 12.5.0. Pin a release tag before applying (`docs/rcheevos-pin.md`, including how local patches are carried).
 - **Wording.** "Softcore" becomes "Casual" in the launcher, placard and menu (fix assigned (developer-db)).
 - **Spectator mode** sends no unlocks, leaderboard entries or session start; its journal is discarded (`pending.spectator`). Matches rc_client's spectator mode; nothing to change.
 - **What is sent** matches `docs/privacy.md`: login, game hash, set, session start, unlocks, leaderboard entries, rich presence pings, all to `retroachievements.org` with the DScheevos user agent. The real-account bench run (`tests/real/`) checks this against the live server.
