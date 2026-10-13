@@ -23,7 +23,7 @@ VERSION  := $(shell cat ../../VERSION)
 CFLAGS   += '-DDSC_VERSION="$(VERSION)"'
 # heap.c places load-time memory (heap.h): it wraps malloc and rc_api's parse of the set
 WRAPS    := malloc free calloc realloc rc_api_process_fetch_game_sets_server_response
-LDFLAGS  := $(ARCH) -nostartfiles -T module.ld -Wl,--gc-sections -Wl,-Map,$(BUILD)/dscheevos9.map \
+LDFLAGS  := $(ARCH) -nostartfiles -T module.ld -Wl,--use-blx -Wl,--gc-sections -Wl,-Map,$(BUILD)/dscheevos9.map \
             $(foreach w,$(WRAPS),-Wl,--wrap=$(w))
 
 RC_SRC := $(addprefix $(RCHEEVOS)/src/, client/rc_client.c \
