@@ -787,16 +787,42 @@ static u32 led(u32 v) {
 	return fifoGetValue32(FIFO_USER_01);
 }
 
+static void hold(int frames) { for (int i = 0; i < frames; i++) swiWaitForVBlank(); }
+
 static void test_h9(void) {
 	title("H9 camera LED: on 3 s, blink 5 s, off");
-	const u32 t1 = led(1);
-	for (int i = 0; i < 180; i++) swiWaitForVBlank();
-	const u32 t2 = led(2);
-	for (int i = 0; i < 300; i++) swiWaitForVBlank();
-	const u32 t0 = led(0);
+	const u32 t1 = led(0x3101);
+	hold(180);
+	const u32 t2 = led(0x3102);
+	hold(300);
+	const u32 t0 = led(0x3100);
 	/* 33.514 MHz ticks -> microseconds */
 	say("H9 i2c write us: on=%lu blink=%lu off=%lu (pass < 500)",
 	    t1 * 1000 / 33514, t2 * 1000 / 33514, t0 * 1000 / 33514);
+
+	/* L1: the power LED's colour (BPTWL 63h), the one LED that can change
+	 * colour. The owner notes on video which colours are visible with the
+	 * lid open, then it goes back to automatic. */
+	title("L1 power LED: purple 3 s, red 3 s, blue 3 s, auto");
+	const u32 p3 = led(0x6303);
+	hold(180);
+	const u32 p1 = led(0x6301);
+	hold(180);
+	const u32 p2 = led(0x6302);
+	hold(180);
+	const u32 p0 = led(0x6300);
+	say("L1 i2c write us: purple=%lu red=%lu blue=%lu auto=%lu",
+	    p3 * 1000 / 33514, p1 * 1000 / 33514, p2 * 1000 / 33514, p0 * 1000 / 33514);
+
+	/* L2: the Wi-Fi LED (BPTWL 30h, low 2 bits only): on 3 s, off 3 s, back
+	 * to blink-on-traffic. */
+	title("L2 Wi-Fi LED: on 3 s, off 3 s, traffic");
+	const u32 w1 = led(0x3001);
+	hold(180);
+	const u32 w0 = led(0x3000);
+	hold(180);
+	const u32 w3 = led(0x3003);
+	say("L2 i2c write us: on=%lu off=%lu traffic=%lu", w1 * 1000 / 33514, w0 * 1000 / 33514, w3 * 1000 / 33514);
 }
 
 int main(void) {
