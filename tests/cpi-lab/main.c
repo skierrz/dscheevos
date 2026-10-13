@@ -108,6 +108,45 @@ static void __attribute__((noinline, target("arm"))) write_seq(volatile u32* p, 
   }
 }
 
+/* isolated misses: one load per line at a given word offset, ~60 ALU
+ * cycles apart (cache streaming: an early word arrives sooner than a late one) */
+static u32 __attribute__((noinline, target("arm"))) read_isolated(const volatile u32* p, u32 count, u32 offset_words)
+{
+  u32 s = 0, i, k;
+  for (i = 0; i < count; i++) {
+    s += p[i * 8 + offset_words];
+    for (k = 0; k < 20; k++) asm volatile("" ::: "memory");
+  }
+  return s;
+}
+
+/* bursts of 8 stores to lines not in the cache, then ~150 cycles of ALU
+ * work (the write buffer would hide the stores) */
+static void __attribute__((noinline, target("arm"))) write_bursts(volatile u32* p, u32 bursts)
+{
+  u32 i, k;
+  for (i = 0; i < bursts; i++) {
+    volatile u32* q = p + i * 64;
+    q[0] = i; q[8] = i; q[16] = i; q[24] = i; q[32] = i; q[40] = i; q[48] = i; q[56] = i;
+    for (k = 0; k < 50; k++) asm volatile("" ::: "memory");
+  }
+}
+
+static u32 __attribute__((noinline, target("arm"))) alu_only(u32 count)
+{
+  u32 i, k;
+  for (i = 0; i < count; i++)
+    for (k = 0; k < 20; k++) asm volatile("" ::: "memory");
+  return count;
+}
+
+static void __attribute__((noinline, target("arm"))) alu_bursts(u32 bursts)
+{
+  u32 i, k;
+  for (i = 0; i < bursts; i++)
+    for (k = 0; k < 50; k++) asm volatile("" ::: "memory");
+}
+
 static u32 sink;
 
 /* cycles per access for fn over n accesses, IRQs off */
@@ -135,6 +174,11 @@ static void memory_tests(void)
   TIME("line stride (32 B), cold", words / 8, DC_FlushAll(), sink += read_stride(buf, words / 8, 8));
   TIME("4 KB + 32 B stride, cold", 60, DC_FlushAll(), sink += read_stride(buf, 60, 1032));
   TIME("seq read, uncached mirror", words / 4, DC_FlushAll(), sink += read_seq(unc, words / 4));
+  TIME("isolated miss, word 0", words / 8, DC_FlushAll(), sink += read_isolated(buf, words / 8, 0));
+  TIME("isolated miss, word 7", words / 8, DC_FlushAll(), sink += read_isolated(buf, words / 8, 7));
+  TIME("  (their ALU loop alone)", words / 8, DC_FlushAll(), sink += alu_only(words / 8));
+  TIME("store bursts of 8, uncached", 8 * (words / 64), DC_FlushAll(), write_bursts(buf, words / 64));
+  TIME("  (their ALU loop alone)", 8 * (words / 64), DC_FlushAll(), alu_bursts(words / 64));
   TIME("seq write, lines not cached", words, DC_FlushAll(), write_seq(buf, words));
   TIME("seq write, lines cached", 512 * 32, (DC_FlushAll(), sink += read_seq(buf, 512)),
        { int k; for (k = 0; k < 32; k++) write_seq(buf, 512); });
