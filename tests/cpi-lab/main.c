@@ -147,6 +147,20 @@ static void __attribute__((noinline, target("arm"))) alu_bursts(u32 bursts)
     for (k = 0; k < 50; k++) asm volatile("" ::: "memory");
 }
 
+/* 64 independent ALU instructions per pass, in each state: cycles per
+ * instruction with the code in the I-cache (an ARM9E issues one a cycle) */
+#define ADDS8 "adds r0, #1\n adds r1, #1\n adds r2, #1\n adds r3, #1\n adds r0, #1\n adds r1, #1\n adds r2, #1\n adds r3, #1\n"
+static void __attribute__((noinline, target("thumb"))) alu_thumb(u32 passes)
+{
+  asm volatile(".syntax unified\n1:\n" ADDS8 ADDS8 ADDS8 ADDS8 ADDS8 ADDS8 ADDS8 ADDS8 "subs %0, #1\n bne 1b\n .syntax divided\n"
+               : "+l"(passes) :: "r0", "r1", "r2", "r3", "cc");
+}
+static void __attribute__((noinline, target("arm"))) alu_arm(u32 passes)
+{
+  asm volatile(".syntax unified\n1:\n" ADDS8 ADDS8 ADDS8 ADDS8 ADDS8 ADDS8 ADDS8 ADDS8 "subs %0, %0, #1\n bne 1b\n .syntax divided\n"
+               : "+r"(passes) :: "r0", "r1", "r2", "r3", "cc");
+}
+
 static u32 sink;
 
 /* cycles per access for fn over n accesses, IRQs off */
@@ -166,6 +180,9 @@ static void memory_tests(void)
   const u32 words = BUF_BYTES / 4;
   volatile u32* unc = (volatile u32*)((u32)buf - 0x02000000u + 0x0C000000u);   /* DSi uncached mirror */
 
+  alu_thumb(4); alu_arm(4);
+  TIME("Thumb ALU, cached code", 66 * 4096, (void)0, alu_thumb(4096));
+  TIME("ARM ALU, cached code", 66 * 4096, (void)0, alu_arm(4096));
   memset(buf, 0x5A, BUF_BYTES);
   DC_FlushAll();
   TIME("seq read, cold", words, DC_FlushAll(), sink += read_seq(buf, words));
