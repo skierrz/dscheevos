@@ -16,7 +16,7 @@ The work directory holds the token in its `dscheevos.ini` and a 450-650 MB SD im
 
 ## Bench run on the test account (owner)
 
-Two runs on the test account with Tetris DS: a spectator run that sends nothing, then a live run that earns one 1-point achievement for real. `tetris-marathon.txt` starts Standard > Marathon and taps rotate on every piece, which earns "Yep, It Ain't Moving" (achievement 230051, "[Standard - Marathon] Attempt to rotate a Square Block") within the first pieces. **Not ready yet:** `tetris-marathon.txt` is still being written and checked against the mock server with the real set; don't run steps 2-3 until it is in the repo.
+Two runs on the test account with Tetris DS: a spectator run that sends nothing, then a live run that earns one 1-point achievement for real. `tetris-marathon.txt` starts Standard > Marathon and taps rotate on every piece, which earns "Yep, It Ain't Moving" (achievement 230051, "[Standard - Marathon] Attempt to rotate a Square Block") within the first pieces. Checked against the mock server with the real set (2026-10-12): it unlocked at game frame 972 of 4500, nothing else unlocked, no frames dropped.
 
 Expected results are fixed here, before the runs. Until RetroAchievements validates DScheevos, the server adds its "Warning: Unknown Emulator" entry to the set and files hardcore unlocks as casual: that is the expected result, not a failure.
 
@@ -34,7 +34,7 @@ export RA_USER=$(cat ../private/ra-user) RA_TOKEN_FILE=../private/ra-token
 **2. Spectator run** (sends nothing):
 
 ```sh
-SCRIPT=tests/real/tetris-marathon.txt ~/Developer/DScheevos/bin/emu-lock -l real tests/real/run.sh --expect 230051
+FRAMES=4500 SCRIPT=tests/real/tetris-marathon.txt ~/Developer/DScheevos/bin/emu-lock -l real tests/real/run.sh --expect 230051
 ```
 
 - Pass, terminal: `RESULT PASS`. The status shows achievement 230051 unlocked, hardcore "rules on, RA counts as casual" (`'hardcore': 2`, the server's warning entry was seen), 0 sent.
@@ -44,7 +44,7 @@ SCRIPT=tests/real/tetris-marathon.txt ~/Developer/DScheevos/bin/emu-lock -l real
 **3. Live run** (earns the achievement for real):
 
 ```sh
-LIVE_UNLOCKS=1 SCRIPT=tests/real/tetris-marathon.txt ~/Developer/DScheevos/bin/emu-lock -l real tests/real/run.sh --expect 230051 --expect-sent 1
+LIVE_UNLOCKS=1 FRAMES=4500 SCRIPT=tests/real/tetris-marathon.txt ~/Developer/DScheevos/bin/emu-lock -l real tests/real/run.sh --expect 230051 --expect-sent 1
 ```
 
 - Pass, terminal: `RESULT PASS`, 1 unlock sent, the hardcore state as in step 2.
