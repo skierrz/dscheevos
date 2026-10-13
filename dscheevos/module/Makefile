@@ -24,7 +24,8 @@ CFLAGS   += '-DDSC_VERSION="$(VERSION)"'
 # header dependencies (build/*.d): a changed header rebuilds every object that includes it
 CFLAGS   += -MMD -MP
 # heap.c places load-time memory (heap.h): it wraps malloc and rc_api's parse of the set
-WRAPS    := malloc free calloc realloc rc_api_process_fetch_game_sets_server_response
+# fast_strtoul.c: newlib's strtoul without its per-call divisions
+WRAPS    := malloc free calloc realloc rc_api_process_fetch_game_sets_server_response strtoul
 comma    := ,
 LDFLAGS  := $(if $(TEXT_COLOUR),-Wl$(comma)--defsym$(comma)DSCM_TEXT_COLOUR=$(TEXT_COLOUR)) \
             $(if $(DATA_COLOUR),-Wl$(comma)--defsym$(comma)DSCM_DATA_COLOUR=$(DATA_COLOUR)) \
@@ -44,7 +45,7 @@ LWIP_SRC := $(addprefix $(LWIP)/src/, core/init.c core/def.c core/dns.c core/ine
   core/ipv4/ip4_addr.c core/ipv4/ip4_frag.c netif/ethernet.c)
 TLS_SRC := $(wildcard $(MBEDTLS)/library/*.c)
 NET_SRC := $(wildcard src/net/*.c) $(TLSCONF)/cacerts.c
-SRC := src/module.c src/syscalls.c src/heap.c $(CORE)/src/dscheevos.c
+SRC := src/module.c src/syscalls.c src/heap.c src/fast_strtoul.c $(CORE)/src/dscheevos.c
 OBJ := $(patsubst %.c,$(BUILD)/%.o,$(notdir $(SRC))) $(patsubst $(RCHEEVOS)/src/%.c,$(BUILD)/rc/%.o,$(RC_SRC)) $(BUILD)/start.o \
   $(patsubst $(LWIP)/src/%.c,$(BUILD)/lwip/%.o,$(LWIP_SRC)) $(patsubst $(MBEDTLS)/library/%.c,$(BUILD)/tls/%.o,$(TLS_SRC)) \
   $(patsubst %.c,$(BUILD)/net/%.o,$(notdir $(NET_SRC)))

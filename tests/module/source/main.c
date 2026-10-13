@@ -9,6 +9,8 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
+#include <errno.h>
+#include <stdlib.h>
 #include "dscheevos_module.h"
 #include "dscheevos9_bin.h"
 
@@ -143,6 +145,45 @@ static int check_v6(void)
 
 extern void halt_as_idle(void (*halt)(void));
 
+/* the module's strtoul (dscheevos/module/src/fast_strtoul.c) against newlib's own, on the DS */
+unsigned long dsc_strtoul(const char* nptr, char** endptr, int base);
+static int check_strtoul(void)
+{
+	static const char* fixed[] = { "0", "1", "42", " 42", "\t-7", "+12", "0x1F", "0X1f", "0x", "0xg", "0x 1", "-0x10",
+		"4294967295", "4294967296", "99999999999", "FFFFFFFF", "100000000", "ffffffffff", "12abc", "  ", "", "-", "+",
+		"0x0", "007", "1.5", "1e3", "Z", "z", "\n\v\f\r 9", "-4294967295", "-4294967296", "0x100000000", "\x80" "5", "9\xff" };
+	static const char alphabet[] = " \t\n+-0123456789abcdefxXABCDEFgGzZ.\x80";
+	char buf[16];
+	u32 seed = 12345, tests = 0, bad = 0;
+	int base, i, k;
+	for (base = 10; base <= 16; base += 6) {
+		for (i = 0; i < (int)(sizeof(fixed) / sizeof(fixed[0])) + 20000; i++) {
+			const char* str;
+			char *e1, *e2;
+			unsigned long v1, v2;
+			int er1, er2;
+			if (i < (int)(sizeof(fixed) / sizeof(fixed[0]))) str = fixed[i];
+			else {
+				int len;
+				seed = seed * 1103515245u + 12345u; len = (seed >> 16) % 15;
+				for (k = 0; k < len; k++) { seed = seed * 1103515245u + 12345u; buf[k] = alphabet[(seed >> 16) % (sizeof(alphabet) - 1)]; }
+				buf[len] = '\0';
+				str = buf;
+			}
+			errno = 0; v1 = strtoul(str, &e1, base); er1 = errno;
+			errno = 0; v2 = dsc_strtoul(str, &e2, base); er2 = errno;
+			tests++;
+			if (v1 != v2 || e1 != e2 || er1 != er2) {
+				if (!bad) out("FAIL strtoul(\"%s\", %d): newlib %lu end+%d errno %d, ours %lu end+%d errno %d", str, base,
+				              v1, (int)(e1 - str), er1, v2, (int)(e2 - str), er2);
+				bad++;
+			}
+		}
+	}
+	out("%s: strtoul vs newlib, %lu strings, %lu different", bad ? "FAIL" : "ok", (unsigned long)tests, (unsigned long)bad);
+	return bad != 0;
+}
+
 int main(void)
 {
 	if (!isDSiMode()) { out("FAIL needs DSi mode (16 MB)"); out("DONE"); while (1) swiWaitForVBlank(); }
@@ -247,6 +288,7 @@ int main(void)
 	}
 	if (st->frames_dropped || st->frames_missed) { out("FAIL: frames dropped or missed"); fails++; }
 	fails += check_v6();
+	fails += check_strtoul();
 	out(fails ? "RESULT FAIL" : "RESULT PASS");
 end:
 	out("DONE");

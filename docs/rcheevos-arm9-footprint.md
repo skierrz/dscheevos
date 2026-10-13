@@ -215,6 +215,8 @@ Counted with `qemu-arm -cpu arm946 -one-insn-per-tb -d exec`: one trace line per
 
 Session start (`rc_client_begin_load_game`: JSON parse plus activation) costs 36M instructions for the typical set (~0.7–1.1 s at 67 MHz) and 591M for the heavy set (~11–18 s). Load cost grows much faster than set size (16× for 4× the achievements); I didn't profile why. It runs before the game boots, but 10+ seconds is a long wait.
 
+Measured in melonDS at 67 MHz (2026-10-13, runner `--profile-boot-pcs`, the module's work before the game's first `OS_Halt`): Kirby SSU ~2 s, Mario Kart DS 9.3 s, Pokemon Platinum 95 s (its 311 KB set with the 512 KB session branch). MKDS: 26% memref deduplication (`rc_alloc_memref`, `rc_alloc_modified_memref`, `rc_operands_are_equal`: each new memref is compared with every one so far), 20% newlib `strtoul` (two software divisions per call for its overflow limits: the ARM946E-S has no divide). Platinum: 80% modified-memref deduplication. The module now links its own `strtoul` (`module/src/fast_strtoul.c`, newlib's algorithm with constant limits, checked against newlib on the DS by `tests/module`): MKDS 9.3 -> 8.0 s. The deduplication is rcheevos' (an index would be an rcheevos patch: load time only, same memrefs in the same order).
+
 `rc_client_idle`: 76 bytes of stack and negligible time. `get_rich_presence_message` returns a cached string (407 instructions); rich presence is rebuilt inside `do_frame`.
 
 That's ~350 instructions per condition per frame (typical set: ~990 conditions, ~670 unique memrefs, 315 pointer chains).
