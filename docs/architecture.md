@@ -19,7 +19,7 @@ The game isn't running yet, so this part has the whole machine.
 
 1. The DScheevos launcher logs in, hashes the ROM with rcheevos' DS hash (header, ARM9 and ARM7 binaries, icon), fetches the achievement set and starts a session. Hardcore requires being online here.
 2. It writes the replies to `_nds/dscheevos/session.bin`, tagged with the ROM's path (layout: `dscm_boot_t` in `dscheevos/module/include/dscheevos_module.h`; `tools/mksession` makes the same file offline for tests).
-3. nds-bootstrap's front end finds a `session.bin` for the ROM it is booting, written by the launcher less than 10 minutes earlier by the console clock, renames it to `session.used` so it can't be used twice, and passes the module's and the session's clusters to the bootloader. The bootloader zeroes `session.used` once the session is in RAM.
+3. nds-bootstrap's front end finds a `session.bin` for the ROM it is booting, written by the launcher less than 10 minutes earlier by the console clock, for a ROM whose RetroAchievements hash (rcheevos' own code, run again here) is the session's, renames it to `session.used` so it can't be used twice, and passes the module's and the session's clusters to the bootloader. The bootloader zeroes `session.used` once the session is in RAM.
 4. The bootloader loads `dscheevos9.bin` and the session into the reserved RAM, patches the game's `OS_Halt`, and switches on the card engine hooks. Its ARM9 then calls the module's init, which parses the set (rcheevos load) on the module's own stack.
 5. The game boots.
 
