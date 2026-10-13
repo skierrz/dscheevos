@@ -8,7 +8,7 @@ $(BUILD)/lab.o: $(LAB_DIR)main.c $(BUILD)/set-typical.h $(CORE)/include/dscheevo
 	$(CC) $(CFLAGS) -DARM9 -I$(LIBNDS)/include '-DSET_HEADER="$(BUILD)/set-typical.h"' -c $< -o $@
 
 $(BUILD)/cpi-lab.elf: $(BUILD)/lab.o $(LAB_OBJ)
-	$(CC) $(ARCH) -specs=ds_arm9.specs -Wl,--gc-sections $^ -L$(LIBNDS)/lib -lfat -lnds9 -lm -o $@
+	$(CC) $(ARCH) -specs=ds_arm9.specs -Wl,--gc-sections $(LAB_LDFLAGS) $^ -L$(LIBNDS)/lib -lfat -lnds9 -lm -o $@
 
 $(BUILD)/cpi-lab.nds: $(BUILD)/cpi-lab.elf
 	ndstool -c $@ -9 $< > /dev/null

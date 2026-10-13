@@ -59,12 +59,13 @@ $(BUILD)/%.o: src/%.c src/heap.h include/dscheevos_module.h $(CORE)/include/dsch
 # The core marks its own hot functions ARM (HOT in dscheevos.c).
 RC_ARM   := client/% runtime/%
 RC_HOT_FLAGS ?= -marm
+# per file, e.g. RC_FLAGS_runtime_rc_condset := -O2 (after RC_HOT_FLAGS, so it wins)
 $(BUILD)/dscheevos.o: $(CORE)/src/dscheevos.c $(CORE)/include/dscheevos.h include/dscheevos_module.h
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 $(BUILD)/rc/%.o: $(RCHEEVOS)/src/%.c
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) $(if $(filter $(RC_ARM),$*),$(RC_HOT_FLAGS)) -w -c $< -o $@
+	$(CC) $(CFLAGS) $(if $(filter $(RC_ARM),$*),$(RC_HOT_FLAGS)) $(RC_FLAGS_$(subst /,_,$*)) -w -c $< -o $@
 $(BUILD)/lwip/%.o: $(LWIP)/src/%.c src/net/lwipopts.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -w -c $< -o $@

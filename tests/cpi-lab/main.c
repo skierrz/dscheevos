@@ -204,6 +204,26 @@ static void memory_tests(void)
 /* ---------------------------------------------------------------- the core on the typical set */
 
 static u8* ram;                       /* 4 MB fake game RAM */
+static const char* set_json;          /* the set: sd:/dscheevos-lab/set.json, else the typical one */
+static int ram_dumped;                /* ram (and the DTCM) came from sd:/dscheevos-lab/ram.bin */
+
+/* a whole file from the SD card, NUL-terminated; NULL if missing */
+static char* load_file(const char* path, u32* size)
+{
+  FILE* f = fopen(path, "rb");
+  char* b;
+  long n;
+  if (!f) return NULL;
+  fseek(f, 0, SEEK_END);
+  n = ftell(f);
+  fseek(f, 0, SEEK_SET);
+  b = (char*)malloc(n + 1);
+  if (b && fread(b, 1, n, f) == (size_t)n) b[n] = 0;
+  else { free(b); b = NULL; }
+  fclose(f);
+  if (size) *size = (u32)n;
+  return b;
+}
 static u8 dtcm_fake[0x4000];
 static u32 rng = 12345;
 static u32 rnd(void) { rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5; return rng; }
@@ -236,7 +256,7 @@ static void http_send(const dsc_http_request_t* r)
   if (strstr(p, "r=login2"))
     body = "{\"Success\":true,\"User\":\"User\",\"AvatarUrl\":\"http://server/UserPic/USER.png\",\"Token\":\"ApiToken\",\"Score\":12345,\"Messages\":2}";
   else if (strstr(p, "r=achievementsets"))
-    body = patch_json;
+    body = set_json;
   else if (strstr(p, "r=startsession"))
     body = "{\"Success\":true,\"Unlocks\":[],\"HardcoreUnlocks\":[]}";
   else if (strstr(p, "r=awardachievement"))
@@ -289,9 +309,9 @@ static int core_tests(void)
   dsc_stats_t s;
   int i;
 
-  ram = (u8*)memalign(32, 0x400000);
+  if (!ram) ram = (u8*)memalign(32, 0x400000);
   if (!ram) { say("FAIL no memory for the fake RAM"); return -1; }
-  {
+  if (!ram_dumped) {
     u32* w = (u32*)ram;
     u32 x = rng;
 #define NEXT (x ^= x << 13, x ^= x >> 17, x ^= x << 5, (x & 7) == 0 ? 0x02000000u | (x & 0x3FFFFCu) : x)
@@ -333,7 +353,8 @@ static int core_tests(void)
   }
   if (!dsc_is_active()) { say("FAIL set not loaded"); return -1; }
   dsc_get_stats(&s);
-  say("typical set: %lu addresses", (unsigned long)s.addresses);
+  say("%s set, %s RAM: %lu addresses", set_json == patch_json ? "typical" : "SD", ram_dumped ? "dumped" : "random",
+      (unsigned long)s.addresses);
 
   frames++;
   dsc_vblank();
@@ -381,6 +402,22 @@ int main(void)
     for (;;) swiWaitForVBlank();
   }
   ok = fatInitDefault();
+  set_json = patch_json;
+  if (ok) {
+    u32 n;
+    char* j = load_file("sd:/dscheevos-lab/set.json", NULL);
+    char* r = load_file("sd:/dscheevos-lab/ram.bin", &n);
+    if (j) set_json = j;
+    if (r && n >= 0x400000) {
+      ram = (u8*)memalign(32, 0x400000);
+      if (ram) {
+        memcpy(ram, r, 0x400000);
+        if (n >= 0x404000) memcpy(dtcm_fake, r + 0x400000, 0x4000);
+        ram_dumped = 1;
+      }
+    }
+    free(r);
+  }
   say("cpi-lab: ARM9 timing (DSi mode, ARM9 at 67 MHz)");
   REG_SCFG_CLK9 &= ~1;                     /* 67 MHz, as a DS-mode game */
   { int k; for (k = 0; k < 8; k++) asm volatile("nop"); }
@@ -388,7 +425,7 @@ int main(void)
   cpuStartTiming(0);
   buf = (u32*)memalign(32, BUF_BYTES);
   if (!buf) say("FAIL no memory for the buffer");
-  else memory_tests();
+  else if (set_json == patch_json) memory_tests();   /* a set from the SD: the core only */
   core_tests();
   say("DONE");
   if (ok) flush_log();
