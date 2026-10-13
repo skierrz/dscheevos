@@ -82,7 +82,7 @@ typedef struct dsc_platform_t {
   void (*event)(const dsc_event_t* event);
   /* Diagnostics (may be NULL). */
   void (*log)(const char* message);
-  /* Console clock, for journal entries (may be NULL: time()). */
+  /* Clock for journal entries (may be NULL: time()). */
   uint32_t (*unix_time)(void);
   /* Offline journal, written in place (on the DS through the uncached mirror). May be NULL. */
   struct dscm_journal_t* journal;
@@ -106,6 +106,8 @@ typedef struct dsc_platform_t {
    * then) and returns nonzero if the copy must start over: game code may
    * have run meanwhile. May be NULL. */
   int (*interrupt_pending)(void);
+  /* unix_time is UTC (else a console clock whose offset from UTC is unknown). */
+  int clock_is_utc;
 } dsc_platform_t;
 
 typedef struct dsc_config_t {

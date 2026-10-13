@@ -13,6 +13,7 @@ import argparse
 import re
 import struct
 import sys
+import time
 
 def hdr_version(ram):
     return struct.unpack_from('<I', ram, 0xD80004)[0]
@@ -27,7 +28,7 @@ NOTICE_RING, INDICATOR_MAX, JOURNAL_MAX = 16, 8, 96
 LIST_ENTRY = struct.Struct('<IIHBB48s100s16s')     # dscm_list_entry_t, 176 bytes
 NOTICE = struct.Struct('<IHHIiI48s48s')            # dscm_notice_t, 116 bytes
 INDICATOR = struct.Struct('<I24s')
-JOURNAL_HEAD = struct.Struct('<IIII32s33s3x')
+JOURNAL_HEAD = struct.Struct('<IIII32s33sB2x')
 JOURNAL_ENTRY = struct.Struct('<BBBBIiI')
 
 
@@ -78,13 +79,13 @@ def read_journal(ram, hdr):
     o = ram_offset(ram, hdr[13], JOURNAL_HEAD.size + JOURNAL_MAX * JOURNAL_ENTRY.size)
     if not hdr[13] or o is None:
         return None
-    magic, size, count, game_id, user, game_hash = JOURNAL_HEAD.unpack_from(ram, o)
+    magic, size, count, game_id, user, game_hash, time_base = JOURNAL_HEAD.unpack_from(ram, o)
     if magic != JOURNAL_MAGIC:
         return dict(magic=magic, entries=[])
     entries = [JOURNAL_ENTRY.unpack_from(ram, o + JOURNAL_HEAD.size + i * JOURNAL_ENTRY.size)
                for i in range(min(count, JOURNAL_MAX))]
     entries = [dict(kind=e[0], hardcore=e[1], sent=e[2], id=e[4], score=e[5], time=e[6]) for e in entries if e[0]]
-    return dict(magic=magic, game_id=game_id, user=text(user), hash=text(game_hash), entries=entries)
+    return dict(magic=magic, game_id=game_id, user=text(user), hash=text(game_hash), time_base=time_base, entries=entries)
 
 
 ap = argparse.ArgumentParser()
@@ -98,6 +99,8 @@ ap.add_argument('--expect-rejoins', type=int, help='times the module must have r
 ap.add_argument('--expect-list', type=int,
                 help='achievements the published list must hold; also checks its unlocked ones against the status (ABI v6)')
 ap.add_argument('--expect-journal-unsent', type=int, help='journal entries the server has not answered (ABI v6)')
+ap.add_argument('--expect-journal-utc', action='store_true',
+                help='journal times are UTC and within 10 minutes of this host\'s clock (needs an entry)')
 ap.add_argument('--max-irq-lines', type=int, help='most scanlines one VBlank IRQ of the module may take')
 ap.add_argument('--max-irq-avg', type=float, help='average scanlines the VBlank IRQ of the module may take')
 ap.add_argument('--expect-notice', action='append', default=[], metavar='KIND',
@@ -201,7 +204,8 @@ if hdr_version(ram) >= 6:
     journal = read_journal(ram, hdr)
     if journal and journal['magic'] == JOURNAL_MAGIC:
         unsent = sum(not e['sent'] for e in journal['entries'])
-        print(f"journal: {len(journal['entries'])} entries, {unsent} unsent; game {journal['game_id']}, user {journal['user']}")
+        print(f"journal: {len(journal['entries'])} entries, {unsent} unsent; game {journal['game_id']}, user {journal['user']}, "
+              f"times {'UTC' if journal['time_base'] == 1 else 'console clock (UTC offset unknown)'}")
         for e in journal['entries']:
             what = 'award' if e['kind'] == 1 else 'leaderboard' if e['kind'] == 2 else e['kind']
             score = f" score {e['score']}" if e['kind'] == 2 else ''
@@ -264,5 +268,15 @@ if args.expect_journal_unsent is not None:
     unsent = sum(not e['sent'] for e in journal['entries']) if journal else None
     if unsent != args.expect_journal_unsent:
         fails.append(f'journal has {unsent} unsent entries, expected {args.expect_journal_unsent}')
+if args.expect_journal_utc:
+    es = journal['entries'] if journal else []
+    if not es:
+        fails.append('no journal entries to check the time of')
+    elif journal['time_base'] != 1:
+        fails.append('journal times are not UTC')
+    else:
+        off = max(abs(e['time'] - time.time()) for e in es)
+        if off > 600:
+            fails.append(f'journal times up to {off:.0f} s from UTC')
 print('RESULT ' + ('FAIL: ' + '; '.join(fails) if fails else 'PASS'))
 sys.exit(1 if fails else 0)

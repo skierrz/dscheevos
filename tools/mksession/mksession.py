@@ -22,6 +22,7 @@ BOOT_SIZE = 604             # sizeof(dscm_boot_t); checked by layout.c in CI
 FLAGS_OFFSET = 462          # offsetof(dscm_boot_t, flags), as layout.c prints it
 SESSION_MAX = 0x40000       # DSCM_SESSION_MAX
 BOOT_SPECTATOR = 0x01       # DSCM_BOOT_SPECTATOR
+BOOT_UTC_KNOWN = 0x02         # DSCM_BOOT_UTC_KNOWN
 
 DEFAULT_LOGIN = b'{"Success":true,"User":"tester","Token":"tok","Score":0,"SoftcoreScore":0,"Messages":0}'
 DEFAULT_SESSION = b'{"Success":true,"Unlocks":[],"HardcoreUnlocks":[],"ServerNow":%d}'
@@ -58,7 +59,12 @@ def build(args):
     head += fixed(args.hash.lower(), 33)
     head += struct.pack("<B", 0 if args.softcore else 1)    # hardcore
     assert len(head) == FLAGS_OFFSET, len(head)
-    head += struct.pack("<Bx", BOOT_SPECTATOR if args.spectator else 0)  # flags, reserved
+    # flags, utc_offset_q: the console clock is the host's local time here, so
+    # its offset from UTC is known, as the launcher measures it online
+    offset_q = round(time.localtime().tm_gmtoff / 900)
+    utc = not args.no_utc and -56 <= offset_q <= 56
+    head += struct.pack("<Bb", (BOOT_SPECTATOR if args.spectator else 0) | (BOOT_UTC_KNOWN if utc else 0),
+                        offset_q if utc else 0)
     # the console clock keeps local time and has no time zone: nds-bootstrap
     # compares this against it and refuses an old session
     head += struct.pack("<II", 0, int(args.unix_time or calendar.timegm(time.localtime())))
@@ -86,6 +92,7 @@ def main():
     ap.add_argument("--softcore", action="store_true")
     ap.add_argument("--spectator", action="store_true", help="rc_client spectator mode: evaluate, send nothing")
     ap.add_argument("--unix-time", type=int)
+    ap.add_argument("--no-utc", action="store_true", help="leave the console clock's UTC offset unknown")
     ap.add_argument("--net", action="store_true", help="mark the network as usable during play (tests)")
     ap.add_argument("--ap-ssid", default="", help="access point the module may rejoin (tests)")
     ap.add_argument("--ap-security", type=int, default=0, help="0 open, 3 WPA2")
