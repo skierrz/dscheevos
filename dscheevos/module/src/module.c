@@ -87,6 +87,7 @@ _Static_assert(offsetof(dscm_irq_t, on) == 8 && offsetof(dscm_irq_t, in_vblank) 
 _Static_assert(offsetof(dscm_irq_t, idle_start) == 16 && offsetof(dscm_irq_t, timed_frames) == 20 && offsetof(dscm_irq_t, irq_lines_total) == 24, "dscm_irq");
 _Static_assert(offsetof(dscm_irq_t, irq_lines_last) == 28 && offsetof(dscm_irq_t, irq_lines_max) == 30, "dscm_irq");
 _Static_assert(offsetof(dscm_irq_t, idle_cut_lines) == 32 && offsetof(dscm_irq_t, idle_cut) == 36 && offsetof(dscm_irq_t, frames_missed) == 40, "dscm_irq");
+_Static_assert(offsetof(dscm_header_t, scfg_probe) == 0x38 && sizeof(dscm_scfg_probe_t) == 48, "header 0x38: SCFG probe (start.s, nds-bootstrap)");
 #define g_frames (dscm_irq.frames)
 
 /* Idle lines per frame, from the idle thread, with IRQs masked: at each
@@ -376,6 +377,25 @@ static void update_cues(void)
   }
 }
 
+#ifdef DSCM_SCFG_PROBE
+/* Diagnostic build only: read the SCFG and NWRAM registers before
+ * ARM9_SETSCFG locks SCFG, for the ARM7 to log at boot. Reads only. */
+dscm_scfg_probe_t dscm_g_scfg_probe;
+
+static void scfg_probe(void)
+{
+  volatile const uint32_t* mbk = (volatile const uint32_t*)0x04004040;
+  int i;
+  dscm_g_scfg_probe.clk = *(volatile const uint16_t*)0x04004004;
+  dscm_g_scfg_probe.rst = *(volatile const uint16_t*)0x04004006;
+  dscm_g_scfg_probe.ext = *(volatile const uint32_t*)0x04004008;
+  for (i = 0; i < 9; i++)
+    dscm_g_scfg_probe.mbk[i] = mbk[i];
+  dscm_g_scfg_probe.magic = DSCM_SCFG_PROBE_MAGIC;
+  dscm_dc_clean(&dscm_g_scfg_probe, sizeof(dscm_g_scfg_probe));  /* the ARM7 reads RAM */
+}
+#endif
+
 /* ---- entry points ---- */
 
 extern char __bss_start[], __bss_end[];
@@ -387,6 +407,9 @@ int module_init(const dscm_boot_t* boot)
   int i;
 
   memset(__bss_start, 0, (size_t)(__bss_end - __bss_start));
+#ifdef DSCM_SCFG_PROBE
+  scfg_probe();                       /* first: even a session that fails to load gets logged */
+#endif
   /* from here on the journal is only written uncached: drop its cached lines */
   dscm_dc_clean(&dscm_g_journal, sizeof(dscm_g_journal));
   dscm_dc_invalidate(&dscm_g_journal, sizeof(dscm_g_journal));

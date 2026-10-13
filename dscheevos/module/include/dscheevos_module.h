@@ -328,6 +328,19 @@ typedef struct dscm_journal_t {
 #define DSCM_CUE_LEADERBOARD_SHIFT 8
 #define DSCM_CUE_CHALLENGE        0x00010000u   /* a challenge indicator is showing */
 
+/* Diagnostic SCFG/MBK probe (build flag DSCM_SCFG_PROBE, off by default,
+ * never in a release): the ARM9's SCFG and NWRAM registers as module_init
+ * found them, read once before nds-bootstrap's ARM9_SETSCFG locks SCFG.
+ * Read-only: nothing is written to any register. The ARM7 logs it at boot. */
+#define DSCM_SCFG_PROBE_MAGIC 0x47464353u /* "SCFG" */
+typedef struct dscm_scfg_probe_t {
+  uint32_t magic;                     /* DSCM_SCFG_PROBE_MAGIC */
+  uint16_t clk;                       /* 0x04004004 SCFG_CLK (ARM9) */
+  uint16_t rst;                       /* 0x04004006 SCFG_RST */
+  uint32_t ext;                       /* 0x04004008 SCFG_EXT (ARM9) */
+  uint32_t mbk[9];                    /* 0x04004040.. MBK1-MBK9 */
+} dscm_scfg_probe_t;                  /* 48 bytes */
+
 typedef struct dscm_header_t {
   uint32_t magic;
   uint32_t version;
@@ -343,7 +356,8 @@ typedef struct dscm_header_t {
   dscm_list_t* volatile list;         /* 0x2C: published achievement list, 0 until the set is loaded */
   dscm_notices_t* notices;            /* 0x30 */
   dscm_journal_t* journal;            /* 0x34: cached-mirror address; the ARM7 reads RAM directly */
-  uint32_t reserved[2];
+  struct dscm_scfg_probe_t* scfg_probe; /* 0x38: DSCM_SCFG_PROBE builds only, else 0 */
+  uint32_t reserved;
   volatile uint32_t notify_count;     /* 0x40: unlocks so far; own cache line, cleaned to RAM */
   void* net_ring;                     /* 0x44: dscm_shim.h ring, 0 if none; same line */
   volatile uint32_t cues;             /* 0x48: LED cues for the ARM7 (DSCM_CUE_*); same cache line, cleaned to RAM */

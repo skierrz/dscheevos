@@ -21,6 +21,11 @@ CFLAGS   := $(ARCH) -Os -ffunction-sections -fdata-sections -fno-strict-aliasing
             -Isrc/net -I$(LWIP)/src/include -I$(TLSCONF) -I$(MBEDTLS)/include '-DMBEDTLS_CONFIG_FILE="dsc_mbedtls_config.h"' -DDSC_TLS_DER_ONLY
 VERSION  := $(shell cat ../../VERSION)
 CFLAGS   += '-DDSC_VERSION="$(VERSION)"'
+# Diagnostic builds only, never a release: SCFG_PROBE=1 logs the SCFG/MBK registers at boot
+ifeq ($(SCFG_PROBE),1)
+CFLAGS   += -DDSCM_SCFG_PROBE
+BUILD    := build-scfgprobe
+endif
 # heap.c places load-time memory (heap.h): it wraps malloc and rc_api's parse of the set
 WRAPS    := malloc free calloc realloc rc_api_process_fetch_game_sets_server_response
 LDFLAGS  := $(ARCH) -nostartfiles -T module.ld -Wl,--gc-sections -Wl,-Map,$(BUILD)/dscheevos9.map \

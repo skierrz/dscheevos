@@ -191,6 +191,17 @@ int main(void)
 	/* 3. init */
 	int r = ((int (*)(const dscm_boot_t*))hdr->init)(boot);
 	out("init -> %d, active %lu, error %lu, title \"%s\"", r, (unsigned long)hdr->status->active, (unsigned long)hdr->status->error, hdr->status->game_title);
+	int probe_fails = 0;
+	if (hdr->scfg_probe) {
+		/* diagnostic build (SCFG_PROBE=1): the module read SCFG/MBK at init; read it from RAM like the ARM7 */
+		const volatile dscm_scfg_probe_t* p = (const volatile dscm_scfg_probe_t*)DSCM_UNCACHED(hdr->scfg_probe);
+		probe_fails = check(p->magic == DSCM_SCFG_PROBE_MAGIC, "SCFG probe in RAM");
+		out("SCFGPROBE clk %04x rst %04x ext %08lx", p->clk, p->rst, (unsigned long)p->ext);
+		out("SCFGPROBE mbk %08lx %08lx %08lx %08lx %08lx", (unsigned long)p->mbk[0], (unsigned long)p->mbk[1], (unsigned long)p->mbk[2], (unsigned long)p->mbk[3], (unsigned long)p->mbk[4]);
+		out("SCFGPROBE mbk %08lx %08lx %08lx %08lx", (unsigned long)p->mbk[5], (unsigned long)p->mbk[6], (unsigned long)p->mbk[7], (unsigned long)p->mbk[8]);
+	} else {
+		out("SCFG probe off");
+	}
 	if (r != 0) goto end;
 
 	/* 4. run frames: VBlank snapshots from the real IRQ, evaluation in idle time */
@@ -223,7 +234,7 @@ int main(void)
 		(unsigned long)st->frames_snapshotted, (unsigned long)st->frames_evaluated, (unsigned long)st->frames_dropped,
 		(unsigned long)st->frames_missed,
 		(unsigned long)(st->eval_lines / 16));
-	int fails = 0;
+	int fails = probe_fails;
 	struct { int id; u32 from, to; } expect[] = {{1, 100, 104}, {2, 200, 204}, {3, 300, 304}, {5, 448, 458}};
 	for (int i = 0; i < 4; i++) {
 		u32 f = unlock_frame[expect[i].id];

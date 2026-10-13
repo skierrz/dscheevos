@@ -23,7 +23,9 @@ dscm_list_ptr:
 	.word 0                     @ 0x2C: published achievement list (module.c swaps it)
 	.word dscm_g_notices        @ 0x30
 	.word dscm_g_journal        @ 0x34: written through the uncached mirror
-	.space 8
+	.weak dscm_g_scfg_probe
+	.word dscm_g_scfg_probe     @ 0x38: SCFG/MBK probe, 0 unless built with DSCM_SCFG_PROBE
+	.word 0
 	.global dscm_notify_count
 dscm_notify_count:
 	.word 0                     @ 0x40: unlock count for the ARM7 (own cache line)
