@@ -61,8 +61,69 @@ The runner also learns the game's first `OS_Halt` call from these events (the st
 | `--profile-pcs FILE` | with the cache model: the VBlank call's cycles and cache misses by PC, and its data misses and uncached accesses by address (CSV); `ab.sh` takes `PCS=file` |
 | `--trace-sd FRAME` | from that frame on: every SD/SDIO command and error IRQ, ARM9/ARM7 IPC sync sends, and (with `--watch-write`) every watched write, with ARM7 timestamps, on stderr; per frame, the ARM7's PC and IRQ state, the SD/MMC controller and the ARM7 NDMA channels; after each SD/MMC command, any ARM7 IRQ taken soon after and when the first status read came |
 | `--sd-cmd-busy N` | SD/MMC CMD_BUSY reads as set for N ARM7 cycles after a command (default about 96 SD clocks); 0 means software never sees it, as when an IRQ delays its first status read |
+| `--profile-game-pcs FILE` | with the cache model: the game's shadow-cache extra cycles by fetched code line and by data-access PC (CSV); `ab.sh` takes `GAMEPCS=prefix` |
+| `--profile-arm7 FILE` / `--profile-arm7-range LO:HI` | ARM7 cycles by 256-byte PC block over the run (CSV) / per interval in a range; `ab.sh` takes `ARM7=prefix` |
+| `--whatif-module-isets MASK` / `--whatif-module-dsets MASK` | timing study: the module's code / data use only the cache sets in MASK, as if laid out there (page colouring) |
 
 Use them directly with `RUNNER_ARGS="--profile ..." tests/launcher/run.sh ...`.
+
+## What DScheevos costs the game (`gamecost.sh`)
+
+`tests/perf/gamecost.sh GAME [FRAMES] [SCRIPT]` runs `ab.sh` (achievements off, then on; same
+input, `--thumb-cycle`, cache model from the game's first `OS_Halt`) and prints `gamecost.py`'s
+table: the **game's own ARM9 cycles per VBlank interval** (PC outside the module, IRQ mode
+included) off and on, the delta (avg / median / p90 / max), the game's CPI and cache misses, and
+the runner's **shadow-cache** estimate: a second I/D-cache model fed only the game's accesses, so
+the difference to the real model is what the module's use of the shared caches costs the game
+(I and D split, the part in the game's IRQ handlers, misses and dirty write-backs we cause, how
+often the game resumed right after module code). Without a module the shadow equals the real
+model (0 on NSMB direct boot). `SKIP=N` drops the first N intervals (menus), `OUT=dir` keeps the
+logs, `JSON=1` for machines; `gamecost.py OFF.csv ON.csv` re-reads kept logs. Runner columns:
+`game, game_irq, game_instr, game_imiss, game_dreadmiss, game_dwritemiss, game_writeback,
+game_iextra, game_dextra, poll_i, poll_d, poll_wb, rev_i, rev_d, arm7_busy, arm7_range,
+game_extra_irq, resumes, irqs, irq_max` (cycles in 133 MHz units; the scripts print 67 MHz).
+
+Merge rule (orchestrator, Oct 2026): every module, core or nds-bootstrap runtime change reports
+this table for Kirby, MKDS (race) and one busy title against the baseline below.
+
+### Baseline (Oct 2026, eval-speed 85309e2 module (-Os, rcheevos runtime/client -marm), nds-bootstrap 32993f85)
+
+Real sets, idle-budget input scripts (`kirby.txt`, `mkds.txt` ...), melonDS cache model (optimistic).
+Cycles at 67 MHz per interval; a frame is 1,120,380.
+
+| | Kirby SSU (1500 intervals) | MKDS race (intervals 2000-3000) |
+|---|---|---|
+| game cycles off: avg / median / p90 / max | 429,313 / 312,728 / 1,119,622 / 1,119,854 | 707,947 / 702,449 / 746,316 / 866,261 |
+| game cycles on: avg / median / p90 / max | 521,059 / 418,211 / 1,118,884 / 1,119,600 | 721,302 / 718,299 / 759,901 / 860,589 |
+| **on - off, avg** | **+91,746 (+8.19% of a frame)** | **+13,356 (+1.19%)** |
+| on - off per interval: median / p90 / max | 106,085 / 117,496 / 862,635 | 14,834 / 30,851 / 129,531 |
+| game CPI off -> on | 2.490 -> 3.061 (+22.9%) | 3.885 -> 3.955 (+1.8%) |
+| game I / D-read misses per interval, off -> on | 1050 -> 1860 / 1131 -> 2167 | 4491 -> 4613 / 4406 -> 4494 |
+| shadow: game cycles lost to our cache use (I / D) | 100,211 (34,551 / 65,660) | 14,862 (6,317 / 8,546) |
+| misses we cause per interval (I / D / write-backs) | 816 / 1497 / 297 | 149 / 159 / 101 |
+| lag intervals off / on | 177 / 174 | 0 / 0 (whole run 261 / 264) |
+
+Same build three times on Kirby: +91,839, +91,746, +92,073 (the emulator is deterministic; noise ~0.01% of a
+frame). The per-interval delta's max is a load interval shifted by a frame between the runs.
+
+**Why.** Kirby takes IRQs at scanline rate (~460 IRQ-mode runs, ~254 handler dispatches and ~207
+`OS_Halt` calls per frame). Every IRQ that lands while module work runs resumes the game into caches we just used:
+~200-240 resumes per interval, ~400-500 game cycles lost each (the HBlank path's code at
+0x0201e3xx / 0x02024bxx and its data, plus the SDK handler's data). Resumes follow our work time
+(correlation 0.97, about one per 3k cycles of module work), so the game's loss scales with the
+module's ARM9 time: ~0.17 game cycles per module cycle on Kirby, ~0.03 on MKDS (few IRQs). The
+game's IRQ handler runs get slower by ~80 cycles on average (208 -> 287, Kirby), well inside an
+HBlank (~1,200 cycles); the longest run (the VBlank handler) p99 31,189 -> 32,509.
+
+### Proposed gate
+
+1. Lag intervals equal off vs on (the existing A/B rule).
+2. **Ratchet:** a change may not raise the game-cost delta (on - off, avg) by more than **0.25%
+   of a frame (2,800 cycles)** on any of the three games against this table (or the table its
+   merge updates); a change that lowers it updates the table. 0.25% is ~25x the run-to-run noise
+   and catches regressions of the size real module changes make (-O2 rcheevos: -0.2%).
+3. **Target** (the zero-compromise goal; not met today): <= 1% of a frame on every game. Kirby's
+   8.2% is the debt.
 
 ## Results
 
