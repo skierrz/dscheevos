@@ -160,7 +160,7 @@ The journal on the SD card is a plain file, as is the session file with the set.
 
 ### 14. Promoted-only request (`f=3`)
 
-The set must fit in 256 KB of console RAM. Pokémon Platinum's `achievementsets` reply is 311 KB; with `f=3` (promoted achievements only) it is 195 KB, with the same 102 promoted achievements, leaderboards and rich presence. rc_client drops unpromoted achievements anyway (unofficial is off), so evaluation is identical. rcheevos' request builder has no option for it, so our code would append `&f=3` to the request rcheevos built. We already ask for gzip.
+The set must fit in 256 KB of console RAM. Pokémon Platinum's `achievementsets` reply is 311 KB; with `f=3` (promoted achievements only) it is 195 KB, with the same 102 promoted achievements, leaderboards and rich presence. rc_client drops unpromoted achievements anyway (unofficial is off), so evaluation is identical. rcheevos' request builder has no option for it, so our code would append `&f=3` to the request rcheevos built. It is a player setting, "Skip unofficial achievements", off by default: with it off the request is exactly what rcheevos and RetroArch send. We already ask for gzip.
 
 **Ask:** is adding `f=3` acceptable?
 

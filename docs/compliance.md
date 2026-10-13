@@ -99,6 +99,27 @@ Not covered yet: offline-queue timing (see "Open" below).
 
 - **Offline unlock times off by the console's UTC offset.** The module reads the DSi's clock, which holds local time, as if it were UTC, so a queued unlock sent later carries an award time a few hours off (about 4 h for the owner's console). Live unlocks are unaffected (the server stamps them). Product bug, fix in progress elsewhere; re-test with the offline-queue check in `docs/handoff.md` once it lands.
 
+## Casual (softcore)
+
+Owner principle (2026-10-12): casual is first-class, "essentially RAproxy with offline achievements". RA's list is written for hardcore, but its features (section A) apply to every session. Casual on the strict reading:
+
+| Requirement | Casual today | Notes |
+|---|---|---|
+| Achievement list, triggers, measured/trigger indicators | same as hardcore | the on-screen indicator gap in "Strict reading" applies to casual too |
+| Rich presence | pinged when "Send unlocks during play" is on (the default); off otherwise | B forbids turning it off only in hardcore |
+| Leaderboards | not active: rc_client runs leaderboards in hardcore only unless `rc_client_set_allow_leaderboards_in_casual` is set, which DScheevos doesn't | rc_client's default |
+| Offline unlocks "securely cached" and synced | with "Send unlocks during play" off, every unlock waits in the journal for a safe point and the next start | the power-off gap in "Strict reading" matters most here, since nothing went out live |
+| Cheats, RAM viewer, slow motion, speed-ups | allowed | RA's lockdown is hardcore only |
+| Casual to hardcore mid-session | not possible | the mode is chosen before launch; hardcore to casual (allowed) happens only on a dropped frame, if ruled |
+| Starting a game offline | **not supported**: the launcher needs the internet at every start | "offline achievements" in the owner's sense needs this. Compliant shape, if built: casual only; the set from the last online start of that exact ROM hash, kept on SD; unlocks journalled with their real times and sent at the next online start (rc_client's `seconds_since_unlock`); the in-game menu says "offline". Hardcore stays online-only. Needs a design (owner) |
+
+## Request options
+
+| Option | What it sends | Strict reading | Result |
+|---|---|---|---|
+| "Skip unofficial achievements" (owner ruling, **default off**) | off: exactly the request rcheevos builds, as RetroArch sends it. On: our glue appends `f=3` to `achievementsets` (promoted achievements only) | RA's list says nothing about request parameters. With unofficial achievements off (rc_client's default, and DScheevos never turns them on), rc_client drops unpromoted achievements while loading, so the set evaluated, shown and sent is identical either way; the server understands `f` (rcheevos' own editor API uses it for the category). Nothing in sections A-G changes | compliant; one grey point: a client altering a request rcheevos built. Kept as RA question 14 (on hold) |
+| gzip (`Accept-Encoding`) | compressed replies | transport only | compliant |
+
 ## Strict reading (owner, 2026-10-12)
 
 Meeting RA's published list is imperative, and the RA questions are on hold until DScheevos is ready to show. So nothing may rely on RA accepting an interpretation: each requirement is met on its plain, strictest reading. Zero gameplay cost still holds; where the two collide, the owner rules.
