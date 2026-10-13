@@ -21,6 +21,8 @@ CFLAGS   := $(ARCH) -Os -ffunction-sections -fdata-sections -fno-strict-aliasing
             -Isrc/net -I$(LWIP)/src/include -I$(TLSCONF) -I$(MBEDTLS)/include '-DMBEDTLS_CONFIG_FILE="dsc_mbedtls_config.h"' -DDSC_TLS_DER_ONLY
 VERSION  := $(shell cat ../../VERSION)
 CFLAGS   += '-DDSC_VERSION="$(VERSION)"'
+# header dependencies (build/*.d): a changed header rebuilds every object that includes it
+CFLAGS   += -MMD -MP
 # heap.c places load-time memory (heap.h): it wraps malloc and rc_api's parse of the set
 WRAPS    := malloc free calloc realloc rc_api_process_fetch_game_sets_server_response
 comma    := ,
@@ -92,6 +94,8 @@ $(BUILD)/dscheevos9.elf: $(OBJ) module.ld
 $(BUILD)/dscheevos9.bin: $(BUILD)/dscheevos9.elf
 	$(OBJCOPY) -O binary $< $@
 	@echo "built $@ ($$(stat -c %s $@) bytes)"
+
+-include $(OBJ:.o=.d)
 
 clean:
 	rm -rf $(BUILD)
