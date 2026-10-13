@@ -483,6 +483,58 @@ On a 3DS (TwlBg, later), every placement is free.
 - **Survey:** wait method and halt-line distribution per title (in progress).
 - **Lab ROM:** H10 added (bottom-edge strip, both FIFO arming variants), committed.
 
+### 11.4 Red-team of the zero-lag claim (2026-10-12): zero isn't reachable; a hardware-proven bound is
+
+Full report: `docs/display-research/red-team-zero-lag.md`. **11.1's claim fails as written:**
+
+- **B1, halted ≠ frame done.** The idle thread also runs while game threads wait on:
+  - the ARM7 over PXI (sound, saves, RTC);
+  - the game's own DMA, or the geometry FIFO;
+  - wireless.
+
+  The strip uses about 30% of main-RAM bus time on its lines, so it slows those waits, and the abort can't win that time back.
+- **B2, the "halted" flag is stale.** NitroSDK switches threads on IRQ return, so a flag cleared on the halt's return stays set while the game works.
+- **B3, cost in working time.** Some strip work runs while the game works:
+  - the entry IRQ fires on busy frames too;
+  - the H-Blank counter writes to the bus on lines 0..191-N;
+  - arming from the IPC hook costs about 250-400 cycles at frame start;
+  - the dispatcher check runs on every game IRQ for the whole session.
+
+**Revised P2b (supersedes 11.1's steps where they differ):**
+1. **Arm from idle, not the IPC hook.** The halt entry arms NDMA3 to count H-Blanks from the current line to 191-N-K, so the counter only runs while the game is halted. Its fill writes go to an I/O register (NDMA3's own FDATA), not main RAM, so they cost no main-bus time (to confirm, H11).
+2. **Decide "waiting" at entry from facts, not a flag:**
+   - the interrupted PC is inside the module's idle/halt code;
+   - no game IRQ is pending: `(IE & IF & ~ours) == 0`;
+   - no legacy DMA busy, `GXSTAT` bit 27 clear (geometry FIFO), no card read in flight;
+   - the ARM7 reports no save I/O or wireless activity (new ARM7 flags);
+   - POWCNT1 bit 15 unchanged for 30 frames (dual-screen-3D games flip it).
+3. **Exit at 191-K, with K ≥ 2,** so the line before VBlank stays clear. Bring back P2's VCOUNT windows, the guard IRQ and the armed-this-frame VBlank fixer.
+4. **The dispatcher test is the residue.** One `tst` on a value the patched dispatcher already loaded, plus a 20-60-cycle disarm on the first game IRQ after an armed idle period.
+5. **Strip IRQs must not start a module idle pass.** Otherwise the pass after the exit can be cut by VBlank after `dsc_capture` dropped the frame's snapshot: stale frames, an RA-correctness bug (M1). This is a requirement on the halt path (idle-coverage).
+6. **H10 must pass with the FIFO armed at entry.** Arming at VBlank feeds the FIFO from line 0, which is bus use in working time. melonDS's mid-frame result may be an artifact (RunFIFO latched at line 0, unconfirmed), so the DSi decides.
+
+**What is left, and what the owner rules on:** a bound X, the strip's worst-case cost per frame inside the game's working time:
+- the dispatcher `tst` per game IRQ;
+- the first-IRQ disarm;
+- any FIFO slowdown of an ARM7 reply a game thread waits on (R21, can't be detected).
+
+X must be **measured on hardware, not estimated**: melonDS can't see bus or cache effects. **New test T1, the slack probe:**
+- a stand-in game whose frame work ends k cycles before VBlank;
+- a sweep of k downward, strip on vs off, 10,000 frames each;
+- X = the smallest k with zero lag-frame difference.
+
+The owner then rules whether a measured X (expected tens to low hundreds of cycles, about 0.01% of a frame) is "zero" for the project. If not, there is no on-screen DSi notice under the strict RA reading, and the RA question goes to RAdmin.
+
+**Corrections:**
+- Games with no `OS_Halt` don't keep "LED and menu": DScheevos turns itself off for them today (`dscheevos_hooks.c:249`). Coverage for them is idle-coverage's work.
+- R18 overstated "no ARM9 lag is possible": the ARM9 waits on the ARM7 through PXI. That is now R21.
+
+**New residual:**
+
+| # | Residual | Size |
+|---|---|---|
+| R21 | A game thread waiting on an ARM7 reply (sound flush, save, RTC) during the strip gets that reply later, because the FIFO contends with the ARM7 on main RAM | not detectable from the ARM9. Bounded by T1 on hardware and by a per-title survey of what threads wait on at line 192-N |
+
 ## 10. Decisions for the owner
 
 1. Rule on each residual (R1-R5, R7-R16; R6 was dropped) (accept / reject). Rejecting R1 or R4 rules out every on-screen DSi option except P4.
