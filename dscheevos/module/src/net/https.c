@@ -541,6 +541,12 @@ void* net_init(const net_config_t* config)
   return ring;
 }
 
+int net_busy(void)
+{
+  return R.state != R_NONE || C.state == C_DNS || C.state == C_CONNECTING || C.state == C_HANDSHAKE
+      || link_busy();
+}
+
 void net_service(uint32_t now_ms)
 {
   uint32_t paused;
