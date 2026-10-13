@@ -56,7 +56,9 @@ def segment(rows, a, b):
         c = classify(r["halted"] / FRAME, r["halted_oshalt"], r["halted_bios"], r["halted_other"], r.get("halted_oshalt_other", 0))
         pc[c] = pc.get(c, 0) + 1
     lines = [r["wait_line"] for r in sel] if "wait_line" in sel[0] else []
-    by = {L: sum(1 for x in lines if 0 <= x <= L) / n for L in (160, 176, 184, 191)} if lines else {}
+    # an interval runs from line 192 (VBlank) through 262 and on to 191: order lines from 192
+    pos = lambda L: (L - 192) % 263
+    by = {L: sum(1 for x in lines if x >= 0 and pos(x) <= pos(L)) / n for L in (160, 176, 184, 191)} if lines else {}
     return dict(n=n, busy=busy, halted=halted, oshalt=osh, bios=bios, other=oth, oshalt_other=osx, with_oshalt=with_osh,
                 cls=classify(halted, osh, bios, oth, osx), per_interval=pc, waiting_by_line=by)
 
