@@ -38,6 +38,7 @@ static const kind_style_t styles[DSD_ITEM_KINDS] = {
   [DSD_ITEM_ONLINE] = {"Back online", "Online", I_CLOUD, C_GREEN},
   [DSD_ITEM_CHALLENGE] = {"Challenge", "Challenge", I_BOLT, C_PURPLE},
   [DSD_ITEM_TRACKER] = {"Leaderboard", "Leaderboard", I_FLAG, C_SKY},
+  [DSD_ITEM_TRAY] = {"Challenge active", "Challenge", I_BOLT, C_PURPLE},  /* no challenge: tracker style */
 };
 
 /* ---- text ---- */
@@ -136,8 +137,31 @@ static const char* text(const dsd_t* d, const dsd_item_t* it, int which) {
   return s ? s : "";
 }
 
+/* The titles of every active indicator of one kind, comma-separated. */
+static int append_titles(const dsd_t* d, uint8_t* line, int n, uint8_t kind, const uint32_t* ids) {
+  int first = 1;
+  for (int i = 0; i < DSCM_INDICATOR_MAX && n < DSD_LINE_MAX; i++) {
+    if (!ids[i]) continue;
+    if (!first) n = append_ascii(line, n, ", ");
+    dsd_item_t t;
+    memset(&t, 0, sizeof(t));
+    t.kind = kind;
+    t.id = ids[i];
+    n += dsd_text_to_glyphs(d->cfg.font, text(d, &t, DSD_TEXT_TITLE), line + n, DSD_LINE_MAX - n);
+    first = 0;
+  }
+  return n;
+}
+
+static uint32_t first_id(const uint32_t* ids) {
+  for (int i = 0; i < DSCM_INDICATOR_MAX; i++) if (ids[i]) return ids[i];
+  return 0;
+}
+
+static int tray_has_challenge(const dsd_t* d) { return first_id(d->challenge_ids) != 0; }
+
 static void layout(dsd_t* d, const dsd_item_t* it, int compact, int w) {
-  d->badge = !compact && d->cfg.badge ? d->cfg.badge(d->cfg.badge_ctx, it) : 0;
+  d->badge = !compact && d->cfg.badge && it->kind != DSD_ITEM_TRAY ? d->cfg.badge(d->cfg.badge_ctx, it) : 0;
   const int text_x = d->badge ? TEXT_X_BADGE : TEXT_X;
   uint8_t value[DSD_LINE_MAX];
   int nv = 0;
@@ -158,7 +182,32 @@ static void layout(dsd_t* d, const dsd_item_t* it, int compact, int w) {
   if (it->kind == DSD_ITEM_MODE && !it->value) label = "Softcore";
 
   const int avail = w - text_x - RIGHT_PAD;
-  int n0 = append_ascii(d->line[0], 0, label);
+  int n0;
+  if (it->kind == DSD_ITEM_TRAY) {
+    /* Active challenges (RA's Trigger indicator) by title, and the first
+     * leaderboard tracker's value (Measured/leaderboard) at the right. */
+    const uint32_t tr = first_id(d->tracker_ids);
+    dsd_item_t t;
+    memset(&t, 0, sizeof(t));
+    t.kind = DSD_ITEM_TRACKER;
+    t.id = tr;
+    if (tr) nv = dsd_text_to_glyphs(d->cfg.font, text(d, &t, DSD_TEXT_DETAIL), value, 16);
+    const int ch = tray_has_challenge(d);
+    if (compact) {
+      n0 = ch ? append_titles(d, d->line[0], 0, DSD_ITEM_CHALLENGE, d->challenge_ids)
+              : append_titles(d, d->line[0], 0, DSD_ITEM_TRACKER, d->tracker_ids);
+      d->line_len[1] = d->line_len[2] = 0;
+    } else {
+      n0 = append_ascii(d->line[0], 0, ch ? "Challenge active" : "Leaderboard");
+      int n1 = ch ? append_titles(d, d->line[1], 0, DSD_ITEM_CHALLENGE, d->challenge_ids)
+                  : append_titles(d, d->line[1], 0, DSD_ITEM_TRACKER, d->tracker_ids);
+      d->line_len[1] = (uint8_t)fit(d, d->line[1], n1, avail);
+      int n2 = ch && tr ? append_titles(d, d->line[2], 0, DSD_ITEM_TRACKER, d->tracker_ids) : 0;
+      d->line_len[2] = (uint8_t)fit(d, d->line[2], n2, avail);
+    }
+    goto place;
+  }
+  n0 = append_ascii(d->line[0], 0, label);
   if (it->more) {
     n0 = append_ascii(d->line[0], n0, " (+");
     n0 = append_int(d->line[0], n0, it->more);
@@ -179,6 +228,7 @@ static void layout(dsd_t* d, const dsd_item_t* it, int compact, int w) {
     d->line_len[2] = (uint8_t)fit(d, d->line[2], n2, avail);
   }
 
+place:;
   /* The value goes at the right of line 0; the label gives way to it. */
   const int vw = width_of(d, value, nv);
   d->line_len[0] = (uint8_t)fit(d, d->line[0], n0, avail - (nv ? vw + 8 : 0));
@@ -222,6 +272,8 @@ int dsd_render(dsd_t* d, dsd_surface_t* s, int max_rows) {
   }
 
   uint8_t accent = styles[it->kind].accent;
+  uint8_t icon = styles[it->kind].icon;
+  if (it->kind == DSD_ITEM_TRAY && !tray_has_challenge(d)) { accent = C_SKY; icon = I_FLAG; }
   if (it->kind == DSD_ITEM_MODE && !it->value) accent = C_BLUE;
   if (it->kind == DSD_ITEM_UNLOCK && d->cfg.hardcore == 0) accent = C_GOLD;
 
@@ -242,7 +294,7 @@ int dsd_render(dsd_t* d, dsd_surface_t* s, int max_rows) {
     if (d->badge) {
       /* drawn below, after the row loop */
     } else if (y >= icon_y && y < icon_y + 16) {
-      uint16_t bits = icons[styles[it->kind].icon][y - icon_y];
+      uint16_t bits = icons[icon][y - icon_y];
       for (int j = 0; bits; j++, bits >>= 1)
         if (bits & 1) row[right ? s->w - 22 + j : 6 + j] = palette[accent];
     }
