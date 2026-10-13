@@ -76,6 +76,20 @@ static int builtin_fix(const char* bootstrap_nds, const char tid[4], uint16_t cr
   return found;
 }
 
+int donor20_needed(const char* rom_path)
+{
+  char tid[3];
+  uint8_t unit = 0xFF;
+  uint32_t arm7_size = 0;
+  FILE* f = fopen(rom_path, "rb");
+  int ok;
+  if (!f)
+    return 0;
+  ok = read_at(f, 0x0C, tid, 3) && read_at(f, 0x12, &unit, 1) && read_at(f, 0x3C, &arm7_size, 4);
+  fclose(f);
+  return ok && !memcmp(tid, "AYI", 3) && unit == 0 && arm7_size == 0x25F70;
+}
+
 int apfix_check(const char* rom_path, const char* bootstrap_nds, char* name, int name_size)
 {
   char tid[5] = { 0 }, path[300];

@@ -19,6 +19,7 @@
 #include <nds.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 
 #define BOOTSTRAP_PATH DSC_DIR "nds-bootstrap.nds"
 
@@ -154,7 +155,26 @@ static void check_apfix(void)
   if (ui_choose("This game has its own AP-fix\n file in nds-bootstrap/apFix/\n and no built-in fix. Hardcore\n can't use it: remove it to play\n in Hardcore.",
                 "Play in Casual", "Play without achievements") == 'B')
     boot_game(0);
-  saved_hardcore = settings.hardcore;
+  if (saved_hardcore < 0)
+    saved_hardcore = settings.hardcore;
+  settings.hardcore = 0;
+}
+
+/* nds-bootstrap doesn't run a donor ROM's ARM7 binary in hardcore: any ROM
+ * can be set as the donor. The build of the game that needs one isn't
+ * offered hardcore while one is set. */
+static void check_donor(void)
+{
+  char donor[256];
+  if (!settings.hardcore || !donor20_needed(rom_path) || !bootstrap_ini_donor20(donor, sizeof(donor))
+   || access(donor, F_OK) != 0)
+    return;
+  log_line("donor: this game uses a donor ROM: no hardcore");
+  if (ui_choose("This game runs with a donor\n ROM's ARM7 code (set in\n TWiLight Menu++). Hardcore\n can't use it: unset it to play\n in Hardcore.",
+                "Play in Casual", "Play without achievements") == 'B')
+    boot_game(0);
+  if (saved_hardcore < 0)
+    saved_hardcore = settings.hardcore;
   settings.hardcore = 0;
 }
 
@@ -223,6 +243,7 @@ int main(int argc, char** argv)
   }
   if (settings.hardcore)
     check_apfix();
+  check_donor();
 
   for (;;) {
     session_info_t info;
