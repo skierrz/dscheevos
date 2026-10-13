@@ -653,10 +653,18 @@ static rc_client_t* new_client(int hardcore, const char* features)
     ev.frame_end = ev_frame_end;
     rc_client_set_trigger_evaluator(client, &ev);
   }
+#endif
+#ifdef DIFFTEST_CHANGE_DRIVEN
+  /* the tree has rcheevos' change-driven patch (the Makefile checks rc_client.h) */
   if (strstr(features, "changedriven"))
     rc_client_set_change_driven_enabled(client, 1);
 #else
-  if (features[0]) die("stock build: no patch features");
+  if (strstr(features, "changedriven"))
+    die("this build: no change-driven patch");
+#endif
+#if !defined(DIFFTEST_PATCHED)
+  if (strstr(features, "partition"))
+    die("this build: no partition patch");
 #endif
   rc_client_begin_login_with_token(client, "User", "ApiToken", login_done, NULL);
   return client;
