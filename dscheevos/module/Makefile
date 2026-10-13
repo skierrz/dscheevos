@@ -21,6 +21,9 @@ CFLAGS   := $(ARCH) -Os -ffunction-sections -fdata-sections -fno-strict-aliasing
             -Isrc/net -I$(LWIP)/src/include -I$(TLSCONF) -I$(MBEDTLS)/include '-DMBEDTLS_CONFIG_FILE="dsc_mbedtls_config.h"' -DDSC_TLS_DER_ONLY
 VERSION  := $(shell cat ../../VERSION)
 CFLAGS   += '-DDSC_VERSION="$(VERSION)"'
+# evaluation build options, e.g. DSC_FLAGS="-DDSC_CHANGE_DRIVEN -DDSC_CHANGED_RANGES" (rcheevos
+# patches on our fork, opt-in; docs/rcheevos-pin.md). Empty by default.
+CFLAGS   += $(DSC_FLAGS)
 # header dependencies (build/*.d): a changed header rebuilds every object that includes it
 CFLAGS   += -MMD -MP
 # heap.c places load-time memory (heap.h): it wraps malloc and rc_api's parse of the set
