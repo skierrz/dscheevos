@@ -33,7 +33,7 @@ PORT=${PORT:-8453} ENABLED=0 ROM=$rom WORK=$work SCRIPT=$script RUNNER_ARGS="$ar
 cp "$work/run.out" "$out/run.out"
 [ -f "$work/runner.log" ] || { echo "runner didn't run; see $out/run.out"; tail -5 "$out/run.out"; exit 1; }
 cp "$work/runner.log" "$out/runner.log"
-for k in frames sites hot io; do
+for k in frames sites hot io dirty dirtylines; do
   [ -f "$work/census.$k.csv" ] && cp "$work/census.$k.csv" "$out/$k.csv"
 done
 for f in "$work"/screen.ppm*; do
