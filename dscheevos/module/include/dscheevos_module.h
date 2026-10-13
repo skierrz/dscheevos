@@ -46,7 +46,7 @@
 #define DSCM_HEAP_END    (DSCM_IRQ_STACK_TOP - DSCM_IRQ_STACK_SIZE)
 
 #define DSCM_MAGIC   0x56435344u  /* "DSCV" */
-#define DSCM_VERSION 6u
+#define DSCM_VERSION 7u
 #define DSCM_SESSION_MAGIC 0x53435344u  /* "DSCS" */
 
 /* IPC sync value the ARM7 VBlank handler sends to request a snapshot. */
@@ -329,7 +329,8 @@ typedef struct dscm_journal_t {
 #define DSCM_CUE_CHALLENGE        0x00010000u   /* a challenge indicator is showing */
 
 typedef struct dscm_header_t {
-  uint32_t magic;
+  uint32_t bw_branch;                 /* 0x00: ARM `b bw_entry`: the patched SVC_WaitVBlankIntr wrapper
+                                         (movs r2,#0x5B; lsls r2,#19; bx r2) can only reach DSCM_BASE */
   uint32_t version;
   uint32_t image_size;
   int  (*init)(const dscm_boot_t* boot);
@@ -343,7 +344,8 @@ typedef struct dscm_header_t {
   dscm_list_t* volatile list;         /* 0x2C: published achievement list, 0 until the set is loaded */
   dscm_notices_t* notices;            /* 0x30 */
   dscm_journal_t* journal;            /* 0x34: cached-mirror address; the ARM7 reads RAM directly */
-  uint32_t reserved[2];
+  uint32_t magic;                     /* 0x38: DSCM_MAGIC (0 = DScheevos off) */
+  void (*biowait)(void);              /* 0x3C: ARM code: the BIOS-wait gate (word 0 branches here) */
   volatile uint32_t notify_count;     /* 0x40: unlocks so far; own cache line, cleaned to RAM */
   void* net_ring;                     /* 0x44: dscm_shim.h ring, 0 if none; same line */
   volatile uint32_t cues;             /* 0x48: LED cues for the ARM7 (DSCM_CUE_*); same cache line, cleaned to RAM */

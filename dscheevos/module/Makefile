@@ -40,7 +40,7 @@ LWIP_SRC := $(addprefix $(LWIP)/src/, core/init.c core/def.c core/dns.c core/ine
 TLS_SRC := $(wildcard $(MBEDTLS)/library/*.c)
 NET_SRC := $(wildcard src/net/*.c) $(TLSCONF)/cacerts.c
 SRC := src/module.c src/syscalls.c src/heap.c $(CORE)/src/dscheevos.c
-OBJ := $(patsubst %.c,$(BUILD)/%.o,$(notdir $(SRC))) $(patsubst $(RCHEEVOS)/src/%.c,$(BUILD)/rc/%.o,$(RC_SRC)) $(BUILD)/start.o \
+OBJ := $(patsubst %.c,$(BUILD)/%.o,$(notdir $(SRC))) $(patsubst $(RCHEEVOS)/src/%.c,$(BUILD)/rc/%.o,$(RC_SRC)) $(BUILD)/start.o $(BUILD)/biowait.o \
   $(patsubst $(LWIP)/src/%.c,$(BUILD)/lwip/%.o,$(LWIP_SRC)) $(patsubst $(MBEDTLS)/library/%.c,$(BUILD)/tls/%.o,$(TLS_SRC)) \
   $(patsubst %.c,$(BUILD)/net/%.o,$(notdir $(NET_SRC)))
 
@@ -78,6 +78,9 @@ $(BUILD)/net/cacerts.o: $(TLSCONF)/cacerts.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 $(BUILD)/start.o: src/start.s
+	@mkdir -p $(BUILD)
+	$(CC) $(ARCH) -c $< -o $@
+$(BUILD)/biowait.o: src/biowait.s
 	@mkdir -p $(BUILD)
 	$(CC) $(ARCH) -c $< -o $@
 

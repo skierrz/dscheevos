@@ -153,6 +153,14 @@ if timing and status_size >= (p + 92 - o) + 4 * (len(TIMING) + len(HALT)):
     print(f"capture at halt: {halt['captures']} snapshots, {halt['captures_stopped']} stopped for an interrupt,"
           f" {halt['frames_stale']} frames with no snapshot (evaluated with the last)")
     print(f"OS_Halt calls: {halt['halts_idle']} from the idle thread, {halt['halts_other']} from game threads (left alone)")
+# BIOS-wait gate counters (dscm_bw, biowait.s): not ABI, read by name
+mb = re.search(r'0x([0-9a-f]+)\s+dscm_bw\b', mp)
+if mb:
+    ob = ram_offset(ram, int(mb.group(1), 16), 20)
+    if ob is not None:
+        bw = struct.unpack_from('<5I', ram, ob)
+        print(f"BIOS-wait gate: mode {'E' if bw[0] == 1 else 'pass'}, calls {bw[1]}, waits in E {bw[2]}, halts in E {bw[3]}, last entry line {bw[4]}")
+
 # module memory (dscm_g_heap, heap.h): not ABI, read by name
 mh = re.search(r'0x([0-9a-f]+)\s+dscm_g_heap\b', mp)
 if mh:
@@ -170,8 +178,8 @@ if mh:
           f" whole run {used(hp['low_top'], hp['high_top'])} (+12 KB stacks at the top)")
     print(f"  arena {'in the session area' if hp['arena'] else 'on the heap'}, replies lent {hp['lent']},"
           f" parsed set in the arena {hp['parse_top'] - hp['parse_base']}, on the heap {hp['parse_heap']}, left {hp['load_left']}")
-hdr = struct.unpack_from('<14I', ram, 0xD80000)
-print('header magic %08x version %d vblank_count %d' % (hdr[0], hdr[1], hdr[9]))
+hdr = struct.unpack_from('<16I', ram, 0xD80000)
+print('header magic %08x version %d vblank_count %d' % (hdr[14], hdr[1], hdr[9]))
 
 lst = notices = journal = None
 if hdr_version(ram) >= 6:
@@ -210,7 +218,7 @@ if hdr_version(ram) >= 6:
         print('journal: empty (no game loaded)')
 
 fails = []
-if hdr[0] != 0x56435344:
+if hdr[14] != 0x56435344:
     fails.append('module not loaded')
 if not f[0]:
     fails.append('not active')

@@ -6,8 +6,8 @@
 	.global dscm_header
 	.align 2
 dscm_header:
-	.word 0x56435344            @ DSCM_MAGIC "DSCV"
-	.word 6                     @ DSCM_VERSION (the module test checks it matches)
+	b	bw_entry                @ 0x00: the patched SVC_WaitVBlankIntr wrapper lands here
+	.word 7                     @ DSCM_VERSION (the module test checks it matches)
 	.word __image_size
 	.word init_entry
 	.word vblank_entry
@@ -23,7 +23,8 @@ dscm_list_ptr:
 	.word 0                     @ 0x2C: published achievement list (module.c swaps it)
 	.word dscm_g_notices        @ 0x30
 	.word dscm_g_journal        @ 0x34: written through the uncached mirror
-	.space 8
+	.word 0x56435344            @ 0x38: DSCM_MAGIC "DSCV" (nds-bootstrap zeroes it to switch off)
+	.word bw_entry              @ 0x3C: BIOS-wait gate (biowait.s)
 	.global dscm_notify_count
 dscm_notify_count:
 	.word 0                     @ 0x40: unlock count for the ARM7 (own cache line)
