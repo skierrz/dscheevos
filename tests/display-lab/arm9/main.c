@@ -157,7 +157,7 @@ static void setup_game(void) {
 
 /* ---------------------------------------------------------------- raw IRQ phase */
 
-enum { T_NONE, T_H1, T_H2A, T_H2B, T_NEW, T_STRESS_NDMA, T_STRESS_DMA3 };
+enum { T_NONE, T_H1, T_H2A, T_H2B, T_NEW, T_STRESS_NDMA, T_STRESS_DMA3, T_BOTTOM };
 static volatile int test;
 static volatile u32 frame;
 
@@ -175,6 +175,11 @@ static volatile int new_phase;              /* 0 idle, 1 strip on (waiting exit)
 static volatile u32 entries, late_entries, exits, guard_fixes, byte_clobber;
 static volatile u32 exit_late_hist[16];
 static volatile int use_vblank_start;       /* H2b worked: NDMA2 re-fires by itself */
+
+/* H10: bottom edge, lines 192-N..191, entered from an H-Blank count from line 0 */
+static volatile int bottom_arm_at_vblank;   /* 1: FIFO armed at VBlank, 0: at entry */
+static volatile int bottom_phase;
+static volatile u32 bottom_entries, bottom_exits, bottom_entry_hist[4], bottom_exit_hist[4];
 
 static void timer_start(void) {
 	TIMER0_CR = 0; TIMER1_CR = 0;
@@ -265,6 +270,24 @@ __attribute__((target("arm"), noinline)) static void raw_isr(void) {
 	if (f & IRQ_NDMA(3)) {
 		REG_IF = IRQ_NDMA(3);
 		if (test == T_NEW) strip_exit_or_guard();
+		else if (test == T_BOTTOM) {
+			const u32 vc = REG_VCOUNT;
+			if (bottom_phase == 1) {                 /* end of line 191-N: switch in */
+				const int d = (int)vc - (191 - N);
+				bottom_entry_hist[d < 0 ? 0 : d > 2 ? 3 : d + 1]++;
+				if (!bottom_arm_at_vblank) arm_fifo();
+				mode_set(3);
+				bottom_entries++;
+				bottom_phase = 2;
+				ndma3_hblanks(N);
+			} else if (bottom_phase == 2) {          /* end of line 191: switch back */
+				if (mode_get() == 3) mode_set(1);
+				const int d = (int)vc - 191;
+				bottom_exit_hist[d < 0 ? 0 : d > 2 ? 3 : d + 1]++;
+				bottom_exits++;
+				bottom_phase = 0;
+			}
+		}
 	}
 	if (f & IRQ_VBLANK) {
 		REG_IF = IRQ_VBLANK;
@@ -287,6 +310,11 @@ __attribute__((target("arm"), noinline)) static void raw_isr(void) {
 		case T_NEW:
 			if (new_phase) new_phase = 0;           /* a frame whose exit never came */
 			if (!use_vblank_start) ndma2_oneshot(h2_ticks);
+			break;
+		case T_BOTTOM:
+			if (bottom_arm_at_vblank) arm_fifo();
+			bottom_phase = 1;
+			ndma3_hblanks(192 - N);                  /* H-Blanks from line 0 */
 			break;
 		}
 	}
@@ -508,6 +536,27 @@ static void test_h6b(void) {
 	new_report("H6b");
 }
 
+/* H10: a bottom-edge strip. The zero-lag design shows notices only while
+ * the game is already waiting for VBlank, which is the end of the frame. */
+static void test_h10(void) {
+	for (int v = 1; v >= 0; v--) {
+		title(v ? "H10a bottom edge, FIFO armed at VBlank (10 s)" : "H10b bottom edge, FIFO armed at entry (10 s)");
+		say("H10 look: banner on lines %d-191, game above", 192 - N);
+		bottom_arm_at_vblank = v;
+		bottom_phase = 0;
+		bottom_entries = bottom_exits = 0;
+		memset((void*)bottom_entry_hist, 0, sizeof bottom_entry_hist);
+		memset((void*)bottom_exit_hist, 0, sizeof bottom_exit_hist);
+		raw_begin(T_BOTTOM);
+		wait_frames(600);
+		raw_end();
+		say("H10%c entries=%lu exits=%lu entry line early/ok/+1/late %lu/%lu/%lu/%lu exit %lu/%lu/%lu/%lu",
+		    v ? 'a' : 'b', bottom_entries, bottom_exits,
+		    bottom_entry_hist[0], bottom_entry_hist[1], bottom_entry_hist[2], bottom_entry_hist[3],
+		    bottom_exit_hist[0], bottom_exit_hist[1], bottom_exit_hist[2], bottom_exit_hist[3]);
+	}
+}
+
 /* H5: bus cost, main-RAM reads during the strip lines, strip off vs on. */
 static u32 bus_loop_frames(u32 frames, bool strip) {
 	static u32 buf[4096] __attribute__((aligned(32)));
@@ -608,6 +657,7 @@ int main(void) {
 	use_vblank_start = h2_irq_frames >= 990;   /* H2b re-fired by itself every frame */
 	say("new timing uses %s", use_vblank_start ? "V-Blank startup (H2b)" : "one-shot from VBlank (H2a)");
 	test_h3();      flush_log();
+	test_h10();     flush_log();
 	test_h5();      flush_log();
 	test_h6();      flush_log();
 	test_h6b();     flush_log();

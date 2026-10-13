@@ -385,6 +385,104 @@ Full report: `docs/display-research/red-team.md`. All three blockers are address
 | Simpler: launcher pre-renders notice bitmaps | alternative | kept for phase 2 (it removes the font and the CJK problem, but needs the SD path) |
 | P2 not needed on 3DS | minor | agreed: 3DS uses P5 |
 
+## 11. Owner requirements of 2026-10-12: placement and zero lag
+
+The owner (relayed by the perf session) set two hard requirements:
+1. **A placement setting:** screen (top or bottom), edge (top or bottom) and side (left or right).
+2. **Zero lag frames while a notice shows.** "A rare lag frame is possible" (R7) is **rejected**. A presenter that can't guarantee zero added lag frames is out.
+
+Nothing game-facing gets built until the strip rulings (R1, R2, R4 and the rest) are made.
+
+### 11.1 Zero lag: the strip moves to the bottom edge, and runs only while the game is waiting
+
+A lag frame happens when the game's frame work doesn't finish before VBlank. Any cost we add while the game is still working could tip it over: the strip's bus time, our IRQs. The idle-slack gate (R7) only lowered the odds. **The only way to guarantee zero is to spend nothing while the game works.** So the strip runs only once the game has finished its frame and is waiting for VBlank.
+
+Where that time falls in the frame decides placement. NitroSDK games start their frame work at VBlank (line 192) and halt in the idle thread when they're done. The waiting time is therefore the **end** of the frame: the bottom lines of the picture.
+
+- **A top-edge strip (lines 0..N-1) can't meet zero lag.** Those lines are drawn right after VBlank, when the game is at its busiest. It would only qualify on frames where the game finished its whole frame inside VBlank, which is almost never. Under the zero-lag rule, the top-edge P2 is out.
+- **A bottom-edge strip (lines 192-N..191, "P2b") can.** It is shown on a frame only if the game is already halted, waiting for VBlank, at line 192-N.
+
+**P2b per frame (replaces P2's timing):**
+1. **VBlank IPC hook** (existing). If a notice is due and the guards pass, arm NDMA3 as an H-Blank counter, TCNT = 192-N. That is a few instructions in the existing hook. (Phase-locked in hardware; H-Blanks during V-Blank don't count, so it fires at the end of line 191-N.)
+2. **NDMA3 IRQ at the end of line 191-N (entry).** Show the strip this frame only if **the CPU was halted in the game's idle thread when this IRQ arrived**: the module's halt hook sets a flag, and the wake path clears it. If so:
+   - arm the FIFO NDMA;
+   - `STRB` DISPCNT byte 2 → mode 3;
+   - re-arm NDMA3 for N more H-Blanks.
+
+   If not (the game is still working), do nothing. The strip is missing on this frame.
+3. **NDMA3 IRQ at the end of line 191 (exit):** `STRB` back to mode 1. This is still before VBlank, so the game is still waiting.
+4. **Abort:** if any game IRQ arrives while the strip is live, the patched dispatcher (R4) ends the strip at once (mode 1, FIFO stopped) before calling the game's handler. That IRQ could wake a game thread, and its work must not share the bus with us.
+
+**What this guarantees.** On the ARM9, every cycle of the strip's work falls inside time the game spends halted, waiting for VBlank:
+- the FIFO bus time;
+- the entry and exit IRQs;
+- the uncached framebuffer reads.
+
+The game can't run any later because of the strip, so the strip can't add a lag frame. Card reads in flight still stand the strip down (CE9 starvation, B2).
+
+**What remains for the owner to rule on:**
+
+| # | Residual | Size |
+|---|---|---|
+| R17 | The abort check runs inside every game IRQ that arrives while the strip is live | ~10 cycles per such IRQ. It only happens while the game was idle; the IRQ's own work starts ~10 cycles later |
+| R18 | The FIFO's main-RAM reads contend with the ARM7 (sound, Wi-Fi shim) on strip lines | the ARM7 isn't frame-gated. No ARM9 lag frame is possible, but ARM7 latency rises a little while a notice shows. Measure in H5 with an ARM7 timing probe; an audio glitch would be a blocker |
+| R19 | The notice can drop out on frames where the game is still working at line 192-N | a one-frame gap in **our** notice, never in the game's picture. Mitigation: start a notice only after the game has been idle by line 192-N-8 in each of the last 30 frames. If the game starts missing during a notice, end it early (it goes to the menu's "missed" list) rather than flicker |
+| R20 | The R1 exposure moves: DISPCNT byte 2 reads mode 3 on lines 192-N..191 | the same size as R1. It falls while the game is halted, so only the game's IRQ handlers could read it. `GX_DispOff` normally runs in VBlank, after our exit, so the R2 leak path mostly disappears |
+
+R7 is gone: there is no bus or CPU cost while the game works.
+
+**Which games can have it** comes from the M1 survey's new section (in progress). Per title, it measures:
+- how the game waits for VBlank;
+- the line where it last halts before VBlank;
+- how often a non-VBlank IRQ breaks that wait.
+
+Games that never use the SDK idle thread's `OS_Halt` get no notices on screen, because there is no idle signal. That includes Sonic Rush, RE: Deadly Silence and Golden Sun: Dark Dawn (perf session finding), and games that wait with BIOS `VBlankIntrWait` or busy polling. They keep the LED and menu. A strip height can also be chosen per game from its halt-line distribution (32, 16 or 8 lines).
+
+**Hardware question H10 (added to the lab ROM):** does a mode-3 strip entered mid-frame show correctly?
+- In melonDS it works only when the FIFO NDMA is armed at entry; armed at VBlank, the feed is used up from line 0.
+- GBATEK says "transfer starts at next frame", so the DSi may differ.
+
+The ROM tests both. Pass: the banner is clean on lines 160-191 in one variant.
+
+### 11.2 Placement: what each setting can be on a DSi
+
+The facts that bound it:
+- The FIFO strip exists only on engine A.
+- The game decides which physical screen engine A drives (POWCNT1 bit 15), and that's game state: we only read it.
+- Engine B has no FIFO, so the bottom-screen route is P4 (backdrop-only screens, allow list).
+- A FIFO strip always replaces whole lines, so it is full-width.
+
+| Setting | What it means here | Mechanism | Zero-lag? |
+|---|---|---|---|
+| Screen = the one engine A drives now | the strip | P2b | yes, bottom edge only (11.1) |
+| Screen = the other one | text on engine B, only when that screen shows backdrop only | P4 | yes if all of P4's work runs in idle (it can: register writes and compare in an idle slice, taking effect the next frame). Its R12-R14 residuals still stand |
+| Edge = bottom | lines 192-N..191 | P2b; P4 any row | yes |
+| Edge = top | lines 0..N-1 | P2 top: **not zero-lag** (11.1); P4 rows at the top: yes | P4 only |
+| Side = left / right | P2b: the strip stays full-width; the side sets where the badge and text sit (mirrored layout). P4: a real corner box, since a BG layer only covers its tiles | layout | — |
+
+So on a DSi the user setting maps to:
+1. **Screen top/bottom.** Each frame, compare it with POWCNT1 bit 15:
+   - if the chosen screen is engine A's, use P2b (bottom edge only);
+   - otherwise use P4 if that screen is blank;
+   - otherwise use the fallback.
+2. **Edge.** Bottom works on both. Top works only through P4 (engine B, blank screens).
+3. **Side.** The layout's alignment.
+4. **Fallback when the chosen placement can't show now:**
+   - (a) the other placement;
+   - (b) LED + menu only.
+
+   The user chooses; the default is (a).
+
+On a 3DS (TwlBg, later), every placement is free.
+
+### 11.3 Changes to the plan
+
+- **P2 (top edge) → P2b (bottom edge, idle-gated).** P2's NDMA2 delay timer is no longer needed. Entry and exit both come from an H-Blank counter armed in the VBlank hook (melonDS: lines exact). The R4 dispatcher patch is still needed, now also for the abort (R17).
+- **New module dependency (perf session):** an "idle thread is halted" flag, set in the OS_Halt hook and cleared when it returns. The strip reads it in its entry IRQ.
+- **Library:** the scheduler's capabilities gain the placement actually available this frame. The renderer gains the mirrored (right-side) layout and a P4 tile layout.
+- **Survey:** wait method and halt-line distribution per title (in progress).
+- **Lab ROM:** H10 added (bottom-edge strip, both FIFO arming variants), committed.
+
 ## 10. Decisions for the owner
 
 1. Rule on each residual (R1-R5, R7-R16; R6 was dropped) (accept / reject). Rejecting R1 or R4 rules out every on-screen DSi option except P4.
@@ -393,5 +491,5 @@ Full report: `docs/display-research/red-team.md`. All three blockers are address
 4. Want P4 (bottom-screen text, allow list) as a fallback?
 5. Phase 2: badge download at the launcher, about 570 KB per 100-achievement set, cached on SD. OK?
 6. Camera LED for challenges and leaderboards now?
-7. R7: is a *rare* lag frame acceptable while a notice is on screen (the slack gate lowers the odds but can't guarantee zero)? If not, P2 is out and P4/P0 remain.
+7. ~~R7~~ **Ruled 2026-10-12: zero lag frames required.** The top-edge P2 is out; the bottom-edge P2b (section 11) replaces it. New residuals R17-R20 need rulings.
 8. R4: patch `OS_IrqHandler` per SDK version (a code patch), or wrap the BIOS IRQ vector (one write to game DTCM)?
