@@ -23,8 +23,8 @@ How ra-compliance verifies the 9 items of `docs/compliance.md` "Audit 2026-10-12
 | 6a | session replay: old session | `stale` | `session NOT used` | `session NOT used` | `session used` |
 | 6b | session replay: re-use | `wipe` | `session.used` doesn't start with the session magic (zeroed) | same | starts with the magic |
 | 7 | in-game menu speed options | manual: a DScheevos session, open the menu (L+DOWN+SELECT), Options, screenshot | no Clock speed or VRAM mode line | same (ruling B: locked for every DScheevos session) | both lines present |
-| 8a | `BOOST_CPU`/`BOOST_VRAM` chosen before launch | `boost` | front end `boostCpu 1`; module status and journal record the speed-ups | same | (no record) |
-| 8b | excluded game | `boost-excluded` | `boostCpu 0` for Sonic Rush | same | `boostCpu 1` |
+| 8a | `BOOST_CPU`/`BOOST_VRAM` chosen before launch | `boost` | module status and journal record the speed-ups (CPU 133 MHz, VRAM on: `0x3`) | same | (no record) |
+| 8b | excluded game | `boost-excluded` | module and journal: 67 MHz for Sonic Rush (VRAM boost still recorded) | same | (no record) |
 | 8c | `DSI_MODE = 2` on a DS game | `dsimode2` | runs in DS mode with the boost recorded as a speed-up, and the exclude list applies | same | achievements off (old behaviour) |
 | 9 | "Casual" wording | manual: `grep -rn Softcore` in `dscheevos/launcher/source`, nds-bootstrap `arm9_igm` and `bootloaderi`, plus screenshots of the placard and the menu summary | no user-visible "Softcore" | - | - |
 
@@ -48,6 +48,8 @@ How ra-compliance verifies the 9 items of `docs/compliance.md` "Audit 2026-10-12
 ## Merge evidence (COMMON.md "Game-cost evidence")
 
 The branch changes nds-bootstrap and module runtime code, so its merge request must report the game's own ARM9 cycles per frame, achievements off vs on, besides lag intervals. That means melonDS with the cache model and `--thumb-cycle`, on Kirby Super Star Ultra, Mario Kart DS and one busy game from idle.md, using the gamecost lane's tooling. Any increase over the current baseline (Kirby +21% today) needs a justification. Expect no change: the fixes act at boot (file checks, a bootloader signature search instead of the cache) and in the in-game menu, not per frame. Pass: the numbers are in the merge request and within noise of the baseline. Missing numbers or an unexplained increase: report to orchestrator, re-audit on hold.
+
+Note (2026-10-13): nds-bootstrap's front end prints `boostCpu`/`dsiMode` to its console, not to `NDSBTSRP.LOG`, so the module's status and the journal are the record for item 8.
 
 ## Recording
 

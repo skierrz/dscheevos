@@ -149,8 +149,9 @@ for c in "$@"; do
   boost|dsimode2|boost-excluded)
     step=setup-$c; [ "$c" = boost-excluded ] && step=setup-boost
     if [ "$c" = boost-excluded ]; then (ROM=${ROM_EXCLUDED:?}; boot "$w" 1800 $step); else boot "$w" 1800 $step; fi
-    log=$(tr -cd '[:print:]\n' < "$w/sd/NDSBTSRP.LOG" 2>/dev/null)
-    echo "$c ($mode): front end $(echo "$log" | grep -m1 '^boostCpu' | tr -d '"') $(echo "$log" | grep -m1 '^dsiMode' | tr -d '"'); module $(grep -m1 -E '^speed-ups|module not loaded' "$w/out.txt" || echo 'no status'); $(grep -m1 -o 'speed-ups 0x[0-9a-f]*' "$w/out.txt" | sed 's/^/journal /')" ;;
+    # what nds-bootstrap applied: the module's status and the journal record it (the
+    # front end's boostCpu/dsiMode lines go to its console, not to NDSBTSRP.LOG)
+    echo "$c ($mode): module $(grep -m1 -E '^speed-ups|module not loaded' "$w/out.txt" || echo 'no status'); $(grep -m1 -o 'speed-ups 0x[0-9a-f]*' "$w/out.txt" | sed 's/^/journal /')" ;;
   *) echo "unknown case $c" ;;
   esac
   [ -n "${KEEP:-}" ] && echo "  kept $w" || rm -rf "$w"
