@@ -14,6 +14,33 @@
 #define REG_VCOUNT (*(volatile uint16_t*)0x04000006)
 #define LINES_PER_FRAME 263
 
+/* Code every idle wake runs: ARM code (the rest of the module is Thumb), so
+ * the CPSR and CP15 work below is inline instead of a call through a
+ * Thumb-to-ARM veneer each, and right after halt_entry (.text.wake, after .text.entries in module.ld; the runner counts code between the VBlank and halt entries as the VBlank call): a wake
+ * fetches a few contiguous code lines, not lines scattered over 300 KB. */
+#define WAKE_CODE __attribute__((target("arm"), section(".text.wake")))
+#define WAKE_INLINE static inline __attribute__((always_inline, target("arm")))
+WAKE_INLINE uint32_t wake_irq_off(void)
+{
+  uint32_t cpsr, t;
+  __asm__ volatile("mrs %0, cpsr\n\torr %1, %0, #0x80\n\tmsr cpsr_c, %1" : "=r"(cpsr), "=r"(t) : : "memory");
+  return cpsr;
+}
+WAKE_INLINE void wake_irq_restore(uint32_t cpsr)
+{
+  __asm__ volatile("msr cpsr_c, %0" : : "r"(cpsr) : "memory");
+}
+WAKE_INLINE void wake_wfi(void)
+{
+  __asm__ volatile("mcr p15, 0, %0, c7, c0, 4" : : "r"(0) : "memory");
+}
+WAKE_INLINE uint32_t wake_swap(volatile uint32_t* p, uint32_t v)
+{
+  uint32_t old;
+  __asm__ volatile("swp %0, %2, [%1]" : "=&r"(old) : "r"(p), "r"(v) : "memory");
+  return old;
+}
+
 dscm_status_t dscm_g_status;   /* referenced by the header in start.s */
 dscm_net_slot_t dscm_g_net[DSCM_NET_SLOTS];
 dscm_notices_t dscm_g_notices;
@@ -46,7 +73,7 @@ static struct {
   uint8_t dtcm_fixed;            /* the session gave the DTCM base */
   uint32_t dtcm;                 /* the game's DTCM base, once known */
   uint32_t capture_cpsr;         /* CPSR with IRQs on, from the caller of capture() */
-  uint32_t reserved2;
+  volatile uint32_t busy;        /* idle work running (maybe parked): dscm_lock */
 } H __attribute__((aligned(32)));
 _Static_assert(sizeof(H) == 32, "H: one cache line");
 #define g_dtcm (H.dtcm)
@@ -59,6 +86,7 @@ extern void dscm_publish_list(void* list);
 extern void dscm_dc_clean(const void* addr, uint32_t len);
 extern void dscm_dc_invalidate(const void* addr, uint32_t len);
 extern uint32_t dscm_take(volatile uint32_t* p);
+extern uint32_t dscm_lock(volatile uint32_t* p);
 static uint32_t g_notices_seen;
 static uint32_t g_cues_head;         /* last notice counted into the cues */
 static uint32_t g_cues;
@@ -121,7 +149,7 @@ static struct {
   uint32_t last, max, total, none;
 } g_idle __attribute__((aligned(32)));   /* one line, touched every wake */
 
-static void idle_frames(uint32_t lines)
+WAKE_CODE static void idle_frames(uint32_t lines)
 {
   uint32_t passed = dscm_irq.frames - g_idle.frame;
   if (passed) {
@@ -134,7 +162,6 @@ static void idle_frames(uint32_t lines)
     g_idle.last = passed > 1 ? 0 : count;
     g_idle.none += passed - 1 + !g_idle.ran;
     g_idle.frame = dscm_irq.frames;
-  H.pass_frame = dscm_irq.frames - 1;   /* the first pass is a full one */
     g_idle.lines = 0;
     g_idle.ran = 0;
   }
@@ -180,30 +207,30 @@ extern void dscm_wfi(void);
 #define REG_IE (*(volatile uint32_t*)0x04000210)
 #define REG_IF (*(volatile uint32_t*)0x04000214)
 #define g_capture_cpsr (H.capture_cpsr)
-static int interrupt_pending(void)
+WAKE_CODE static int interrupt_pending(void)
 {
   uint32_t before;
   if (!(REG_IE & REG_IF))
     return 0;
   before = REG_VCOUNT;
-  dscm_irq_restore(g_capture_cpsr);
-  dscm_irq_off();
+  wake_irq_restore(g_capture_cpsr);
+  wake_irq_off();
   return lines_between(before, REG_VCOUNT) >= 2;
 }
 
 /* A snapshot when the game halts. Returns with IRQs still masked, and the
  * CPSR to put back: the caller may halt first. */
 /* The game sets its DTCM up before its first frame; the module starts before that. */
-static void refresh_dtcm(void)
+WAKE_CODE static void refresh_dtcm(void)
 {
   if (!H.dtcm_fixed)          /* the session gave no DTCM base: read the game's */
     g_dtcm = dscm_dtcm_base();
 }
 
-static uint32_t capture(void)
+WAKE_CODE static uint32_t capture(void)
 {
   refresh_dtcm();
-  g_capture_cpsr = dscm_irq_off();
+  g_capture_cpsr = wake_irq_off();
   dsc_capture();
   return g_capture_cpsr;
 }
@@ -519,6 +546,7 @@ int module_init(const dscm_boot_t* boot)
   }
   g_initialized = 1;
   g_idle.frame = dscm_irq.frames;
+  H.pass_frame = dscm_irq.frames - 1;   /* the first pass is a full one */
   dscm_irq.on = dscm_g_status.active ? 1 : 0;
   return dscm_g_status.active ? 0 : -1;
 }
@@ -582,6 +610,83 @@ static void update_progress(void)
 void module_reset(void)
 {
   H.reset_pending = 1;
+  H.busy = 0;   /* a pass the game's threads were running never resumes */
+}
+
+/* Work only once a frame or when something is waiting (see module_idle):
+ * all of it read from H, one cache line. */
+WAKE_INLINE int work_wanted(void)
+{
+  return g_frames != H.pass_frame || H.more || H.requests || H.net_busy || H.reset_pending || H.progress_stale;
+}
+
+/* One full pass of idle work, the lock held (H.busy). Evaluation, answers,
+ * the network, notices; no snapshot, no halt. It may be parked at any
+ * instruction (a game thread preempts the idle thread; idle-coverage's
+ * BIOS-wait gate parks its coroutine) and resumed later: the lock keeps
+ * every other caller out of the core meanwhile. */
+static int idle_step_locked(void)
+{
+  uint32_t start, end, used;
+  int new_frame, evaluated;
+
+  if (!work_wanted())
+    return 0;
+  new_frame = g_frames != H.pass_frame;
+  H.pass_frame = g_frames;
+
+  if (H.reset_pending) {
+    H.reset_pending = 0;
+    dsc_reset();
+  }
+  if (H.requests)
+    poll_network();   /* answers that came in since the last pass */
+  if (H.progress_stale)
+    update_progress();
+
+  start = REG_VCOUNT;
+  evaluated = dsc_idle();   /* queued frames; answers, rcheevos' own timers: retries, pings */
+  if (evaluated) {
+    end = REG_VCOUNT;
+    used = lines_between(start, end);
+    dscm_g_status.eval_lines = (dscm_g_status.eval_lines * 7 + used * 16) / 8;
+  }
+  if (new_frame || evaluated) {
+    clean_notices();
+    update_cues();
+  }
+
+  /* Then the network: achievements come first. Every pass while something
+   * is in flight or waiting (so an unlock goes out at once), else once a
+   * frame for lwIP's timers and frames from the access point. */
+  if (H.net_started && (new_frame || H.net_busy || H.requests)) {
+    net_service(millis());
+    H.net_busy = net_busy() != 0;
+    dscm_g_status.net_state = net_state();
+    dscm_g_status.net_detail = net_detail();
+    dscm_g_status.tls_handshake_ms = net_handshake_ms();
+    dscm_g_status.net_rejoins = link_rejoins();
+    poll_network();
+  }
+  /* Work appears only through a VBlank (a new frame) or a pass like this
+   * one (answers, events): what is left now is all the next wakes need. */
+  H.more = dsc_work_pending() != 0;
+  if (new_frame || evaluated)
+    publish_stats();
+  return 1;
+}
+
+/* One unit of idle work for a caller other than the OS_Halt path (see
+ * idle_step_locked). Returns 0 when there was nothing to do, or the work is
+ * already running elsewhere (parked). */
+int dscm_idle_step(void)
+{
+  int r;
+  if (!dscm_irq.on || dscm_lock(&H.busy))
+    return 0;
+  r = idle_step_locked();
+  H.busy = 0;
+  return r;
 }
 
 /* Called on the module's own stack from halt_entry, in the game's idle thread.
@@ -592,13 +697,11 @@ void module_reset(void)
  * The idle lines in the status stop at the VBlank that preempts a pass (see
  * vblank_entry), so they leave out the game's frame but also the rest of
  * that pass; idle_cut counts such passes.
- * Returns nonzero when the pass took a scanline or more: an IRQ may have come
- * and gone meanwhile, so halt_entry returns to the game's loop instead of
- * waiting for the next one. */
-int module_idle(int idle_loop)
+ * Returns nonzero when it halted (the caller returns to the game's loop),
+ * 0 for the stock halt. */
+WAKE_CODE int module_idle(int idle_loop)
 {
-  uint32_t start, end, used;
-  int new_frame, evaluated;
+  uint32_t start;
 
   start = REG_VCOUNT;
   if (!dscm_irq.on)   /* initialized and active */
@@ -610,72 +713,34 @@ int module_idle(int idle_loop)
     H.halts_other++;
     return 0;
   }
+  /* idle work parked elsewhere (dscm_idle_step): the stock halt */
+  if (wake_swap(&H.busy, 1))
+    return 0;
   H.halts_idle++;
   {
-    uint32_t cpsr = dscm_irq_off();
+    uint32_t cpsr = wake_irq_off();
     idle_frames(0);
     dscm_irq.idle_start = start;
     dscm_irq.idle_open = 1;
-    dscm_irq_restore(cpsr);
+    wake_irq_restore(cpsr);
   }
 
   /* The idle thread wakes at every IRQ, often many times a frame (20-40 in
    * Kirby Super Star Ultra). A full pass runs on the first wake after a
    * VBlank, and on any wake with work waiting: frames to evaluate, answers,
-   * a reset, the network in the middle of something. Every other wake only
-   * takes the snapshot and halts, touching as few cache lines as it can:
-   * the state it needs is H, g_idle and dscm_irq. Nothing that a full pass
-   * would do on such a wake is skipped: dsc_idle() would find nothing to do
+   * a reset, the network in the middle of something (work_wanted, from one
+   * cache line). Every other wake only takes the snapshot and halts,
+   * touching as few lines as it can (H, g_idle, dscm_irq). Nothing a full
+   * pass would do on such a wake is skipped: dsc_idle() would find nothing
    * (dsc_work_pending), and the network gets a pass only when busy or once
-   * a frame. Work can only appear through a VBlank (a new frame) or a full
-   * pass (answers, events), which sets H.more and H.net_busy as it ends. */
-  new_frame = g_frames != H.pass_frame;
-  if (new_frame || H.more || H.requests || H.net_busy || H.reset_pending || H.progress_stale) {
-    H.pass_frame = g_frames;
-
-    if (H.reset_pending) {
-      H.reset_pending = 0;
-      dsc_reset();
-    }
-    if (H.requests)
-      poll_network();   /* answers that came in since the last pass */
-    if (H.progress_stale)
-      update_progress();
-
-    if (backlog()) {
-      /* Evaluation may take the rest of the frame: copy the memory the game
-       * halted with first, so the next VBlank has it even if the copy before
-       * the halt below comes too late. */
-      dscm_irq_restore(capture());
-      start = REG_VCOUNT;
-      evaluated = dsc_idle();
-      end = REG_VCOUNT;
-      used = lines_between(start, end);
-      dscm_g_status.eval_lines = (dscm_g_status.eval_lines * 7 + used * 16) / 8;
-    }
-    else {
-      evaluated = dsc_idle();   /* answers, rcheevos' own timers: retries, pings */
-    }
-    if (new_frame || evaluated) {
-      clean_notices();
-      update_cues();
-    }
-
-    /* Then the network: achievements come first. Every pass while something
-     * is in flight or waiting (so an unlock goes out at once), else once a
-     * frame for lwIP's timers and frames from the access point. */
-    if (H.net_started && (new_frame || H.net_busy || H.requests)) {
-      net_service(millis());
-      H.net_busy = net_busy() != 0;
-      dscm_g_status.net_state = net_state();
-      dscm_g_status.net_detail = net_detail();
-      dscm_g_status.tls_handshake_ms = net_handshake_ms();
-      dscm_g_status.net_rejoins = link_rejoins();
-      poll_network();
-    }
-    H.more = dsc_work_pending() != 0;
-    if (new_frame || evaluated)
-      publish_stats();
+   * a frame. */
+  if (work_wanted()) {
+    /* Evaluation may take the rest of the frame: copy the memory the game
+     * halted with first, so the next VBlank has it even if the copy before
+     * the halt below comes too late. */
+    if (backlog())
+      wake_irq_restore(capture());
+    idle_step_locked();
   }
   /* Last, the snapshot and the halt, with IRQs masked from one to the
    * other: the idle thread runs only when every game thread is blocked, so
@@ -691,9 +756,10 @@ int module_idle(int idle_loop)
     uint32_t cpsr = capture();
     start = dscm_irq.idle_start;
     /* else a VBlank came meanwhile and counted the pass */
-    idle_frames(dscm_take(&dscm_irq.idle_open) ? lines_since(start) : 0);
-    dscm_wfi();
-    dscm_irq_restore(cpsr);
+    idle_frames(wake_swap(&dscm_irq.idle_open, 0) ? lines_since(start) : 0);
+    H.busy = 0;       /* IRQs masked: nothing runs before the halt */
+    wake_wfi();
+    wake_irq_restore(cpsr);
     return 1;   /* halted here */
   }
 }

@@ -330,6 +330,16 @@ dscm_take:
 	mov	r0, r2
 	bx	lr
 
+@ uint32_t dscm_lock(volatile uint32_t* p): set *p to 1 in one step and
+@ return what it was (0: the caller holds the lock now).
+	.global dscm_lock
+	.type dscm_lock, %function
+dscm_lock:
+	mov	r1, #1
+	swp	r2, r1, [r0]
+	mov	r0, r2
+	bx	lr
+
 @ uint32_t dscm_irq_off(void): mask IRQs (CPSR.I), return the old CPSR.
 @ void dscm_irq_restore(uint32_t cpsr): put the old IRQ mask back.
 	.global dscm_irq_off
