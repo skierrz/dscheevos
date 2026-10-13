@@ -350,11 +350,12 @@ static void dbg_log(const char* m)
 static uint32_t max_addresses = 1024;    /* config.max_addresses for start_with */
 static int spectator;
 static int clock_utc;                     /* platform.clock_is_utc for start_with */
+static int clock_bits;                    /* platform.clock (DSCM_CLOCK_*) for start_with */
 static uint32_t (*platform_frame)(void);
 static void start_with(int hardcore, uint32_t slots, uint32_t bytes)
 {
   dsc_platform_t p = { read_memory, millis, http_send, on_event, dbg_log, unix_time, &journal, &notices, publish_list, platform_frame,
-                       use_map ? memory_map : NULL, interrupt_pending, clock_utc };
+                       use_map ? memory_map : NULL, interrupt_pending, clock_utc, clock_bits };
   dsc_config_t c = { "http://mock", "tester", "tok", hardcore, max_addresses, slots, bytes, spectator, halt_mode, idle_budget };
   seen_valid = 0;
   table_full_logs = 0;
@@ -692,9 +693,12 @@ static void unlock_1001(void)
 static void test_journal_time_base_utc(void)
 {
   clock_utc = 1;
+  clock_bits = DSCM_CLOCK_CPU_133;    /* the session's speed-up is recorded */
   start(1);
   clock_utc = 0;
+  clock_bits = 0;
   CHECK(journal.time_base == DSCM_JOURNAL_TIME_UTC);
+  CHECK(journal.clock == DSCM_CLOCK_CPU_133);
   fake_time = 1700000123;
   unlock_1001();
   CHECK(journal.count == 1 && journal.e[0].unix_time == 1700000123);
@@ -708,6 +712,7 @@ static void test_journal_unlock_marked_sent(void)
   CHECK(!strcmp(journal.username, "tester"));
   CHECK(!strcmp(journal.game_hash, "0123456789abcdef0123456789abcdef"));
   CHECK(journal.time_base == DSCM_JOURNAL_TIME_CONSOLE);   /* clock offset unknown */
+  CHECK(journal.clock == 0);
   fake_time = 1700000123;
   unlock_1001();
   CHECK(award_count == 1);

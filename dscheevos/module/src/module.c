@@ -410,6 +410,8 @@ int module_init(const dscm_boot_t* boot)
   platform.event = on_event;
   platform.unix_time = dscm_unix_time;
   platform.clock_is_utc = (g_boot.flags & DSCM_BOOT_UTC_KNOWN) != 0;
+  platform.clock = g_boot.clock;
+  dscm_g_status.clock = g_boot.clock;
   platform.journal = (dscm_journal_t*)DSCM_UNCACHED(&dscm_g_journal.j);
   platform.notices = &dscm_g_notices;
   platform.publish_list = publish_list;

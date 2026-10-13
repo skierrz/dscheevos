@@ -108,6 +108,8 @@ typedef struct dsc_platform_t {
   int (*interrupt_pending)(void);
   /* unix_time is UTC (else a console clock whose offset from UTC is unknown). */
   int clock_is_utc;
+  /* DSCM_CLOCK_*: the speed-ups the session runs with, for the journal. */
+  int clock;
 } dsc_platform_t;
 
 typedef struct dsc_config_t {
