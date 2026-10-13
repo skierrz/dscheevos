@@ -14,4 +14,10 @@
  * and order as its loadApFix()); `name` gets the first one found. */
 int apfix_check(const char* rom_path, const char* bootstrap_nds, char* name, int name_size);
 
+/* nds-bootstrap runs the ARM7 binary of a user-chosen donor ROM for this
+ * game (Yoshi's Island DS, ARM7 0x25F70 bytes) when one is set; not in
+ * hardcore, where the game would run its own ARM7 binary. Returns 1 if this
+ * game would use a donor. */
+int donor20_needed(const char* rom_path);
+
 #endif
