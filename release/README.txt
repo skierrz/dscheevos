@@ -47,8 +47,8 @@ Playing
   You can turn achievements off, switch hardcore on or off, or log out.
 
 Hardcore (on by default) follows RetroAchievements' rules. RetroAchievements
-hasn't approved DScheevos yet, so it counts your hardcore unlocks as softcore.
-The launcher and the in-game menu say so ("Rules on, RA counts as softcore"). While a
+hasn't approved DScheevos yet, so it counts your hardcore unlocks as Casual.
+The launcher and the in-game menu say so ("Rules on, RA counts as Casual"). While a
 hardcore session runs, nds-bootstrap's cheats, RAM viewer, RAM dump and
 the slow-motion refresh rates are off, and only nds-bootstrap's built-in
 AP fixes apply (files in _nds/nds-bootstrap/apFix/ are ignored; a game
