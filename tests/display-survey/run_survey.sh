@@ -13,7 +13,7 @@ frames=${FRAMES:-54000}
 romdir=${ROMDIR:?set ROMDIR to the directory of .nds dumps}
 out=$1; shift
 mkdir -p "$out"
-[ -f "$out/input.txt" ] || python3 "$here/make_script.py" "$frames" > "$out/input.txt"
+[ -f "$out/input.txt" ] || python3 "$here/make_script.py" "$frames" ${TOUCHY:+--touchy} > "$out/input.txt"
 for rom in "$@"; do
   slug=$(printf '%s' "${rom%.nds}" | tr -c 'A-Za-z0-9\n' '_' | cut -c1-60)
   [ -f "$out/$slug.json" ] && { echo "skip $slug"; continue; }
