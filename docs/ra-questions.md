@@ -4,6 +4,8 @@ The questions DScheevos needs RetroAchievements to answer before it can apply fo
 
 Drafted 2026-10-11 (questions 1-13, first draft in `docs/overlay-research.md`), expanded 2026-10-12 with the owner's pending decisions and the compliance audit. Not sent yet.
 
+**On hold (owner, 2026-10-12):** don't send these until DScheevos is ready to show RA in full. Keep them current in the meantime.
+
 **Before sending**, check that these statements are true of the build (fixes assigned 2026-10-12, see `docs/compliance.md`):
 - Q10: the hardcore fixes from the 2026-10-12 audit have landed (`docs/compliance.md`, "Audit 2026-10-12": user patch files, widescreen code file, soft-reset boot file, patch offset cache, donor ARM7, session replay), and the 133 MHz / VRAM boost options are forced off in DScheevos sessions.
 - Q2: the UI says "Casual" (RA's current word), not "Softcore".
