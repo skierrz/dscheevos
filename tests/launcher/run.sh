@@ -12,7 +12,9 @@
 #   HARDCORE=0, SPECTATOR=1, MOCK_ARGS (extra mock server options, e.g. --fail-awards),
 #   ENABLED=0 (achievements off in dscheevos.ini: the game starts without them),
 #   MODULE=dir (dscheevos9.bin and .map from another build),
-#   RUNNER_ARGS (extra runner options, e.g. --wpa-ap melonAP:<PMK> for a WPA2 access point).
+#   RUNNER_ARGS (extra runner options, e.g. --wpa-ap melonAP:<PMK> for a WPA2 access point),
+#   LAUNCHER=file (another dscheevos-launcher.nds), SD_SETUP="command" (run with the SD
+#   card's directory as its last argument before the emulator starts, e.g. to add files).
 # Offline queue: run once with MOCK_ARGS=--fail-awards, then again with the same WORK; the
 # second launcher run sends the unlocks from _nds/dscheevos/pending.bin (logged with "offset").
 # Usage: run.sh SET.json FRAMES [status.py checks, e.g. --expect 9901 --never 9902]
@@ -46,10 +48,11 @@ cp "$ROM" "$sd/games/game.nds"
 printf '[NDS-BOOTSTRAP]\nNDS_PATH = sd:/games/game.nds\nSAV_PATH = sd:/games/game.sav\nLOGGING = 1\nLOADING_SCREEN = 0\nDSI_MODE = %s\n' "${DSI_MODE:-0}" > "$sd/_nds/nds-bootstrap.ini"
 printf '[DSCHEEVOS]\nENABLED = %s\nHARDCORE = %s\nSEND_DURING_PLAY = %s\nUSERNAME = tester\nTOKEN = MockToken\nHOST = https://10.64.0.1:%s\nSPECTATOR = %s\n' \
   "${ENABLED:-1}" "${HARDCORE:-1}" "${LIVE:-1}" "$port" "${SPECTATOR:-0}" > "$sd/_nds/dscheevos/dscheevos.ini"
-cp "$repo/dscheevos/launcher/dscheevos-launcher.nds" "$sd/_nds/nds-bootstrap-release.nds"
+cp "${LAUNCHER:-$repo/dscheevos/launcher/dscheevos-launcher.nds}" "$sd/_nds/nds-bootstrap-release.nds"
 cp "$repo/dscheevos/launcher/loader/out/load.bin" "$module/dscheevos9.bin" "$work/tls/ca.pem" "$sd/_nds/dscheevos/"
 cp "$BOOTSTRAP" "$sd/_nds/dscheevos/nds-bootstrap.nds"
 cp "$DSI_FILES/dsinand.bin" "$work/nand.bin"
+[ -z "${SD_SETUP:-}" ] || $SD_SETUP "$sd"
 
 python3 "$repo/tools/mock-ra-server/server.py" --bind 0.0.0.0 --port "$port" --set "$set" --log "$work/events.jsonl" \
   --tls-cert "$work/tls/server.pem" --tls-key "$work/tls/server.key" ${MOCK_ARGS:-} > "$work/mock.log" 2>&1 &
