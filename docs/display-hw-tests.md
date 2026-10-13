@@ -57,3 +57,8 @@ docker run --rm --platform linux/amd64 -v "$PWD:/src" -w /src devkitpro/devkitar
 ```
 
 The smoke run in melonDS DSi mode (2026-10-12) completed and wrote its log to the emulated SD. The banner showed on lines 0-31 over the stand-in game. melonDS answers none of the questions: NDMA intervals aren't modelled, so H2's IRQ lands at once (line 192) and the ROM correctly counts every new-timing entry as late. melonDS's DMA stalls are worst-case (H5 showed a 52% loss in the strip lines), and its I2C isn't real (H9). It only shows the ROM runs, logs and draws.
+
+T1 and H11 smoke in melonDS (2026-10-12). The machinery works, but melonDS can't measure the answers:
+- **T1:** calibrated at 0.30 iterations/tick. The bottom strip showed on 600/600 light frames, and heavy frames never overran with or without the strip, down to k = 100 ticks (200 ARM9 cycles). melonDS has no cache-pollution or bus model, so this is expected; the DSi gives X.
+- **H11a:** reads after stopping the FIFO matched plain frames (2550 vs 2555).
+- **H11b:** no difference between no counter, RAM writes and I/O writes.
