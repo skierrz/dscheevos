@@ -39,6 +39,8 @@ Status: **done**, **partial**, **missing**, or **n/a** (the feature doesn't exis
 | No switch from casual to hardcore mid-session | **done** | The mode is chosen in the launcher before the game boots. The session file is used once. Nothing in the game changes it. |
 | Memory editors, debuggers, scripting/TAS/input playback | **done** | RAM viewer (it can edit memory) hidden in hardcore; RAM dump hidden whenever DScheevos runs. No scripting or input playback exists in shipped builds (the lab rig's input injection is a lab-only build, never shipped). |
 
+**Development and performance target: 67 MHz** (owner ruling, 2026-10-12). DScheevos is built, measured and gated for the DSi at 67 MHz with every boost off, since most players play that way. 133 MHz stays only as a toggle for testing and for players who choose it (ruling B above, provisional): off by default, with the exclude list enforced.
+
 ## C. Identity
 
 | Requirement | Status | Where |
