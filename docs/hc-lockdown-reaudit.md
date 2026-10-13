@@ -45,6 +45,10 @@ How ra-compliance verifies the 9 items of `docs/compliance.md` "Audit 2026-10-12
 
 `make -C dscheevos/core test`, `make -C dscheevos/module/tests test`, the launcher host tests (`dscheevos/launcher/tests`), the TWiLight chain for Kirby and Pokémon (`docs/handoff.md`), and the offline-queue pair (`--fail-awards`, then normal). With the time-base fix in the branch, check that the second run's award times (`o=`) match the host clock within a minute when `--rtc` sets the console to local time.
 
+## Merge evidence (COMMON.md "Game-cost evidence")
+
+The branch changes nds-bootstrap and module runtime code, so its merge request must report the game's own ARM9 cycles per frame, achievements off vs on, besides lag intervals. That means melonDS with the cache model and `--thumb-cycle`, on Kirby Super Star Ultra, Mario Kart DS and one busy game from idle.md, using the gamecost lane's tooling. Any increase over the current baseline (Kirby +21% today) needs a justification. Expect no change: the fixes act at boot (file checks, a bootloader signature search instead of the cache) and in the in-game menu, not per frame. Pass: the numbers are in the merge request and within noise of the baseline. Missing numbers or an unexplained increase: report to orchestrator, re-audit on hold.
+
 ## Recording
 
 Results go into `docs/compliance.md` ("Audit 2026-10-12": the Today column becomes "verified <date>") with the `lockdown.sh` output lines. A fail goes to orchestrator with the case's output.
