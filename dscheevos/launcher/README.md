@@ -10,6 +10,7 @@ Starts each RetroAchievements session before the game boots. TWiLight Menu++ run
 6. Freezes its Wi-Fi driver on the ARM7 without disconnecting (`arm7/`), so the chip stays associated and the game can keep sending unlocks over the same connection. Then it boots the DScheevos build of nds-bootstrap (`_nds/dscheevos/nds-bootstrap.nds`). That build loads the module with the session. `source/chainload.c` does the boot through devkitPro's nds-bootloader (`_nds/dscheevos/load.bin`, built in `loader/`), the way TWiLight Menu++ and hbmenu boot programs.
 
 In hardcore, nds-bootstrap uses only its built-in AP-fix patches and ignores user files in `_nds/nds-bootstrap/apFix/` (they could patch the game after the launcher hashed it). If such a file exists for the game and nds-bootstrap has no built-in fix for it, hardcore isn't offered: the launcher asks to play in Casual (with the file) or without achievements.
+The same goes for the one build of Yoshi's Island DS that nds-bootstrap runs with a donor ROM's ARM7 binary (`DONOR20_NDS_PATH`): hardcore doesn't load the donor, so while one is set that game isn't offered hardcore.
 
 If the game has no set, achievements are off, or the game will run in DSi mode, it boots the game without achievements. If it can't get online, it asks: try again, or play without achievements. Hardcore needs a session started online, so it doesn't offer "play now, send later".
 

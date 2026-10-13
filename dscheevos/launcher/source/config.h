@@ -23,5 +23,8 @@ int settings_save(const dsc_settings_t* s);
 
 /* NDS_PATH and DSI_MODE from nds-bootstrap.ini; returns 0 if NDS_PATH is missing. */
 int bootstrap_ini_game(char* path, int path_size, int* dsi_mode);
+/* DONOR20_NDS_PATH: the ROM whose ARM7 binary nds-bootstrap runs for one
+ * build of Yoshi's Island DS. Returns 0 if it isn't set. */
+int bootstrap_ini_donor20(char* path, int path_size);
 
 #endif

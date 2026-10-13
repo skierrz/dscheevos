@@ -91,6 +91,20 @@ static void on_bootstrap(const char* key, const char* value, void* ud)
   else if (!strcmp(key, "DSI_MODE")) *g->dsi_mode = atoi(value);
 }
 
+static void on_donor20(const char* key, const char* value, void* ud)
+{
+  game_ini_t* g = (game_ini_t*)ud;
+  if (!strcmp(key, "DONOR20_NDS_PATH")) copy(g->path, (size_t)g->path_size, value);
+}
+
+int bootstrap_ini_donor20(char* path, int path_size)
+{
+  game_ini_t g = { path, path_size, NULL };
+  path[0] = '\0';
+  read_ini("sd:/_nds/nds-bootstrap.ini", on_donor20, &g);
+  return path[0] != '\0';
+}
+
 int bootstrap_ini_game(char* path, int path_size, int* dsi_mode)
 {
   game_ini_t g = { path, path_size, dsi_mode };
