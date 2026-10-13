@@ -4,7 +4,7 @@ How ra-compliance verifies the 9 items of `docs/compliance.md` "Audit 2026-10-12
 
 ## Set-up
 
-- Worktree on the merged `perf`, submodules updated, nds-bootstrap, module and launcher built there. The **old build** is nds-bootstrap from `perf` before the merge (to show each reproducer catches the hole).
+- Worktree on the merged `perf`, submodules updated, nds-bootstrap, module and launcher built there, each docker build through `~/Developer/DScheevos/bin/build-lock` (2 machine-wide slots; `make -j2` at most). The **old build** is nds-bootstrap from `perf` before the merge (to show each reproducer catches the hole).
 - `ROM` = Kirby Super Star Ultra (USA) (built-in apFix in cheat form); `ROM_USERONLY` = New Super Mario Bros. (USA, Australia) (no built-in fix); `ROM_EXCLUDED` = Sonic Rush (USA) (on `twlClockExcludeList`); `SRL` = `tests/module/out/module-test.nds`.
 - One emulator slot, cases one after another: `emu-lock -l ra-reaudit tests/hardcore/lockdown.sh <cases>`, with `MODE=hc`, then `MODE=casual`, then `MODE=hc` with the old `BOOTSTRAP`.
 
