@@ -136,6 +136,45 @@ So RA's own validation accepts that the client shows the indicators by default a
 
 **LED cues and the requirement.** On the strict reading, "displayed during gameplay" means shown on screen with what it refers to. An LED (the Wi-Fi LED blink or hold, or a power-LED colour via BPTWL 63h, such as purple while a challenge is active) says that something is happening, not which achievement. So an LED **does not count** toward the requirement on its own. It is a welcome extra, alongside the on-screen indicator or when the player has hidden it. For the power LED: restore its normal state when the game exits or resets, and never cover the low-battery red: low battery always wins, so a player isn't misled about power. Both are display's to implement.
 
+## Evaluating one set on two CPUs (ARM9 + ARM7)
+
+Question (2026-10-12, eval-speed's ARM7 lane, `evalspeed-team/arm7-notes.md`): may one game's set be evaluated by two unmodified rcheevos instances, one on the ARM9 and one on the ARM7, each with a disjoint subset of the achievements, on the same snapshot of each frame? RA's list doesn't mention evaluation layout. The rules that decide it are A ("triggers ... must work properly"; rich presence and leaderboards "must function"), C (one client identity), and ours: rcheevos unmodified, "use rcheevos for evaluation, don't reimplement it". Checked against rcheevos `683197d`.
+
+**1. Per-achievement results would be identical.** An achievement's state depends only on its own conditions and on its memrefs' values. Each memref's current, delta and prior values are a function of the frames' memory alone, and `rc_runtime_do_frame` updates every memref of its instance every frame. A memref shared by achievements on both sides is duplicated, one copy per instance, and both copies follow the same frames. So they hold the same delta and prior values, provided **both instances evaluate every frame, in order, from the same snapshot**, with resets applied to both at the same frame. Hit counts, Remember/Recall and measured values are per condition set, so nothing crosses the split.
+
+**2. Rich presence and leaderboards stay with the rc_client instance.** The rich-presence string goes into rc_client's pings. rc_client owns leaderboard start, submit and cancel, the trackers, and submission. Measured-progress and challenge-indicator events are rc_client's work on the runtime's events. None of them can move to an instance that isn't the session's rc_client without reimplementing rc_client.
+
+**3. The server session: this is the blocker.** rc_client's public API has no way to evaluate only part of a loaded set, and no way to report a trigger evaluated elsewhere. The award path (`rc_client_award_achievement`, with retries, the offline queue, the hardcore and casual bookkeeping, mastery and notices) is internal. So:
+
+| Variant | Verdict |
+|---|---|
+| Two rc_clients, each logged in and starting a session | **ruled out**: two server sessions for one play (two `startsession`, two ping streams with different rich presence), and the two would contradict each other on the server |
+| ARM7 runs the bare `rc_runtime` on its subset, and our glue sends its unlocks with `rc_api` requests | **ruled out**: it reimplements rc_client's award, retry, mastery, hardcore and notice logic. rc_client would never know those achievements unlocked (menu, mastery, "already unlocked" state) |
+| One rc_client, with our glue writing its internal state (deactivating ARM7-owned triggers in its runtime, injecting triggers) | **ruled out**: it writes rcheevos' private structures to change rcheevos' behaviour, which is modifying rcheevos in effect. It would also break with upstream `aed817f` (runtime types made internal) |
+| **One rc_client instance, run by whichever CPU is free, one frame at a time** (ownership passes between the CPUs; never both at once) | **compliant**: one instance, one session, results identical by construction. Engineering conditions: rc_client keeps function pointers (callbacks, scheduled callbacks into rcheevos' own static functions, and `server_call`, which can't be reset publicly). So both CPUs must run **one image** at one address, built for armv4t (the ARM9 runs it too), in RAM both CPUs see. The ARM9 cleans and invalidates its D-cache (4 KB, all of it) at each hand-over, and the ARM7 lane measures the speed cost (ARM7 code in main RAM ran about 2.5x slower than from WRAM) |
+| Everything on the ARM7 (one instance, the ARM9 only captures and sends) | compliant; capacity is eval-speed's question |
+
+**What a determinism proof must show** (for the hand-over variant, or any other that gets proposed):
+- **Inputs:** all 32 real sets, each with a recorded per-frame snapshot stream of at least 10,000 frames from real play (`private/ramdumps` and the idle-budget scripts), plus synthetic streams that hit every condition type.
+- **Compared against** a single stock rc_client on the ARM9 (or on the host), the per-frame event stream must be **byte-identical** frame by frame:
+  - unlock IDs;
+  - measured progress values and strings;
+  - challenge show and hide;
+  - leaderboard start, fail and submit with values, and tracker values;
+  - the rich-presence string every frame;
+  - each server request in order, with its parameters, timestamps excepted;
+  - the order of events within a frame.
+- **Scenarios** that must be covered:
+  - hand-over at every frame (alternating), at random frames, and never;
+  - a reset mid-stream;
+  - a hardcore-to-casual switch, as in `docs/dropped-frames.md`;
+  - the in-game menu pause;
+  - a session starting with achievements already unlocked;
+  - mastery;
+  - a pointer-chain-heavy set (HG/SS) and a leaderboard-heavy one.
+- **Hardware:** the same comparison on the DSi with the event stream logged, at least one set over 30 minutes.
+- **CI:** the host part of the comparison runs in CI, as the float-operand digest does.
+
 ## Request options
 
 | Option | What it sends | Strict reading | Result |
