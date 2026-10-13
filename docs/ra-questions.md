@@ -114,7 +114,7 @@ A few sets need more CPU than a 67 MHz DSi has in a frame, even using all the ga
 
 We will never evaluate part of a set, skip conditions or check some achievements less often (another DS project does that; it changes how achievements behave).
 
-**Ask:** may the launcher refuse such a set up front ("too heavy for the DSi: play this game without achievements, or on an emulator")? Would you rather it allowed casual with a warning?
+**Ask:** may the launcher refuse such a set up front ("too heavy for the DSi: play this game without achievements, or on an emulator")? We won't run casual with frames skipped, since the triggers wouldn't work properly. Would RA consider a sanctioned subset for such games (a separate set entry, as RA's subsets are), so DSi players get the achievements a DSi can evaluate every frame? (Options and reasoning: `docs/beyond-bound-sets.md`.)
 
 ### 9. Games we can't hook
 
