@@ -12,6 +12,7 @@ the login2, achievementsets and startsession replies, each followed by
 1 to 4 NULs up to a multiple of 4 (DSCM_SESSION_PAD).
 """
 import argparse
+import calendar
 import struct
 import sys
 import time
@@ -58,7 +59,9 @@ def build(args):
     head += struct.pack("<B", 0 if args.softcore else 1)    # hardcore
     assert len(head) == FLAGS_OFFSET, len(head)
     head += struct.pack("<Bx", BOOT_SPECTATOR if args.spectator else 0)  # flags, reserved
-    head += struct.pack("<II", 0, int(args.unix_time or time.time()))
+    # the console clock keeps local time and has no time zone: nds-bootstrap
+    # compares this against it and refuses an old session
+    head += struct.pack("<II", 0, int(args.unix_time or calendar.timegm(time.localtime())))
     head += struct.pack("<3I", *offsets) + struct.pack("<3I", *lengths)
     # network during play (mac, valid, ip, netmask, gateway, dns) and extra CA: none offline
     head += bytes(6) + struct.pack("<BB", 1 if args.net else 0, 0) + struct.pack("<4I", 0, 0, 0, 0) + struct.pack("<II", 0, 0)

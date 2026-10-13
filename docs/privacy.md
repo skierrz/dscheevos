@@ -31,7 +31,7 @@ All in `sd:/_nds/dscheevos/`:
 | File | What it holds |
 |---|---|
 | `dscheevos.ini` | your username, the login token, and your settings. Never your password. |
-| `session.bin`, then `session.used` | the server's replies for the game you started: its achievement set, the login token and the network addresses the console got from your Wi-Fi network. No Wi-Fi key. Rewritten each time a game starts. |
+| `session.bin`, then `session.used` | the server's replies for the game you started: its achievement set, the login token and the network addresses the console got from your Wi-Fi network. No Wi-Fi key. Rewritten each time a game starts; nds-bootstrap zeroes `session.used` once the game has it in memory. |
 | `pending.bin` | unlocks and leaderboard entries not yet sent (username, game hash, achievement or leaderboard, score, time). Written only at safe points: when you open the in-game menu, and before Reset Game, Exit or a soft reset. The launcher sends them at the next start and then empties the file. |
 | `unsent/000.bin` to `unsent/999.bin` | copies of `pending.bin` that couldn't be sent yet: when sending failed, when a spectator session started (what was waiting is set aside for a normal session), or when they belong to another user who logged in on this console. Each holds the same data as `pending.bin`. The launcher sends a file when its user is logged in and then deletes it; until then, including another user's, it is kept. |
 | `pending.spectator` | an empty marker: the last session was in spectator mode, so its `pending.bin` is emptied without being sent. Deleted at the next start. |
@@ -51,7 +51,7 @@ DScheevos collects no personal data for itself and keeps no telemetry, so the DS
 
 ## Deleting your data
 
-- **Log out:** in the DScheevos settings (press A on the game in TWiLight Menu++, then hold SELECT), press Y. This removes your username and login token from `dscheevos.ini`. The last game's `session.used` keeps a copy of the token, and `pending.bin` and the `unsent` folder keep your username and the unlocks not yet sent, until you delete them. Deleting `pending.bin` and the `unsent` folder throws those unlocks away.
+- **Log out:** in the DScheevos settings (press A on the game in TWiLight Menu++, then hold SELECT), press Y. This removes your username and login token from `dscheevos.ini`. `pending.bin` and the `unsent` folder keep your username and the unlocks not yet sent, until you delete them. Deleting `pending.bin` and the `unsent` folder throws those unlocks away.
 - **Remove everything:** delete the `_nds/dscheevos` folder from the SD card (this also removes DScheevos itself).
 - **On RetroAchievements:** your account and the unlocks it holds are managed on retroachievements.org.
 
