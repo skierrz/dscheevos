@@ -49,8 +49,11 @@ The last four lines count the SD card's 512-byte blocks in the 22 frames around 
 | VBlank count over the menu (+2 frames before) | +3 | +2: the game is let go at the start of a VBlank |
 | OS tick for a 5 s and a 15 s menu | +34 to +159 ms | +34 to +176 ms (unchanged: a pause, see above) |
 | SD per open / close, DScheevos session | 40+40 KB / 40+40 KB | 40 KB read on the first open, then 0 / 0 |
-| second open in Pokemon; first close in NSMB | hung in melonDS (see below) | fine |
+| second open in Pokemon; close in NSMB | hung in melonDS (see below) | fine (both races fixed) |
 
 Kirby rewrites its sub-screen registers every frame (DMA), so it can't show the register bugs: its run checks the volume and the timekeeping.
 
-The hangs: in Pokemon the second open paged the menu in, but the menu never came up. In NSMB the menu stayed on screen after B, which wasn't traced further. The likely cause of the Pokemon hang, which the fix removes: on nds-bootstrap's own path the card engine looked for the ARM7's `IGML` flag once a frame, at line 192, while the ARM7 raises it only for as long as it pages. melonDS's SD card pages 80 KB in less than a frame, so the flag could come and go between two looks, and the ARM9 then waited forever. On a console the paging takes about 2-4 frames, so it's rarer, but nothing prevents it. The ARM9 now looks every few microseconds.
+The hangs are two nds-bootstrap races. melonDS makes them more likely, because its SD card is fast and its frames are exact.
+
+- **The menu doesn't come up** (Pokemon, second open): the ARM9 looked for the ARM7's `IGML` flag once a frame, at line 192, but the ARM7 holds the flag only while it pages. melonDS pages 80 KB in less than a frame, so the flag could come and go between two looks, and the ARM9 then waited forever. The ARM9 now looks every few microseconds.
+- **The menu doesn't close after B** (NSMB, and 1 in 9 runs of the fixed build before this was found): after each frame the ARM7 looked at the ARM9's command word and then wrote `MENU` back. The ARM9 writes `EXIT` right after a VBlank starts, the same moment, so `EXIT` could land between the ARM7's look and its write and be wiped. The ARM9 then waited for an answer that never came. The ARM7 now reads the command once, and writes `MENU` back only after a command it has carried out. While idle it never writes, so a new command can't be lost.
