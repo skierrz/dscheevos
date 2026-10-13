@@ -293,30 +293,32 @@ static void change_memory(int n)
  * replaces ram.bin, and each frame applies the trace's changed ranges instead of random bytes,
  * so evaluation sees real per-frame changes. Per-frame cycles go to the emulator log as
  * "@@T frame capture eval" lines. */
-static FILE* trace;
+static u8* trace;                     /* the whole trace file, read once (no SD access while timing) */
+static u32 trace_size, trace_pos;
 static void report(const char* label, u32* v, int n);
 static u32 trace_frames;
 #define TRACE_MAX_FRAMES 4000
 
-static u32 rd32(FILE* f) { u8 b[4] = { 0, 0, 0, 0 }; fread(b, 1, 4, f); return b[0] | b[1] << 8 | b[2] << 16 | (u32)b[3] << 24; }
+static u32 rd32(const u8* b) { return b[0] | b[1] << 8 | b[2] << 16 | (u32)b[3] << 24; }
 
 static int trace_open(void)
 {
-  char magic[8];
-  u32 main_size, dtcm_size;
-  trace = fopen("sd:/dscheevos-lab/trace.dtrc", "rb");
+  u32 main_size, dtcm_size, n;
+  trace = (u8*)load_file("sd:/dscheevos-lab/trace.dtrc", &trace_size);
   if (!trace) return 0;
-  if (fread(magic, 1, 8, trace) != 8 || memcmp(magic, "DTRC1", 5)) { fclose(trace); trace = NULL; return 0; }
-  main_size = rd32(trace);
-  dtcm_size = rd32(trace);
-  trace_frames = rd32(trace);
-  rd32(trace); /* seed */
+  if (trace_size < 24 || memcmp(trace, "DTRC1", 5)) { free(trace); trace = NULL; return 0; }
+  main_size = rd32(trace + 8);
+  dtcm_size = rd32(trace + 12);
+  trace_frames = rd32(trace + 16);
+  trace_pos = 24;
   if (!ram) ram = (u8*)memalign(32, 0x400000);
   memset(ram, 0, 0x400000);
-  fread(ram, 1, main_size < 0x400000 ? main_size : 0x400000, trace);
-  if (main_size > 0x400000) fseek(trace, main_size - 0x400000, SEEK_CUR);
-  fread(dtcm_fake, 1, dtcm_size < 0x4000 ? dtcm_size : 0x4000, trace);
-  if (dtcm_size > 0x4000) fseek(trace, dtcm_size - 0x4000, SEEK_CUR);
+  n = main_size < 0x400000 ? main_size : 0x400000;
+  memcpy(ram, trace + trace_pos, n);
+  trace_pos += main_size;
+  n = dtcm_size < 0x4000 ? dtcm_size : 0x4000;
+  memcpy(dtcm_fake, trace + trace_pos, n);
+  trace_pos += dtcm_size;
   ram_dumped = 1;
   return 1;
 }
@@ -324,24 +326,24 @@ static int trace_open(void)
 /* applies the next frame's ranges; -1 at the end */
 static int trace_step(u32* frame_no)
 {
-  u8 hdr[8];
-  u32 n, k;
-  if (fread(hdr, 1, 8, trace) != 8) return -1;
-  *frame_no = hdr[0] | hdr[1] << 8 | hdr[2] << 16 | (u32)hdr[3] << 24;
-  n = hdr[6] | hdr[7] << 8;
+  u32 n, k, flags;
+  if (trace_pos + 8 > trace_size) return -1;
+  *frame_no = rd32(trace + trace_pos);
+  flags = trace[trace_pos + 4];
+  n = trace[trace_pos + 6] | trace[trace_pos + 7] << 8;
+  trace_pos += 8;
   for (k = 0; k < n; k++) {
-    u8 rh[6];
     u32 addr, len;
-    u8* dst;
-    if (fread(rh, 1, 6, trace) != 6) return -1;
-    addr = rh[0] | rh[1] << 8 | rh[2] << 16 | (u32)rh[3] << 24;
-    len = rh[4] | rh[5] << 8;
-    if (addr < 0x400000u && addr + len <= 0x400000u) dst = ram + addr;
-    else if (addr >= 0x1000000u && addr + len <= 0x1004000u) dst = dtcm_fake + (addr - 0x1000000u);
-    else { fseek(trace, len, SEEK_CUR); continue; }
-    fread(dst, 1, len, trace);
+    if (trace_pos + 6 > trace_size) return -1;
+    addr = rd32(trace + trace_pos);
+    len = trace[trace_pos + 4] | trace[trace_pos + 5] << 8;
+    trace_pos += 6;
+    if (trace_pos + len > trace_size) return -1;
+    if (addr < 0x400000u && addr + len <= 0x400000u) memcpy(ram + addr, trace + trace_pos, len);
+    else if (addr >= 0x1000000u && addr + len <= 0x1004000u) memcpy(dtcm_fake + (addr - 0x1000000u), trace + trace_pos, len);
+    trace_pos += len;
   }
-  return hdr[4];
+  return (int)flags;
 }
 
 static void trace_run(void)
