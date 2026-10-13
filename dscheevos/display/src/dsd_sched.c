@@ -8,7 +8,7 @@ static const uint8_t priority[DSD_ITEM_KINDS] = {
   [DSD_ITEM_LB_SUBMITTED] = 3, [DSD_ITEM_LB_FAILED] = 3, [DSD_ITEM_LB_RANK] = 3,
   [DSD_ITEM_LB_STARTED] = 4,
   [DSD_ITEM_PROGRESS] = 5, [DSD_ITEM_OFFLINE] = 5, [DSD_ITEM_ONLINE] = 5,
-  [DSD_ITEM_CHALLENGE] = 6, [DSD_ITEM_TRACKER] = 6,
+  [DSD_ITEM_CHALLENGE] = 6, [DSD_ITEM_TRACKER] = 6, [DSD_ITEM_TRAY] = 7,
 };
 
 /* Hold times in frames. The strip covers game pixels, so these are shorter
@@ -162,17 +162,21 @@ void dsd_ingest(dsd_t* d, const dscm_notices_t* n) {
       if (tr[i] && !has(d->tracker_ids, tr[i])) {
         it.kind = DSD_ITEM_TRACKER; it.id = tr[i];
         enqueue(d, it);
-        if (!d->pinned.kind) { d->pinned = it; d->pinned.phase = DSD_PHASE_HOLD; }
       }
     }
-    /* The pinned tracker goes when its leaderboard does; a value change
-     * redraws it. */
-    if (d->pinned.kind && !has(tr, d->pinned.id)) {
-      memset(&d->pinned, 0, sizeof(d->pinned));
-      for (int i = 0; i < DSCM_INDICATOR_MAX; i++)
-        if (tr[i]) { d->pinned.kind = DSD_ITEM_TRACKER; d->pinned.id = tr[i]; d->pinned.phase = DSD_PHASE_HOLD; break; }
+    /* The tray is up while anything is active. Any change (a tracker's
+     * value ticks every frame in a timed run) marks it for a redraw, at
+     * most every DSD_TRAY_REDRAW frames. */
+    int any = 0;
+    for (int i = 0; i < DSCM_INDICATOR_MAX; i++) any |= ch[i] || tr[i];
+    if (any) {
+      d->tray.kind = DSD_ITEM_TRAY;
+      d->tray.phase = DSD_PHASE_HOLD;
+      d->tray_dirty = 1;
+    } else if (d->tray.kind) {
+      memset(&d->tray, 0, sizeof(d->tray));
+      if (d->tray_ok && !d->current.kind) d->scene_gen++;
     }
-    if (d->pinned.kind && d->pinned_ok && !d->current.kind) d->scene_gen++;
     memcpy(d->challenge_ids, ch, sizeof(ch));
     memcpy(d->tracker_ids, tr, sizeof(tr));
     d->last_gen = gen;
@@ -189,15 +193,27 @@ static int pick(const dsd_t* d) {
 }
 
 int dsd_busy(const dsd_t* d) {
-  return d->current.kind || d->queue_count || (d->pinned.kind && d->pinned_ok);
+  return d->current.kind || d->queue_count || (d->tray.kind && d->tray_ok);
 }
 
 void dsd_tick(dsd_t* d, uint32_t frame, const dsd_caps_t* caps) {
   uint32_t elapsed = frame - d->frame;
   d->frame = frame;
-  if (d->pinned_ok != caps->pinned_ok) {
-    d->pinned_ok = caps->pinned_ok;
-    if (d->pinned.kind && !d->current.kind) d->scene_gen++;
+  if (d->tray_ok != caps->tray_ok) {
+    d->tray_ok = caps->tray_ok;
+    if (d->tray.kind && !d->current.kind) d->scene_gen++;
+  }
+  if (d->tray_ok && d->tray.kind && !d->current.kind && d->tray_dirty &&
+      frame - d->tray_drawn >= DSD_TRAY_REDRAW) {
+    d->tray_dirty = 0;
+    d->tray_drawn = frame;
+    d->scene_gen++;
+  }
+  if (d->tray_ok) {
+    /* The tray shows active indicators itself; their one-shot flashes would
+     * only repeat it. */
+    for (int i = d->queue_count - 1; i >= 0; i--)
+      if (d->queue[i].kind == DSD_ITEM_CHALLENGE || d->queue[i].kind == DSD_ITEM_TRACKER) remove_at(d, i);
   }
   if (!d->current.kind && !d->queue_count) return;
 
@@ -261,7 +277,7 @@ void dsd_tick(dsd_t* d, uint32_t frame, const dsd_caps_t* caps) {
 }
 
 const dsd_item_t* dsd_current(const dsd_t* d) {
-  if (!d->current.kind && d->pinned.kind && d->pinned_ok) return &d->pinned;
+  if (!d->current.kind && d->tray.kind && d->tray_ok) return &d->tray;
   return &d->current;
 }
 

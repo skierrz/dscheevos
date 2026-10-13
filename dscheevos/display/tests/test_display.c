@@ -86,6 +86,9 @@ static int drain(dsd_t* d, uint32_t* frame, uint8_t* order, int max) {
 }
 
 /* ---- D1: scheduler */
+static void golden(const char* name, const uint16_t* px, int w, int h);
+static void sheet_add(const uint16_t* px, int h);
+
 
 static void test_idle_is_cheap(void) {
   dsd_t d;
@@ -256,7 +259,7 @@ static void test_indicators(void) {
   dsd_ingest(&d, &notices);
   uint8_t order[8];
   int n = drain(&d, &frame, order, 8);
-  CHECK(n == 2);                      /* one flash each */
+  CHECK(n == 2);                      /* tray off: one flash each */
   CHECK(order[0] == DSD_ITEM_CHALLENGE && order[1] == DSD_ITEM_TRACKER);
 
   /* Same indicators again (a tracker value changed): no new flash. */
@@ -264,25 +267,67 @@ static void test_indicators(void) {
   dsd_ingest(&d, &notices);
   CHECK(d.queue_count == 0);
 
-  /* With pinning allowed, the tracker stays up while nothing else shows. */
-  const dsd_caps_t pin = { 16, 1 };
-  dsd_tick(&d, ++frame, &pin);
-  CHECK(dsd_current(&d)->kind == DSD_ITEM_TRACKER && dsd_current(&d)->id == 201);
+  /* Tray on: active indicators stay up while nothing else shows. */
+  const dsd_caps_t tray = { 16, 1 };
+  dsd_tick(&d, ++frame, &tray);
+  CHECK(dsd_current(&d)->kind == DSD_ITEM_TRAY);
   CHECK(dsd_busy(&d));
-  /* An unlock takes over, then the tracker comes back. */
+  /* An unlock takes over, then the tray comes back. */
   raise_notice(DSCM_NOTICE_UNLOCK, 101, 10);
   dsd_ingest(&d, &notices);
-  dsd_tick(&d, ++frame, &pin);
+  dsd_tick(&d, ++frame, &tray);
   CHECK(dsd_current(&d)->kind == DSD_ITEM_UNLOCK);
-  for (int i = 0; i < 400; i++) dsd_tick(&d, ++frame, &pin);
-  CHECK(dsd_current(&d)->kind == DSD_ITEM_TRACKER);
-  /* The leaderboard ends: the pin goes. */
+  for (int i = 0; i < 400; i++) dsd_tick(&d, ++frame, &tray);
+  CHECK(dsd_current(&d)->kind == DSD_ITEM_TRAY);
+
+  /* A tracker ticking every frame redraws the tray at most every DSD_TRAY_REDRAW frames. */
+  uint32_t gen0 = dsd_scene_gen(&d);
+  for (int i = 0; i < 60; i++) {
+    notices.indicators_generation++;
+    dsd_ingest(&d, &notices);
+    dsd_tick(&d, ++frame, &tray);
+  }
+  CHECK(dsd_scene_gen(&d) - gen0 <= 60 / DSD_TRAY_REDRAW + 1);
+  CHECK(dsd_scene_gen(&d) - gen0 >= 60 / DSD_TRAY_REDRAW - 1);
+
+  /* With the tray on, a new challenge needs no flash: the tray shows it. */
+  notices.challenges[1].id = 105;
+  notices.indicators_generation++;
+  dsd_ingest(&d, &notices);
+  dsd_tick(&d, ++frame, &tray);
+  CHECK(d.queue_count == 0);
+  CHECK(dsd_current(&d)->kind == DSD_ITEM_TRAY);
+
+  /* Everything ends: the tray goes. */
+  notices.challenges[0].id = notices.challenges[1].id = 0;
   notices.trackers[0].id = 0;
   notices.indicators_generation++;
   dsd_ingest(&d, &notices);
-  dsd_tick(&d, ++frame, &pin);
+  dsd_tick(&d, ++frame, &tray);
   CHECK(dsd_current(&d)->kind == DSD_ITEM_NONE);
   CHECK(!dsd_busy(&d));
+}
+
+/* The tray's look: two challenges and a tracker, full and compact. */
+static void tray_case(const char* name, int h, int with_challenges) {
+  dsd_t d;
+  reset_notices();
+  init(&d, 1);
+  if (with_challenges) {
+    notices.challenges[0].id = 301;
+    notices.challenges[1].id = 105;
+  }
+  notices.trackers[0].id = 201;
+  notices.indicators_generation++;
+  dsd_ingest(&d, &notices);
+  const dsd_caps_t tray = { (uint8_t)h, 1 };
+  for (uint32_t f = 1; f < 200; f++) dsd_tick(&d, f, &tray);
+  CHECK(dsd_current(&d)->kind == DSD_ITEM_TRAY);
+  static uint16_t px[256 * 32];
+  dsd_surface_t s = { px, 256, (uint16_t)h, 256 };
+  while (!dsd_render(&d, &s, 999)) {}
+  golden(name, px, 256, h);
+  sheet_add(px, h);
 }
 
 static void test_text(void) {
@@ -420,6 +465,9 @@ static void test_goldens(void) {
   render_case("right_progress", DSCM_NOTICE_PROGRESS, 105, 0, 0, 32, 1);
   render_case("right_compact", DSCM_NOTICE_UNLOCK, 101, 10, 0, 16, 1);
   case_side = DSD_SIDE_LEFT;
+  tray_case("tray_full", 32, 1);
+  tray_case("tray_compact", 16, 1);
+  tray_case("tray_tracker_only", 16, 0);
 
   char path[512];
   snprintf(path, sizeof(path), "%s/sheet.png", out_dir);

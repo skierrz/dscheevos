@@ -27,7 +27,8 @@ typedef struct dsd_surface_t {
 /* ---- What can be shown this frame (from the presenter). */
 typedef struct dsd_caps_t {
   uint8_t strip_lines;                /* 0: nothing on screen can be shown now */
-  uint8_t pinned_ok;                  /* owner setting: a leaderboard tracker may stay up */
+  uint8_t tray_ok;                    /* keep active challenges and trackers up (RA: Trigger and
+                                       * Measured indicators shown during play); a user setting */
 } dsd_caps_t;
 
 enum {                                /* scene item kinds */
@@ -43,7 +44,8 @@ enum {                                /* scene item kinds */
   DSD_ITEM_OFFLINE,
   DSD_ITEM_ONLINE,
   DSD_ITEM_CHALLENGE,                 /* a challenge indicator appeared */
-  DSD_ITEM_TRACKER,                   /* a leaderboard tracker appeared (or is pinned) */
+  DSD_ITEM_TRACKER,                   /* a leaderboard tracker appeared */
+  DSD_ITEM_TRAY,                      /* the indicator tray: active challenges and trackers */
   DSD_ITEM_KINDS
 };
 
@@ -102,8 +104,10 @@ typedef struct dsd_t {
   uint8_t queue_count;
   dsd_item_t queue[DSD_QUEUE_MAX];
   dsd_item_t current;                 /* kind NONE = nothing on screen */
-  dsd_item_t pinned;                  /* tracker shown while pinned_ok and nothing else is up */
-  uint8_t pinned_ok;                  /* from the last tick's caps */
+  dsd_item_t tray;                    /* shown while tray_ok, something is active and no notice is up */
+  uint8_t tray_ok;                    /* from the last tick's caps */
+  uint8_t tray_dirty;                 /* an indicator changed since the tray was last drawn */
+  uint32_t tray_drawn;                /* frame of the last tray redraw */
   uint8_t missed_head;
   dsd_item_t missed[DSD_MISSED_MAX];  /* waited too long; for the menu page */
   uint32_t scene_gen;                 /* bumped when what's visible changes */
@@ -123,6 +127,7 @@ typedef struct dsd_t {
 
 /* Timing, in frames (60 Hz). */
 #define DSD_FADE_FRAMES 4
+#define DSD_TRAY_REDRAW 10            /* at most one tray redraw per this many frames */
 #define DSD_WAIT_MAX 600              /* after 10 s with nothing able to show it, a notice goes to missed[] */
 
 void dsd_init(dsd_t* d, const dsd_config_t* cfg);
