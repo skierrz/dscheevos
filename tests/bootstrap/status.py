@@ -20,7 +20,7 @@ def hdr_version(ram):
 
 # dscheevos_module.h, ABI v6
 LIST_MAGIC, NOTICES_MAGIC, JOURNAL_MAGIC = 0x4C435344, 0x4E435344, 0x4A435344
-ACH_STATES = ['locked', 'unlocked', 'unlocked_softcore', 'disabled']
+ACH_STATES = ['locked', 'unlocked', 'unlocked_casual', 'disabled']
 NOTICE_KINDS = ['none', 'session_start', 'unlock', 'mastery', 'progress', 'leaderboard_started',
                 'leaderboard_failed', 'leaderboard_submitted', 'leaderboard_rank', 'offline', 'online']
 NOTICE_RING, INDICATOR_MAX, JOURNAL_MAX = 16, 8, 96
@@ -184,7 +184,7 @@ if hdr_version(ram) >= 6:
         es = lst['entries']
         n_un = sum(e['state'] == 1 for e in es)
         n_soft = sum(e['state'] == 2 for e in es)
-        print(f"list: {len(es)} achievements, {n_un} unlocked, {n_soft} unlocked in softcore only, generation {lst['generation']}")
+        print(f"list: {len(es)} achievements, {n_un} unlocked, {n_soft} unlocked in casual only, generation {lst['generation']}")
         for e in es:
             extra = f" [{e['measured']}]" if e['flags'] & 1 else ''
             extra += ' (challenge)' if e['flags'] & 2 else ''
@@ -209,7 +209,7 @@ if hdr_version(ram) >= 6:
         for e in journal['entries']:
             what = 'award' if e['kind'] == 1 else 'leaderboard' if e['kind'] == 2 else e['kind']
             score = f" score {e['score']}" if e['kind'] == 2 else ''
-            print(f"  {what} {e['id']}{score} {'hardcore' if e['hardcore'] else 'softcore'} at {e['time']}: {'sent' if e['sent'] else 'unsent'}")
+            print(f"  {what} {e['id']}{score} {'hardcore' if e['hardcore'] else 'casual'} at {e['time']}: {'sent' if e['sent'] else 'unsent'}")
     else:
         print('journal: empty (no game loaded)')
 
