@@ -25,7 +25,7 @@ Status: design only, 2026-10-12. Owner ruling #5: every notice type, LED cue, ba
 | `NOTICE_LB_START` | 1 | Leaderboard attempt started |
 | `NOTICE_LB_RESULT` | 1 | Leaderboard failed / submitted / rank |
 | `NOTICE_LB_TRACKER` | 1 | Leaderboard tracker in the tray |
-| `NOTICE_MODE` | 1 | Hardcore / Softcore notice at session start (the pre-boot placard is separate) |
+| `NOTICE_MODE` | 1 | Hardcore / Casual notice at session start (the pre-boot placard is separate). In hardcore it can't be off together with `PLACARD`; see below |
 | `NOTICE_NETWORK` | 1 | Offline / back online |
 | `NOTICE_BADGES` | 1 | Badge images in notices (when the pack has them); 0 = icons |
 | `NOTICE_SCREEN` | `auto` | `auto` / `top` / `bottom`: which screen (`display-library.md` 11.2) |
@@ -52,6 +52,8 @@ Status: design only, 2026-10-12. Owner ruling #5: every notice type, LED cue, ba
 
 ### Badges (launcher, before boot)
 
+Privacy: the download goes to `media.retroachievements.org`, a plain GET of `/Badge/<badge_name>.png` with the launcher's user agent. It carries no username, token or other account data. The cache is `sd:/_nds/dscheevos/badges/<game_id>.pak`. ra-compliance adds both to `docs/privacy.md` when this is built.
+
 | Key | Default | What it switches |
 |---|---|---|
 | `BADGES` | 1 | Download and cache badge images before boot. 0 = never download (notices use icons) |
@@ -76,13 +78,16 @@ The module applies the switches where each event is produced:
 
 The pre-boot placard and badge downloads are launcher-only.
 
-## Hardcore and RA compliance
+## Hardcore and RA compliance (reviewed by ra-compliance, 2026-10-12; `docs/compliance.md` "Notice settings")
 
-Every switch only hides or shows information. None changes evaluation, sending or the hardcore state, and RetroArch (approved) offers the same switches. One open point is for ra-compliance:
-- the strict reading says Measured and Trigger indicators must show during play;
-- if RA requires them in hardcore, `NOTICE_PROGRESS` and `NOTICE_CHALLENGE` would be forced on in hardcore, shown as such, the way `SEND_DURING_PLAY` is today.
+Every switch only hides or shows information. None changes evaluation, sending or the hardcore state, and RetroArch (approved) offers the same switches. The rules:
 
-Until ra-compliance answers, the design allows switching them off in both modes, as RetroArch does.
+1. **`NOTICE_PROGRESS` and `NOTICE_CHALLENGE` may be off in hardcore too.** RetroArch gates its challenge indicators and progress tracker with no hardcore check. Both default to 1, and resetting to defaults turns them back on. If RA objects, the fallback is to force them on in hardcore, shown as such.
+2. **The mode indicator is required in hardcore** (RA section E). If a player turns off both `PLACARD` and `NOTICE_MODE`:
+   - in hardcore, the session-start mode notice still shows, and the settings page says so;
+   - in a Casual session, both may be off.
+3. **The in-game menu always shows active challenges and measured progress** on its achievement pages, whatever the `NOTICE_*` switches say. RA requires them "visible in the achievement list", and that can't be switched off.
+4. **Wording:** RA now calls the non-hardcore mode **Casual**. Notices and settings say Hardcore / Casual; the lockdown branch has already renamed the launcher's strings.
 
 ## Where it shows up later (UI/UX pass)
 

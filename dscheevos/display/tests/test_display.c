@@ -449,7 +449,7 @@ static void test_goldens(void) {
   render_case("unlock_more", DSCM_NOTICE_UNLOCK, 101, 10, 3, 32, 1);
   render_case("mastery", DSCM_NOTICE_MASTERY, 0, 0, 0, 32, 1);
   render_case("mode_hardcore", DSCM_NOTICE_SESSION_START, 0, 1, 0, 32, 1);
-  render_case("mode_softcore", DSCM_NOTICE_SESSION_START, 0, 0, 0, 32, 0);
+  render_case("mode_casual", DSCM_NOTICE_SESSION_START, 0, 0, 0, 32, 0);
   render_case("progress", DSCM_NOTICE_PROGRESS, 105, 0, 0, 32, 1);
   render_case("lb_started", DSCM_NOTICE_LEADERBOARD_STARTED, 201, 0, 0, 32, 1);
   render_case("lb_failed", DSCM_NOTICE_LEADERBOARD_FAILED, 201, 0, 0, 32, 1);

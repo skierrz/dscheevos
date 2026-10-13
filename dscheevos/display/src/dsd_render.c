@@ -179,7 +179,7 @@ static void layout(dsd_t* d, const dsd_item_t* it, int compact, int w) {
   /* Compact strips and merged unlocks use the short label, so the title or
    * the "+N more" keeps its room. */
   const char* label = compact || it->more ? styles[it->kind].short_label : styles[it->kind].label;
-  if (it->kind == DSD_ITEM_MODE && !it->value) label = "Softcore";
+  if (it->kind == DSD_ITEM_MODE && !it->value) label = "Casual";
 
   const int avail = w - text_x - RIGHT_PAD;
   int n0;
