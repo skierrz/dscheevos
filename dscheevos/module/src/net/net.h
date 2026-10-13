@@ -32,10 +32,15 @@ void net_service(uint32_t now_ms);
 uint32_t net_state(void);   /* DSCM_NET_STATE_* */
 uint32_t net_detail(void);  /* last error, for the in-game menu */
 uint32_t net_handshake_ms(void);
+/* Nonzero while there is network work in flight (a request, a connection
+ * being set up, frames waiting, an association): net_service() is then
+ * wanted every idle pass, else once a frame is enough. */
+int net_busy(void);
 
 /* link.c, used by https.c */
 int link_up(void);
-int link_rejoining(void);   /* down, but working on getting back */
+int link_rejoining(void);
+int link_busy(void);        /* frames or control messages waiting, or joining */   /* down, but working on getting back */
 uint32_t link_rejoins(void);  /* associations we started ourselves */
 void link_stir(void);       /* mix event timing into the TLS entropy pool */
 

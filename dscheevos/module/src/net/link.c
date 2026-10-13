@@ -535,6 +535,14 @@ void link_service(uint32_t now_ms)
   sys_check_timeouts();
 }
 
+/* Work that can't wait for the next frame: frames from the ARM7, control
+ * messages for it, or an association in progress. */
+int link_busy(void)
+{
+  return arm7_rx_head() != g_ring.rx_tail || g_ctrl_tail != g_ctrl_head
+      || (g_join != J_UP && g_join != J_GIVEN_UP);
+}
+
 /* rejoins that got us back online */
 uint32_t link_rejoins(void)
 {

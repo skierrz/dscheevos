@@ -188,15 +188,20 @@ static uint32_t capture(void)
   return g_capture_cpsr;
 }
 
+/* g_frames * 1000 / 60, the same value mod 2^32 as the 64-bit product, in
+ * 32-bit arithmetic: a 64-bit division costs ~340 instructions in libgcc,
+ * and this runs several times every idle pass. */
 static uint32_t millis(void)
 {
-  return (uint32_t)(((uint64_t)g_frames * 1000u) / 60u);
+  uint32_t f = g_frames, q = f / 3u;
+  return q * 50u + (f - q * 3u) * 50u / 3u;
 }
 uint32_t dscm_millis(void) { return millis(); }
 
 static uint32_t frame_count(void) { return g_frames; }
 
 static int g_net_started;
+static uint32_t g_pass_frame;     /* g_frames at the last idle pass's once-a-frame work */
 extern void dscm_publish_net_ring(void* ring);
 extern void https_add_ca(const char* pem, uint32_t len);
 
@@ -259,6 +264,16 @@ static void http_send(const dsc_http_request_t* request)
   }
   /* queue full: rcheevos retries retryable errors later */
   dsc_http_done(request->handle, -2, "", 0);
+}
+
+/* a request http_send() queued that the network layer hasn't taken yet */
+static int request_waiting(void)
+{
+  int i;
+  for (i = 0; i < DSCM_NET_SLOTS; i++)
+    if (dscm_g_net[i].state == DSCM_NET_REQUEST)
+      return 1;
+  return 0;
 }
 
 static void poll_network(void)
@@ -569,6 +584,7 @@ void module_reset(void)
 int module_idle(int idle_loop)
 {
   uint32_t start, end, used;
+  int new_frame, evaluated;
 
   start = REG_VCOUNT;
   if (!g_initialized || !dscm_g_status.active)
@@ -589,11 +605,17 @@ int module_idle(int idle_loop)
     dscm_irq_restore(cpsr);
   }
 
+  /* The idle thread wakes at every IRQ, often many times a frame (about 20
+   * in Kirby Super Star Ultra). Work that only needs doing once a frame
+   * (notices, LED cues, status, an idle network) waits for the first pass
+   * after a VBlank, or a pass that evaluated something. */
+  new_frame = g_frames != g_pass_frame;
+  g_pass_frame = g_frames;
+
   if (g_reset_pending) {
     g_reset_pending = 0;
     dsc_reset();
   }
-  poll_network();
   if (g_progress_stale)
     update_progress();
 
@@ -603,19 +625,23 @@ int module_idle(int idle_loop)
      * the halt below comes too late. */
     dscm_irq_restore(capture());
     start = REG_VCOUNT;
-    dsc_idle();
+    evaluated = dsc_idle();
     end = REG_VCOUNT;
     used = lines_between(start, end);
     dscm_g_status.eval_lines = (dscm_g_status.eval_lines * 7 + used * 16) / 8;
   }
   else {
-    dsc_idle();   /* rcheevos' own timers: retries, pings */
+    evaluated = dsc_idle();   /* answers, rcheevos' own timers: retries, pings */
   }
-  clean_notices();
-  update_cues();
+  if (new_frame || evaluated) {
+    clean_notices();
+    update_cues();
+  }
 
-  /* Then the network: achievements come first. */
-  if (g_net_started) {
+  /* Then the network: achievements come first. Every pass while something
+   * is in flight or waiting (so an unlock goes out at once), else once a
+   * frame for lwIP's timers. */
+  if (g_net_started && (new_frame || net_busy() || request_waiting())) {
     net_service(millis());
     dscm_g_status.net_state = net_state();
     dscm_g_status.net_detail = net_detail();
@@ -638,7 +664,8 @@ int module_idle(int idle_loop)
     start = dscm_irq.idle_start;
     /* else a VBlank came meanwhile and counted the pass */
     idle_frames(dscm_take(&dscm_irq.idle_open) ? lines_since(start) : 0);
-    publish_stats();
+    if (new_frame || evaluated)
+      publish_stats();
     dscm_wfi();
     dscm_irq_restore(cpsr);
     return 1;   /* halted here */
