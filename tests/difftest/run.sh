@@ -3,7 +3,8 @@
 # Generates the inputs into WORK (private: sets and RAM stay out of the repo),
 # runs stock and patched over every script x session x hardcore, and compares:
 # patched with no features (inert), with the partition feature and no split,
-# and with each split (threaded too). Prints one line per comparison; exit 1
+# and with each split (threaded too); change-driven evaluation alone and with
+# the partition (ONLY_CD=1: just those two). Prints one line per comparison; exit 1
 # on any difference. Heavy: run through build-lock.
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
@@ -25,6 +26,8 @@ for script in "$work"/scripts/*.txt; do
    variants="inert| partition-none|--mode=partition,--features=partition,--split=none"
    while read -r sp; do variants="$variants split-$(echo $sp | tr ':' '-')|--mode=partition,--features=partition,--split=$sp"; done < "$work/splits.txt"
    variants="$variants thread-all|--mode=partition,--features=partition,--split=all,--thread"
+   variants="$variants cd|--features=changedriven cd-split-all|--mode=partition,--features=partition+changedriven,--split=all"
+   [ -n "${ONLY_CD:-}" ] && variants="cd|--features=changedriven cd-split-all|--mode=partition,--features=partition+changedriven,--split=all"
    for v in $variants; do
      name=${v%%|*}; args=$(echo "${v#*|}" | tr ',' ' ' | sed "s/=/ /g")
      log="$work/logs/$tag-$name.log"

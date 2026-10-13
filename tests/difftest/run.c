@@ -6,6 +6,7 @@
  *
  *   difftest-run --set FILE --session FILE --trace FILE [--script FILE]
  *                [--mode single|partition] [--split SPEC] [--features LIST]
+ *                (LIST: partition, changedriven; joined with +)
  *                [--hardcore 0|1] [--thread] [--full FROM] [--frames N] --out LOG
  *
  * The log: a header (inputs and their hashes), then per frame f:
@@ -652,6 +653,8 @@ static rc_client_t* new_client(int hardcore, const char* features)
     ev.frame_end = ev_frame_end;
     rc_client_set_trigger_evaluator(client, &ev);
   }
+  if (strstr(features, "changedriven"))
+    rc_client_set_change_driven_enabled(client, 1);
 #else
   if (features[0]) die("stock build: no patch features");
 #endif
