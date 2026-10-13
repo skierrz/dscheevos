@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Print the DScheevos module status from a main RAM dump (melonds-headless --dump-ram).
 
-  status.py ram.bin dscheevos9.map [--expect ID ...] [--max-dropped N]
+  status.py ram.bin dscheevos9.map [--expect ID ...] [--max-dropped N] [--max-missed N]
       [--expect-list N] [--expect-journal-unsent N] [--expect-notice KIND ...]
 
 ABI v6 (module version 6 and up): also the achievement list, the notices and
@@ -93,6 +93,7 @@ ap.add_argument('map')
 ap.add_argument('--expect', type=int, action='append', default=[], help='achievement ID that must have unlocked')
 ap.add_argument('--never', type=int, action='append', default=[], help='achievement ID that must not unlock')
 ap.add_argument('--max-dropped', type=int, default=0)
+ap.add_argument('--max-missed', type=int, help='most VBlanks the module may have missed (no IPC IRQ)')
 ap.add_argument('--expect-sent', type=int, help='unlocks the server must have answered during play')
 ap.add_argument('--expect-rejoins', type=int, help='times the module must have rejoined the access point')
 ap.add_argument('--expect-list', type=int,
@@ -218,6 +219,8 @@ if err:
     fails.append(f'error {err}')
 if f[4] > args.max_dropped:
     fails.append(f'{f[4]} frames dropped')
+if args.max_missed is not None and f[5] > args.max_missed:
+    fails.append(f'{f[5]} frames missed, limit {args.max_missed}')
 fails += [f'{i} did not unlock' for i in args.expect if i not in unlocked]
 if timing and f[0] and f[2] and not timing['timed_frames']:
     fails.append('frames snapshotted, none timed')
