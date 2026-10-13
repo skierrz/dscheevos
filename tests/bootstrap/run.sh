@@ -15,6 +15,10 @@ repo=$here/../..
 hash=$1 set=$2 frames=$3; shift 3
 work=${WORK:-$(mktemp -d)}
 sd=$work/sd
+# no WORK: delete the files on exit, with the runner's SD image (<sd>.img, .img.idx)
+if [ -z "${WORK:-}" ]; then
+  trap 'rm -rf "$work" || true; rm -f "$work.img" "$work.img.idx" || true' EXIT
+fi
 mkdir -p "$sd/_nds/dscheevos" "$sd/games"
 cp "$ROM" "$sd/games/game.nds"
 [ -f "$sd/games/game.sav" ] || head -c 524288 /dev/zero | tr '\0' '\377' > "$sd/games/game.sav"
