@@ -55,7 +55,10 @@ python3 "$repo/tools/mock-ra-server/server.py" --bind 0.0.0.0 --port "$port" --s
   --tls-cert "$work/tls/server.pem" --tls-key "$work/tls/server.key" ${MOCK_ARGS:-} > "$work/mock.log" 2>&1 &
 mock=$!
 trap 'kill $mock 2>/dev/null; wait $mock 2>/dev/null || true; [ -z "${tmpwork:-}" ] || rm -rf "$tmpwork"' EXIT
-sleep 1
+# wait until it listens: loading a big set takes it seconds, and the launcher's
+# first request comes sooner than that in an unthrottled emulator
+i=0
+until lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1 || [ $i -ge 300 ] || ! kill -0 $mock 2>/dev/null; do sleep 0.1; i=$((i + 1)); done
 
 "$RUNNER" --mode dsi --rom "$sd/_nds/nds-bootstrap-release.nds" --arg sd:/_nds/nds-bootstrap-release.nds \
   --bios-dir "$DSI_FILES" --nand "$work/nand.bin" --sd "$sd" --net --frames "$frames" ${SCRIPT:+--script "$SCRIPT"} ${RUNNER_ARGS:-} \
