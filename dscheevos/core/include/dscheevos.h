@@ -106,6 +106,10 @@ typedef struct dsc_platform_t {
    * then) and returns nonzero if the copy must start over: game code may
    * have run meanwhile. May be NULL. */
   int (*interrupt_pending)(void);
+  /* Makes journal writes so far visible in RAM, in order (on the DS: clean the
+   * data cache lines when the mirror is cached). Called at every ordering
+   * point of a journal update. May be NULL (writes are already in RAM). */
+  void (*journal_sync)(const void* addr, uint32_t len);
 } dsc_platform_t;
 
 typedef struct dsc_config_t {

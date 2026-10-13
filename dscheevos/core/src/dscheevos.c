@@ -1775,6 +1775,15 @@ static uint32_t current_frame(void)
   return S.evaluating ? S.evaluating->frame : S.frame_counter;
 }
 
+/* An ordering point of a journal update: what's written so far reaches RAM
+ * before anything written after (the ARM7 reads the journal from RAM). */
+static void journal_sync(const dscm_journal_t* j)
+{
+  PUBLISH_BARRIER();
+  if (S.platform.journal_sync)
+    S.platform.journal_sync(j, sizeof(dscm_journal_t));
+}
+
 /* Header fields, once the game is known; magic last. */
 static void journal_start(uint32_t game_id)
 {
@@ -1785,8 +1794,9 @@ static void journal_start(uint32_t game_id)
   j->game_id = game_id;
   copy_text(j->username, S.config.username, sizeof(j->username));
   copy_text(j->game_hash, S.game_hash, sizeof(j->game_hash));
-  PUBLISH_BARRIER();
+  journal_sync(j);
   j->magic = DSCM_JOURNAL_MAGIC;
+  journal_sync(j);
 }
 
 /* The oldest entry with the given sent flag, or DSCM_JOURNAL_MAX. */
@@ -1820,18 +1830,19 @@ static void journal_add(uint8_t kind, uint32_t id, int32_t score)
   }
   e = &j->e[pick];
   e->kind = 0;
-  PUBLISH_BARRIER();
+  journal_sync(j);
   e->hardcore = rc_client_get_hardcore_enabled(S.client) ? 1 : 0;
   e->sent = 0;
   e->reserved = 0;
   e->id = id;
   e->score = score;
   e->unix_time = unix_now();
-  PUBLISH_BARRIER();
+  journal_sync(j);
   e->kind = kind;
+  journal_sync(j);
   if (pick == j->count) {
-    PUBLISH_BARRIER();
     j->count = pick + 1;
+    journal_sync(j);
   }
 }
 
@@ -1847,8 +1858,10 @@ static void journal_answered(uint8_t kind, uint32_t id, int32_t score)
         (kind != DSCM_JOURNAL_LEADERBOARD || j->e[i].score == score) &&
         (pick == DSCM_JOURNAL_MAX || j->e[i].unix_time < j->e[pick].unix_time))
       pick = i;
-  if (pick < DSCM_JOURNAL_MAX)
+  if (pick < DSCM_JOURNAL_MAX) {
     j->e[pick].sent = 1;
+    journal_sync(j);
+  }
 }
 
 /* Number after "key=" in form data, 0 if missing. */
@@ -2403,8 +2416,10 @@ int dsc_init(const dsc_platform_t* platform, const dsc_config_t* config)
   if (S.config.spectator)
     rc_client_set_spectator_mode_enabled(S.client, 1);
 
-  if (S.platform.journal)
+  if (S.platform.journal) {
     memset(S.platform.journal, 0, sizeof(dscm_journal_t));    /* magic is set once the game loads */
+    journal_sync(S.platform.journal);
+  }
   if (S.platform.notices) {
     memset(S.platform.notices, 0, sizeof(dscm_notices_t));
     S.platform.notices->magic = DSCM_NOTICES_MAGIC;

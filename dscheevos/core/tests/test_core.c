@@ -350,10 +350,11 @@ static void dbg_log(const char* m)
 static uint32_t max_addresses = 1024;    /* config.max_addresses for start_with */
 static int spectator;
 static uint32_t (*platform_frame)(void);
+static void (*platform_journal_sync)(const void*, uint32_t);
 static void start_with(int hardcore, uint32_t slots, uint32_t bytes)
 {
   dsc_platform_t p = { read_memory, millis, http_send, on_event, dbg_log, unix_time, &journal, &notices, publish_list, platform_frame,
-                       use_map ? memory_map : NULL, interrupt_pending };
+                       use_map ? memory_map : NULL, interrupt_pending, platform_journal_sync };
   dsc_config_t c = { "http://mock", "tester", "tok", hardcore, max_addresses, slots, bytes, spectator, halt_mode, idle_budget };
   seen_valid = 0;
   table_full_logs = 0;
@@ -706,6 +707,45 @@ static void test_journal_unlock_marked_sent(void)
   unlock_1001();
   CHECK(journal.count == 1 && journal.e[0].hardcore == 0 && journal.e[0].sent == 1);
   dsc_shutdown();
+}
+
+/* journal_sync models a cached journal: RAM (what the ARM7 copies) only
+ * changes at sync points. At every sync, every counted entry is complete. */
+static dscm_journal_t journal_ram;
+static int journal_syncs, journal_torn;
+static void sync_journal_ram(const void* addr, uint32_t len)
+{
+  uint32_t i;
+  CHECK(addr == &journal && len == sizeof journal);
+  memcpy(&journal_ram, &journal, sizeof journal);
+  journal_syncs++;
+  if (journal_ram.magic == DSCM_JOURNAL_MAGIC)
+    for (i = 0; i < journal_ram.count && i < DSCM_JOURNAL_MAX; i++)
+      if (journal_ram.e[i].kind == 0)
+        journal_torn++;
+}
+
+static void test_journal_sync_points(void)
+{
+  int i;
+  journal_syncs = journal_torn = 0;
+  platform_journal_sync = sync_journal_ram;
+  start(1);
+  CHECK(journal_syncs > 0 && journal_ram.magic == DSCM_JOURNAL_MAGIC && journal_ram.game_id == 77);
+  frames(3);
+  server_down = 1;
+  ram[0x10] = 5;
+  frames(2);
+  /* the unsent unlock is in RAM before anything else happens */
+  CHECK(journal_ram.count == 1 && journal_ram.e[0].kind == DSCM_JOURNAL_AWARD && journal_ram.e[0].sent == 0);
+  server_down = 0;
+  for (i = 0; i < 120 && award_count == 0; i++) { now_ms += 1000; frames(1); }
+  frames(1);
+  CHECK(journal_ram.count == 1 && journal_ram.e[0].sent == 1);   /* the answer reached RAM too */
+  CHECK(memcmp(&journal_ram, &journal, sizeof journal) == 0);
+  CHECK(journal_torn == 0);
+  dsc_shutdown();
+  platform_journal_sync = NULL;
 }
 
 static void test_journal_unsent_until_server_answers(void)
@@ -1888,6 +1928,7 @@ static void run_all(void)
   RUN(test_unlock_retried_when_server_down);
   RUN(test_journal_unlock_marked_sent);
   RUN(test_journal_unsent_until_server_answers);
+  RUN(test_journal_sync_points);
   RUN(test_journal_answers_that_are_final);
   RUN(test_journal_full);
   RUN(test_journal_leaderboard);

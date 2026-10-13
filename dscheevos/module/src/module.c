@@ -85,6 +85,34 @@ extern void dscm_publish_cues(uint32_t cues);
 extern void dscm_publish_list(void* list);
 extern void dscm_dc_clean(const void* addr, uint32_t len);
 extern void dscm_dc_invalidate(const void* addr, uint32_t len);
+extern void dscm_mpu_read(uint32_t out[10]);   /* start.s */
+extern void dscm_dc_drain(void);               /* start.s */
+
+/* Whether the game's protection unit makes addr data-cacheable. Regions
+ * 0-7, the highest number wins; outside every region nothing is cached. */
+static int mpu_dcacheable(uint32_t addr)
+{
+  uint32_t r[10];
+  int i;
+  dscm_mpu_read(r);
+  for (i = 7; i >= 0; i--) {
+    uint32_t reg = r[i], size, base;
+    if (!(reg & 1))
+      continue;
+    size = 2u << ((reg >> 1) & 31);
+    base = reg & ~(size - 1) & 0xFFFFF000u;
+    if (addr - base < size)
+      return (int)((r[8] >> i) & 1);
+  }
+  return 0;
+}
+
+/* journal_sync for a game whose mirror is cached: write the lines to RAM. */
+static void journal_sync_clean(const void* addr, uint32_t len)
+{
+  dscm_dc_clean(addr, len);
+  dscm_dc_drain();
+}
 extern uint32_t dscm_take(volatile uint32_t* p);
 extern uint32_t dscm_lock(volatile uint32_t* p);
 static uint32_t g_notices_seen;
@@ -114,7 +142,7 @@ typedef struct dscm_irq_t {
   uint8_t on;                    /* initialized and active */
   volatile uint8_t in_vblank;    /* a copy (dsc_vblank_copy) is running */
   volatile uint8_t in_halt;      /* halt_entry's idle work is running (start.s) */
-  uint8_t reserved;
+  uint8_t alias_cached;          /* diagnostics: the game's MPU caches the 0x0C000000 mirror (SDK5) */
   volatile uint32_t idle_open;
   volatile uint32_t idle_start;
   uint32_t timed_frames;
@@ -130,7 +158,7 @@ typedef struct dscm_irq_t {
 extern dscm_irq_t dscm_irq;
 /* the offsets start.s uses */
 _Static_assert(sizeof(dscm_irq_t) == 64, "dscm_irq: two cache lines");
-_Static_assert(offsetof(dscm_irq_t, on) == 8 && offsetof(dscm_irq_t, in_vblank) == 9 && offsetof(dscm_irq_t, in_halt) == 10 && offsetof(dscm_irq_t, idle_open) == 12, "dscm_irq");
+_Static_assert(offsetof(dscm_irq_t, on) == 8 && offsetof(dscm_irq_t, in_vblank) == 9 && offsetof(dscm_irq_t, in_halt) == 10 && offsetof(dscm_irq_t, alias_cached) == 11 && offsetof(dscm_irq_t, idle_open) == 12, "dscm_irq");
 _Static_assert(offsetof(dscm_irq_t, idle_start) == 16 && offsetof(dscm_irq_t, timed_frames) == 20 && offsetof(dscm_irq_t, irq_lines_total) == 24, "dscm_irq");
 _Static_assert(offsetof(dscm_irq_t, irq_lines_last) == 28 && offsetof(dscm_irq_t, irq_lines_max) == 30, "dscm_irq");
 _Static_assert(offsetof(dscm_irq_t, idle_cut_lines) == 32 && offsetof(dscm_irq_t, idle_cut) == 36 && offsetof(dscm_irq_t, frames_missed) == 40, "dscm_irq");
@@ -458,7 +486,10 @@ int module_init(const dscm_boot_t* boot)
   platform.http_send = http_send;
   platform.event = on_event;
   platform.unix_time = dscm_unix_time;
-  platform.journal = (dscm_journal_t*)DSCM_UNCACHED(&dscm_g_journal.j);
+  /* Cached, cleaned at each ordering point: the 0x0C000000 mirror is cached
+   * write-back on SDK5 games, so it can't be trusted to reach RAM. */
+  platform.journal = &dscm_g_journal.j;
+  platform.journal_sync = journal_sync_clean;
   platform.notices = &dscm_g_notices;
   platform.publish_list = publish_list;
   platform.frame = frame_count;
@@ -570,6 +601,15 @@ static uint32_t backlog(void)
 /* The core's counters for the status (and the in-game menu). */
 static void publish_stats(void)
 {
+  /* diagnostics: is the 0x0C000000 mirror cached under the game's MPU (SDK5)?
+   * Checked once the game's own MPU setup is in effect. The module doesn't
+   * rely on the mirror either way. */
+  static uint8_t mpu_checked;
+  if (!mpu_checked) {
+    mpu_checked = 1;
+    dscm_irq.alias_cached = (uint8_t)mpu_dcacheable((uint32_t)DSCM_UNCACHED(&dscm_g_journal));
+    dscm_g_status.alias_cached = dscm_irq.alias_cached;
+  }
   dsc_stats_t s;
   dsc_get_stats(&s);
   dscm_g_status.frames_snapshotted = s.frames_snapshotted;
