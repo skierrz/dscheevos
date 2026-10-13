@@ -10,12 +10,13 @@ PYTHON    ?= python3
 INCLUDES  := -Iinclude -I../module/include
 
 BUILD := build
-SRC   := src/dsd_sched.c src/dsd_render.c src/dsd_menu.c src/dsd_badge.c
-HDR   := include/dsd.h include/dsd_badge.h ../module/include/dscheevos_module.h
+SRC   := src/dsd_sched.c src/dsd_render.c src/dsd_menu.c src/dsd_badge.c src/dsd_strip.c
+HDR   := include/dsd.h include/dsd_badge.h include/dsd_strip.h ../module/include/dscheevos_module.h
 
 .PHONY: test clean
-test: $(BUILD)/test_display $(if $(BADGES),$(BUILD)/test_badges)
+test: $(BUILD)/test_display $(BUILD)/test_strip $(if $(BADGES),$(BUILD)/test_badges)
 	cd tests && UPDATE_GOLDEN=$(UPDATE_GOLDEN) ../$(BUILD)/test_display ../$(BUILD)/out
+	$(BUILD)/test_strip
 ifneq ($(BADGES),)
 	cd tests && UPDATE_GOLDEN=$(UPDATE_GOLDEN) ../$(BUILD)/test_badges ../$(BUILD)/out
 endif
@@ -27,6 +28,10 @@ $(BUILD)/font_latin.c: tools/fontgen.py
 
 $(BUILD)/test_display: tests/test_display.c tests/png.h $(SRC) $(HDR) $(BUILD)/font_latin.c
 	$(CC) $(CFLAGS) $(INCLUDES) tests/test_display.c $(SRC) $(BUILD)/font_latin.c -o $@
+
+$(BUILD)/test_strip: tests/test_strip.c src/dsd_strip.c include/dsd_strip.h
+	@mkdir -p $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) tests/test_strip.c src/dsd_strip.c -o $@
 
 BADGE_SRC := badgepack/dsd_badgepack.c
 $(BUILD)/test_badges: tests/test_badges.c tests/png.h $(BADGE_SRC) badgepack/dsd_badgepack.h third_party/stb_image.h $(SRC) $(HDR) $(BUILD)/font_latin.c
