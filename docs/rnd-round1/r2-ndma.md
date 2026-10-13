@@ -14,7 +14,7 @@
   - Event-repeat chaining would need an event we own. Only V-Blank (once a frame) and H-Blank (once a line) qualify; Timer0-3, cart and GX FIFO belong to the game (gbatek.txt:27956-27972).
   - Measured sets need 12-229 runs, so neither route covers them.
 - **No TCM, no cache.** DMA can't reach DTCM or ITCM, and it bypasses the D-cache (gbatek.txt:12762-12768, 94560-94567). A "TCM prefetch" or "cache warming" is impossible.
-- **rcheevos is unmodified and walks absolute pointers.** Set data can't be paged through an NWRAM window, and MBK is locked once SCFG_EXT9 bit 31 is cleared (bootloaderi main.arm9.c:436).
+- **rcheevos is unmodified and walks absolute pointers.** Set data can't be paged through an NWRAM window, and MBK is locked once SCFG_EXT9 bit 31 is cleared (bootloaderi main.arm9.c:436). (Re-checked 2026-10-13 under the new rcheevos rule, minimal patches allowed if proven identical: the MBK lock, not rcheevos, rules out paging. A hook point for an NDMA gather would not help either, because rcheevos already reads through our read_memory callback and NDMA can't gather or follow chains. Doesn't help even with a minimal patch.)
 - **Pointer chains need dependent reads.** NDMA can't follow AddAddress chains, and those chains are what Platinum capture (3,888 AddAddress) and HG/SS capture (17,306) consist of (set-stats.tsv).
 - **The CPU stalls during DMA.** The ARM9 keeps running during a DMA only while it hits TCM or cache (gbatek.txt:12766-12774). Since rcheevos is miss-bound, the only real overlap is while the ARM9 is halted in wfi, which is the game's idle time.
 - **Physical blocks are never split** (gbatek.txt:27920-27923). An NDMA still running when the game's IRQ fires delays the game's first bus access, which the game can observe.

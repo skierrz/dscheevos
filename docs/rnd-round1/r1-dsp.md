@@ -45,7 +45,7 @@ Any DSP design hits the same problem. When an IRQ wakes the halt, the game's own
 ### Toolchain
 
 - **teak-llvm has 16-bit `char` (CHAR_BIT != 8).** It is "quite buggy" (BlocksDS FAQ; codeberg blocksds/sdk issue #93) and comes only from Wonderful Toolchain, which is Linux-only.
-- **The DSP cannot run rcheevos unmodified.** That rules out DSP evaluation, and read_memory too, because rcheevos calls it synchronously.
+- **The DSP cannot run rcheevos unmodified.** That rules out DSP evaluation, and read_memory too, because rcheevos calls it synchronously. (Re-checked 2026-10-13 under the new rcheevos rule, minimal patches allowed if proven identical: no minimal patch helps. Making rcheevos correct on a 16-bit-`char` CPU would touch every byte access, with no identity proof that stays small, and the 124 KB data space and toolchain remain. Doesn't help even with a minimal patch.)
 - **The pinned devkitARM r65 / libnds 1.8.0 has no DSP API.**
 
 ### Emulator
@@ -174,6 +174,6 @@ Run this only if hardware time is free. It is a standalone lab ROM: it does not 
 
 ## 5. Summary for the orchestrator
 
-R1-DSP: not worth it. The Teak can't run rcheevos unmodified (16-bit `char`, 124 KB data space, buggy toolchain). As a snapshot copier it saves 0-5k on MKDS, 30-65k on Platinum and 90-145k on Kirby (all derived); that changes "fits" for no game, and the Kirby share is cheaper on the ARM9.
+R1-DSP: not worth it. The Teak can't run rcheevos, unmodified or with a minimal patch, (16-bit `char`, 124 KB data space, buggy toolchain). As a snapshot copier it saves 0-5k on MKDS, 30-65k on Platinum and 90-145k on Kirby (all derived); that changes "fits" for no game, and the Kirby share is cheaper on the ARM9.
 It would cost at least 64 KB of the NWRAM-B/C pool that memplan's evaluation lever needs, a 5th upstream hook on the SCFG/MBK lock, and unprovable bus, coherency and DTCM risks. The ARM7 is better as a second processor in every respect.
 Ship only the free read-only boot probe (SCFG_CLK/RST/EXT9/MBK, logged once per boot; it serves the display lane too). The DSi XL lab-ROM probes P1-P3 stay parked as research.

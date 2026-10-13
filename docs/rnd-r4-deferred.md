@@ -65,6 +65,11 @@ The real number of changed words per frame while racing is unmeasured: the RAM d
 - The core is already a bounded deferred evaluator (a 1,024-slot ring; frames past it are
   dropped with DSC_EVENT_DEGRADED). The journal stamps an unlock at evaluation, not at capture.
 
+(Re-checked 2026-10-13 under the new rcheevos rule: a minimal patch could make rc_client send `o`
+on the first request, so the unlock is stamped at the frame's real time. That removes the
+timestamp objection but not the cost verdict. Deferral still can't keep up with sets over one
+frame, and it still fails MKDS and Black. R4 stays closed.)
+
 ## Flag for the capture lane
 The estimate says the current core may store one 12-byte chain-target record per indirect read,
 with no merging. That is about 25 KB/frame for SoulSilver and 7.7 KB for Platinum, so the 256 KB
