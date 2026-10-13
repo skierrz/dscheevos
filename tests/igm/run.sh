@@ -7,7 +7,7 @@
 # Optional: OPEN (frame of the first open, default 4500), ENABLED=0 (no
 #   DScheevos session: nds-bootstrap's own menu path), TICK=addr (the game's
 #   OS tick counter; default: found from RAM dumps in a first, shorter run),
-#   DISPCNT_B=value (also write the sub engine's DISPCNT before each open, e.g. to
+#   EXTRA_ARGS (more runner options), DISPCNT_B=value (also write the sub engine's DISPCNT before each open, e.g. to
 #   show BG3 as a text BG), KEEP=1 (keep the work folder). Runs the emulator twice; wrap it in emu-lock.
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
@@ -52,7 +52,7 @@ words="--trace-word 0x027FFC3C"
 targs=""
 for t in $tick; do words="$words --trace-word $t"; targs="$targs --tick $t"; done
 
-ROM=$rom WORK=$top/run ENABLED=${ENABLED:-1} SCRIPT=$top/menu.txt RUNNER_ARGS="--trace-io $top/io.csv --trace-sd $((open1 - 5)) $words $pokes" \
+ROM=$rom WORK=$top/run ENABLED=${ENABLED:-1} SCRIPT=$top/menu.txt RUNNER_ARGS="--trace-io $top/io.csv --trace-sd $((open1 - 5)) $words $pokes ${EXTRA_ARGS:-}" \
   "$repo/tests/launcher/run.sh" "$set" $((close2 + 400)) > "$top/run.out" 2>&1 || true
 grep -q "^\[poke\]" "$top/run/runner.log" || { echo "RESULT FAIL: no run (see run.out)"; cat "$top/run.out"; exit 1; }
 [ "${ENABLED:-1}" = 0 ] || [ -f "$top/run/sd/_nds/dscheevos/session.used" ] || { echo "RESULT FAIL: nds-bootstrap didn't use the session"; exit 1; }
