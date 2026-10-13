@@ -21,6 +21,7 @@ If the game has no set, achievements are off, or the game will run in DSi mode, 
   - turn achievements off or on
   - hardcore on or off (off is Casual, RetroAchievements' name for softcore)
   - send unlocks during play (Casual only: hardcore always keeps Wi-Fi, so it shows "on (hardcore)")
+  - skip unofficial achievements (L, off by default): asks the server for the promoted achievements only (`f=3` on the achievementsets request; off, the request is exactly what rcheevos builds). rc_client never loads unofficial ones anyway, so this only makes the download and the session file smaller: Pokemon Platinum's set is 311 KB with them, too big for the session file (256 KB), and 197 KB without.
   - log out
 
   `SPECTATOR = 1` in `dscheevos.ini` (not in the menu) turns on rcheevos' spectator mode: the game evaluates and shows unlocks, nothing is sent, and no session starts on the server. The launcher shows "Spectator: nothing is sent". For bench runs on a real account.
@@ -33,7 +34,7 @@ During play the module keeps a journal of every unlock and leaderboard entry and
 
 | File | What it is |
 |---|---|
-| `_nds/dscheevos/dscheevos.ini` | `ENABLED`, `HARDCORE`, `SEND_DURING_PLAY`, `USERNAME`, `TOKEN`, and optionally `HOST` and `SPECTATOR` |
+| `_nds/dscheevos/dscheevos.ini` | `ENABLED`, `HARDCORE`, `SEND_DURING_PLAY`, `USERNAME`, `TOKEN`, and optionally `HOST`, `SPECTATOR` and `SKIP_UNOFFICIAL` |
 | `_nds/dscheevos/ca.pem` | optional extra trusted CA, for a self-hosted or test server |
 | `_nds/dscheevos/session.bin` | written here, used once by nds-bootstrap (renamed to `session.used`) |
 | `_nds/dscheevos/pending.bin` | the last session's journal, 4096 bytes; created zeroed here, written by nds-bootstrap |

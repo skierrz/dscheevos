@@ -57,6 +57,13 @@ WARNING = {"ID": 101000001, "Title": "Warning: Unsupported Emulator",
            "MemAddr": "1=1.300.", "Author": "", "BadgeName": "00000", "Created": 0, "Modified": 0}
 
 
+def promoted_only(set_json):
+    s = copy.deepcopy(set_json)
+    for sub in s.get("Sets", []):
+        sub["Achievements"] = [a for a in sub.get("Achievements", []) if a.get("Flags") == 3]
+    return s
+
+
 def with_warning(set_json):
     s = copy.deepcopy(set_json)
     if s.get("Sets"):
@@ -93,9 +100,11 @@ def handle(state, p):
 
     if r == "achievementsets":
         h = p.get("m", "").lower()
-        state.log({"event": "achievementsets", "hash": h})
+        state.log({"event": "achievementsets", "hash": h, "f": p.get("f")})
         if state.only_hash and h and h != state.only_hash:
             return fail("Unknown game", "not_found", 404)
+        if p.get("f") == "3":    # promoted (core) achievements only, as the server filters
+            return promoted_only(state.set_json)
         return state.set_json
 
     if r == "startsession":
