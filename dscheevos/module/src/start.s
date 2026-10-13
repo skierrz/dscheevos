@@ -22,7 +22,7 @@ dscm_vblank_count:
 dscm_list_ptr:
 	.word 0                     @ 0x2C: published achievement list (module.c swaps it)
 	.word dscm_g_notices        @ 0x30
-	.word dscm_g_journal        @ 0x34: written through the uncached mirror
+	.word dscm_g_journal        @ 0x34: written through the cache, cleaned at each step
 	.space 8
 	.global dscm_notify_count
 dscm_notify_count:
@@ -44,6 +44,7 @@ dscm_cues:
 	.equ	IRQ_ON, 8
 	.equ	IRQ_IN_VBLANK, 9
 	.equ	IRQ_IN_HALT, 10
+	.equ	IRQ_ALIAS_CACHED, 11
 	.equ	IRQ_IDLE_OPEN, 12
 	.equ	IRQ_IDLE_START, 16
 	.equ	IRQ_TIMED, 20
@@ -72,7 +73,11 @@ vblank_entry:
 	tst	r2, #0x100                  @ in_vblank: the copy below is running
 	bne	9f
 	adr	r12, dscm_vblank_count
-	add	r12, r12, #0x0A000000       @ uncached mirror: the ARM7 writes it
+	@ The ARM7 writes the count behind the data cache. Don't rely on the
+	@ 0x0C000000 mirror being uncached: SDK5 games map it cached write-back.
+	@ Drop the line and read through the cache; the ARM9 never leaves that
+	@ line dirty (dscm_publish_list cleans its one store at once).
+	mcr	p15, 0, r12, c7, c6, 1
 	ldr	r12, [r12]
 	subs	lr, r12, r0                 @ VBlanks since the last call
 	beq	9f                          @ another IPC message
@@ -267,17 +272,21 @@ dscm_publish_net_ring:
 	bx	lr
 
 @ void dscm_publish_list(void* list): store the list pointer (header 0x2C)
-@ through the uncached mirror, then drop the cached line. The ARM9 never
-@ writes that line through the cache: the vblank_count read invalidates it.
+@ so that it is in RAM and the line is clean.
 	.global dscm_publish_list
 	.type dscm_publish_list, %function
 dscm_publish_list:
 	ldr	r1, =dscm_list_ptr
-	add	r2, r1, #0x0A000000         @ uncached mirror (0x0C000000)
-	str	r0, [r2]
+	@ Through the cache, cleaned before an IRQ can drop the line (the VBlank
+	@ IRQ invalidates it to read the ARM7's count): IRQs off for three steps.
+	mrs	r3, cpsr
+	orr	r2, r3, #0xC0
+	msr	cpsr_c, r2
+	str	r0, [r1]
+	mcr	p15, 0, r1, c7, c10, 1      @ clean D-cache line
 	mov	r0, #0
 	mcr	p15, 0, r0, c7, c10, 4      @ drain write buffer
-	mcr	p15, 0, r1, c7, c6, 1       @ invalidate D-cache line
+	msr	cpsr_c, r3
 	bx	lr
 
 @ void dscm_dc_clean(const void* addr, uint32_t len): write cached lines to RAM.
@@ -308,6 +317,42 @@ dscm_dc_invalidate:
 	add	r0, r0, #32
 	b	1b
 2:	bx	lr
+
+@ void dscm_dc_drain(void): wait until the write buffer has reached RAM.
+	.global dscm_dc_drain
+	.type dscm_dc_drain, %function
+dscm_dc_drain:
+	mov	r0, #0
+	mcr	p15, 0, r0, c7, c10, 4
+	bx	lr
+
+@ void dscm_mpu_read(uint32_t out[10]): the ARM9 protection unit as the game
+@ set it: regions 0-7 (CP15 c6), then the data-cacheable (c2) and bufferable
+@ (c3) bits.
+	.global dscm_mpu_read
+	.type dscm_mpu_read, %function
+dscm_mpu_read:
+	mrc	p15, 0, r1, c6, c0, 0
+	str	r1, [r0, #0]
+	mrc	p15, 0, r1, c6, c1, 0
+	str	r1, [r0, #4]
+	mrc	p15, 0, r1, c6, c2, 0
+	str	r1, [r0, #8]
+	mrc	p15, 0, r1, c6, c3, 0
+	str	r1, [r0, #12]
+	mrc	p15, 0, r1, c6, c4, 0
+	str	r1, [r0, #16]
+	mrc	p15, 0, r1, c6, c5, 0
+	str	r1, [r0, #20]
+	mrc	p15, 0, r1, c6, c6, 0
+	str	r1, [r0, #24]
+	mrc	p15, 0, r1, c6, c7, 0
+	str	r1, [r0, #28]
+	mrc	p15, 0, r1, c2, c0, 0
+	str	r1, [r0, #32]
+	mrc	p15, 0, r1, c3, c0, 0
+	str	r1, [r0, #36]
+	bx	lr
 
 @ uint32_t dscm_vblank_count_read(void): the ARM7 writes the count behind
 @ the data cache, so drop the cached line first. Nothing on the ARM9 writes

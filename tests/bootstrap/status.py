@@ -154,6 +154,9 @@ if timing and status_size >= (p + 92 - o) + 4 * (len(TIMING) + len(HALT)):
     print(f"capture at halt: {halt['captures']} snapshots, {halt['captures_stopped']} stopped for an interrupt,"
           f" {halt['frames_stale']} frames with no snapshot (evaluated with the last)")
     print(f"OS_Halt calls: {halt['halts_idle']} from the idle thread, {halt['halts_other']} from game threads (left alone)")
+    if status_size >= (p + 92 - o) + 4 * (len(TIMING) + len(HALT) + 1):
+        alias = struct.unpack_from('<I', ram, p + 92 + 4 * (len(TIMING) + len(HALT)))[0]
+        print(f"0x0C000000 mirror under the game's MPU (diagnostic; not relied on): {'cached by this game (SDK5)' if alias else 'uncached'}")
 # module memory (dscm_g_heap, heap.h): not ABI, read by name
 mh = re.search(r'0x([0-9a-f]+)\s+dscm_g_heap\b', mp)
 if mh:

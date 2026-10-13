@@ -133,6 +133,9 @@ typedef struct dscm_status_t {
   volatile uint32_t frames_stale;     /* VBlanks with no snapshot since the last: the game didn't halt */
   volatile uint32_t halts_idle;       /* OS_Halt calls from NitroSDK's idle thread loop: the module's time */
   volatile uint32_t halts_other;      /* OS_Halt calls from elsewhere (a game thread waiting): left as stock */
+  /* Appended: 1 if the game's MPU caches the 0x0C000000 mirror (SDK5), so
+   * shared words use explicit cache maintenance instead of the mirror. */
+  volatile uint32_t alias_cached;
 } dscm_status_t;
 
 enum {
