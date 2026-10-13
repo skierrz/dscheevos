@@ -29,7 +29,7 @@ def load(d):
     rows = []
     with open(os.path.join(d, "frames.csv")) as f:
         for r in csv.DictReader(f):
-            rows.append({k: (int(v, 16) if k in ("arm9_pc", "wait_kind") else int(v)) for k, v in r.items()})
+            rows.append({k: (int(v, 16) if k in ("arm9_pc", "wait_kind") else v if k == "thread_lines" else int(v)) for k, v in r.items()})
     return rows
 
 
