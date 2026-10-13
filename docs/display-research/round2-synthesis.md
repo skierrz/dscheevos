@@ -87,6 +87,35 @@ nds-bootstrap's ARM9 card engine (CE9) starts its transfers on **NDMA0** (`ndmaC
 
 idle-coverage's wait gate must not use NDMA1-3.
 
+## Follow-up data (2026-10-13)
+
+### Per-line census in gameplay
+
+idle-coverage's runner3, `--thumb-cycle`, gameplay segments; `thread_lines_2000` = lines with more than 2000 cycles of game-thread code, which separates real work from wake-and-resleep.
+
+| Game | Real thread work on lines 150-191 | Verdict for D1 |
+|---|---|---|
+| Pokémon Black | none on 98% of frames; its frame work is in VBlank | **Servable.** The "busy at the bottom" was the every-line wake artifact |
+| Kirby Super Star Ultra | none on 80% of frames (last work line: median 77, p90 174) | **Servable on most frames;** persistent state on the LED |
+| Mario Kart DS (race) | on every frame: the game's own LZ77 decompressor at lines 180-190, ~9.6k cycles a frame (PCs 0x0214D480-540) | **Confirmed class A.** Real work in the band, not a wait and not nds-bootstrap; needs ruling (a) |
+
+### H-Blank IRQ games: what their handlers write on the strip's lines
+
+M1 survey logs, IRQ context, lines 156-191. Includes 4 new titles surveyed with `--thumb-cycle`: Castlevania OoE (partial play), FF III (battle), FF IV (field), Metroid Prime Hunters (menus only).
+
+| Game | H-Blank IRQ frames | DISPCNT A writes in the band | Other display writes in the band |
+|---|---|---|---|
+| Kirby SSU, Pokémon Black, FF III, FF IV, Castlevania OoE, MP Hunters, Mario Party, Nintendogs, Trauma Center 2, Kirby Canvas Curse | 94-100% | **0** | 0 (Black: 0.2/frame) |
+| Legendary Starfy | 65% | 0 | 31/frame (BG registers: harmless on mode-3 lines) |
+| Animal Crossing | 100% | **0.7/frame** | 20/frame |
+
+So for nearly all of them the H-Blank IRQ only wakes a thread that re-sleeps. **D1's abort policy becomes:**
+- a game IRQ that wakes no game thread (the SDK's reschedule flag stays clear) and doesn't change DISPCNT runs **without** aborting the strip;
+- the check runs right after the game's handler, in the gate's return path: if DISPCNT's non-mode bits changed or a thread is due, abort at once, before the next H-Blank table write, keeping the game's new bits;
+- residual R20 then includes "an H-Blank handler that reads DISPCNT sees mode 3 on the strip's lines", for games like Animal Crossing that touch DISPCNT there. **Those games abort the strip and get the LED and the menu instead.**
+
+That needs idle-coverage's gate to offer a post-handler hook and expose the reschedule flag per SDK variant (rt-time B1 fix).
+
 ## Chosen build order (nothing game-facing before the owner's rulings)
 
 1. **Hardware first.** The DSi lab-ROM run (already batched with the owner):
