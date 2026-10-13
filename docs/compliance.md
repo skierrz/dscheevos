@@ -81,6 +81,22 @@ Status: **done**, **partial**, **missing**, or **n/a** (the feature doesn't exis
 | Non-commercial cores with commercialization | none shipped, no commercialization |
 | Privacy policy with placeholders or contradictions | complete policy, no placeholders (F) |
 
+## Strict reading (owner, 2026-10-12)
+
+Meeting RA's published list is imperative, and the RA questions are on hold until DScheevos is ready to show. So nothing may rely on RA accepting an interpretation: each requirement is met on its plain, strictest reading. Zero gameplay cost still holds; where the two collide, the owner rules.
+
+| Requirement (RA's words) | Strict reading | Today | Gap and plan |
+|---|---|---|---|
+| A: Measured and Trigger flags "displayed during gameplay when appropriate conditions are met" | on screen, during play | LED cues + menu | **Missing.** An on-screen indicator is required, not optional. It must add zero lag frames (owner ruling). Display session (`docs/display-library.md`): the top/bottom strip with a placement setting. Its residuals (a display register the game can read for a few lines, main-bus time while shown) need the owner's ruling, since "nothing on screen is strictly zero-cost on a DSi". |
+| A: offline unlocks "securely cached and sync ... when connectivity returns" | no unlock is ever lost, and the cache can't be casually edited | journal saved at safe points only; power-off between them loses unsent unlocks; `pending.bin` is a plain file | **Partial.** (1) Close the power-off gap: save the journal when the game itself writes its save (nds-bootstrap already writes to SD then: owner decision pending), on lid close/sleep, and check for a power-button grace period. (2) Tamper-evidence: the launcher refuses a journal that fails a MAC tied to the session (stops hand-edited files; the token beside it limits what any on-device secret can do). |
+| A: triggers "work properly" | every frame evaluated as an emulator would | queue of 1024 frames; a dropped frame is counted and shown | **Partial.** A dropped frame means triggers may not work properly. Hardcore session drops to casual on the first dropped frame (hardcore to casual mid-session is allowed by B), and the launcher's CPU gate refuses sets that can't keep up, so a dropped frame should never happen in practice. |
+| A: leaderboards "must function" | evaluated and submitted | yes, queued offline too | done (trackers aren't required by the text) |
+| E: hardcore state "visibly indicated", "normally ... a brief informational message" when the game starts | a message at game start | pre-boot card, 1.5 s | done; wording "Casual" (fix assigned (developer-db)) |
+| B: cheats, slow motion, memory editors | blocked in hardcore | see audit below | fixes assigned (developer-db) |
+| F: privacy policy: retention, server locations, GDPR | all present | added 2026-10-12 | done |
+| C: unique user agent | yes | yes | done; pin an rcheevos release tag so the version is exact |
+| D: public for six months | public release | not released | starts at the first public release |
+
 ## Audit 2026-10-12
 
 Against RA's page as of 2026-10-12 (it now says "Casual" for softcore, and asks the privacy policy for retention periods, server locations and GDPR handling). Product fixes are assigned by developer-db; this table tracks them.
@@ -100,8 +116,8 @@ Against RA's page as of 2026-10-12 (it now says "Casual" for softcore, and asks 
 | key remaps, screen swap, region/language, colour LUT, sound rate, sleep, manual, save path | controls, display, compatibility; saves are user data | allowed | none needed |
 
 **Other findings:**
-- **Offline queue "securely cached".** `pending.bin` and the set in `session.bin` are plain files beside the login token; a checksum on the console would protect nothing the token doesn't already expose. Asked as RA question 13.
-- **User agent on 3DS** says "Nintendo DSi". Asked as RA question 16 (separate approval needs separate identities).
+- **Offline queue "securely cached".** `pending.bin` and the set in `session.bin` are plain files beside the login token; a checksum on the console would protect nothing the token doesn't already expose. RA question 13 is on hold: see "Strict reading".
+- **User agent on 3DS** says "Nintendo DSi". Send "(Nintendo 3DS)" there, so the two can be told apart without asking (RA question 16, on hold).
 - **rcheevos version.** The submodule is upstream `develop` at `683197d` (v12.5.0 plus 9 commits, unmodified), which reports itself as 12.5.0. Pin a release tag before applying, so the user agent's version names exactly the code shipped.
 - **Wording.** "Softcore" becomes "Casual" in the launcher, placard and menu (fix assigned (developer-db)).
 - **Spectator mode** sends no unlocks, leaderboard entries or session start; its journal is discarded (`pending.spectator`). Matches rc_client's spectator mode; nothing to change.
