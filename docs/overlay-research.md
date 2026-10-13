@@ -92,7 +92,7 @@ On the DSi, every notice also inherits the evaluation backlog. rc_client events 
 - Patterns queue, unlocks first. Progress is a level, not an event, so at most one progress blink waits.
 - Off while nds-bootstrap's own "Wi-Fi LED on ROM read" option drives that LED. The LED goes back to normal before the in-game menu, resets and the return to the loader.
 
-**Limit:** it tells the player *that* something happened, not *what*. Whether RA counts it as "displayed" is open (question 1 below).
+**Limit:** it tells the player *that* something happened, not *what*. Whether RA counts it as "displayed" is open (question 1 in `docs/ra-questions.md`).
 
 ### 4. On-screen top strip: engine A Main Memory Display mode fed by NDMA
 
@@ -158,7 +158,7 @@ The design problem is **how to switch back mid-frame**. Four variants were tried
 1. **Build the pre-boot placard (option 1) now.** It meets Section E with no in-game risk.
 2. **Build the menu "Now" page (option 2)** together with the full achievement list.
 3. **Build the LED cues (option 3)** as the DSi's only during-play cue that keeps every rule.
-4. **Send the RA questions below before building any on-screen DSi overlay.** If RA accepts 1+2+3 for the DSi, the DSi needs no on-screen overlay.
+4. **Send the RA questions (`docs/ra-questions.md`) before building any on-screen DSi overlay.** If RA accepts 1+2+3 for the DSi, the DSi needs no on-screen overlay.
 5. **Run the on-screen strip hardware experiment only (option 4).** Don't integrate it into the module yet. Even if it passes, it can't meet rules 2 and 4 strictly: there is a small main-bus cost while the strip is fed, and the game can read mode 3 for N lines. If the owner accepts those residuals:
    - ship variant 4c only;
    - make it opt-in per game, off by default;
@@ -197,16 +197,7 @@ melonDS can't settle these:
 
 ## Questions for RetroAchievements (RAdmin)
 
-1. DScheevos runs DS games natively on a DSi, where nothing can draw over the game without writing the game's own video hardware. For Section A ("Measured and Trigger flags ... displayed during gameplay"), is this enough:
-   - a non-visual cue during play (the Wi-Fi LED stays lit while a challenge is primed, and blinks on a progress update), and
-   - the full text (active challenges, measured progress, leaderboard values) in a menu the player can open at any time, which pauses the game?
-2. Does a hardcore placard shown just before the game's first frame (title, mode, unlocked/total) meet Section E, given that the in-game menu also shows the mode?
-3. Are leaderboard trackers part of "leaderboards must function", or covered by "disabling leaderboard popups is okay"? If a tracker is required, is the menu value plus an LED enough?
-4. Evaluation runs in the game's idle time, so a notice can lag the frame it describes by up to about 17 s in heavy scenes. Frames are queued and evaluated in order, and none are skipped. Is a delayed indicator acceptable?
-5. Does a LAN companion display (phone or PC) count as displaying notices?
-6. A hardware client has no save states, rewind or slow motion. What review process do you want for a client that isn't an emulator, and does the six-month clock apply the same way?
-7. Unlocks are sent during play, with a queue on the SD card and `o=` for the earn time. Is that acceptable?
-8. On 3DS we plan a full on-screen overlay drawn by the 3DS-side scaler (TwlBg). Can DSi and 3DS be approved separately, given their different notice capabilities?
+Moved to `docs/ra-questions.md` (expanded to 18 questions on 2026-10-12; it maps the old numbers).
 
 ## Owner decisions
 
