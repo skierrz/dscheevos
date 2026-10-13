@@ -31,8 +31,12 @@ extern char dscm_host_session[];
 extern char __bss_end[];
 #define LOW_BASE  ((char*)(((uint32_t)__bss_end + 7u) & ~7u))
 #define LOW_END   ((char*)DSCM_SESSION)
-#define HIGH_BASE ((char*)HEAP_ZONE_END)
 #define HIGH_END  ((char*)DSCM_HEAP_END)
+/* the high piece starts after the arena, or after the session file if that
+ * runs past the arena (heap_load_begin); its bytes past the arena are only
+ * read during the load and then lost for the session */
+static char* g_high_base = (char*)HEAP_ZONE_END;
+#define HIGH_BASE g_high_base
 
 static char* g_brk;
 static int g_high;
@@ -90,19 +94,27 @@ static struct {
   struct { char* p; uint32_t size; } lent[LEND_MAX];   /* lent and not freed yet */
   char* bump;                  /* the parsed set, after the session file */
   int live;                    /* bump blocks not freed yet */
+  char* end;                   /* the zone's end: the arena's, or the session file's if later */
 } Z;
 
-/* the session header, the replies and the arena: never newlib's */
+/* the session header, the replies and the arena (and the rest of a longer
+ * session file): never newlib's */
 static int in_zone(const void* p)
 {
-  return (const char*)p >= SESSION && (const char*)p < ZONE_END;
+  return (const char*)p >= SESSION && (const char*)p < (Z.end ? Z.end : ZONE_END);
 }
 
 void heap_load_begin(uint32_t file_size)
 {
+  char* file_end = SESSION + ((file_size + 7u) & ~7u);
   memset(&Z, 0, sizeof(Z));
   Z.loading = 1;
-  Z.bump = SESSION + ((file_size + 7u) & ~7u);
+  Z.bump = file_end;
+  Z.end = file_end > ZONE_END ? file_end : ZONE_END;
+#ifndef DSCM_HEAP_HOST_TEST
+  if (!g_high && file_end > (char*)HEAP_ZONE_END)
+    g_high_base = file_end;
+#endif
   dscm_g_heap.parse_base = dscm_g_heap.parse_top = ADDR(Z.bump);
 }
 
@@ -114,7 +126,7 @@ void heap_arena_window(int open)
 void heap_lend(const char* body, uint32_t len)
 {
   /* only what free() will know as not newlib's */
-  Z.lend = Z.loading && in_zone(body) && len < (uint32_t)(ZONE_END - body) ? body : NULL;
+  Z.lend = Z.loading && in_zone(body) && len < (uint32_t)(Z.end - body) ? body : NULL;
   Z.lend_len = len;
 }
 

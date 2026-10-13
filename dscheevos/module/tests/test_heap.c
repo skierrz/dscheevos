@@ -302,6 +302,28 @@ static void test_parse_overflow(void)
   free(set);
 }
 
+static void test_oversized_set(void)
+{
+  /* a set reply bigger than the whole arena (Pokemon Platinum's is 311 KB): the
+   * session file runs past the arena; the reply is still lent in place */
+  size_t n = sizeof(small_set) - 1, big = 400 * 1024;
+  char* set = (char*)malloc(big + 1);
+  const char* cut = strstr(small_set, "\"Title\":\"Heap Test\"");
+  size_t head = (size_t)(cut - small_set) + 9;
+  result_t a;
+  printf("set reply bigger than the arena\n");
+  memcpy(set, small_set, head);
+  memset(set + head, 'x', big - n);
+  memcpy(set + head + (big - n), small_set + head, n - head);
+  make_session(set, big, 0);
+  CHECK(boot->file_size > HEAP_SESSION_HEAD + HEAP_ARENA_BYTES && boot->file_size <= DSCM_SESSION_MAX);
+  a = run(1, HEAP_ARENA_BYTES, 400);
+  CHECK(a.active && a.left == 0 && a.heap.load_left == 0 && a.unlocks == 1);
+  CHECK(a.heap.lent == (uint32_t)(sizeof(login) - 1 + big + sizeof(start) - 1));   /* nothing copied */
+  CHECK(a.heap.parse_heap > 0);   /* no room after the file: the parse goes to the heap */
+  free(set);
+}
+
 static void test_no_arena(void)
 {
   result_t a;
@@ -340,6 +362,7 @@ int main(void)
   test_placement();
   test_old_layout();
   test_parse_overflow();
+  test_oversized_set();
   test_no_arena();
   printf("%d checks, %d failures\n", checks, failures);
   return failures != 0;

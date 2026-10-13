@@ -37,7 +37,10 @@
 #define DSCM_SIZE        0x00200000u
 #define DSCM_IMAGE_MAX   0x00080000u   /* code incl. TCP/IP and TLS, data, bss */
 #define DSCM_SESSION     (DSCM_BASE + DSCM_IMAGE_MAX)
-#define DSCM_SESSION_MAX 0x00040000u
+/* The session file may run past the 256 KB arena (heap.h) into the high heap
+ * piece: a set reply bigger than the arena (Pokemon Platinum's is 311 KB).
+ * The high piece then starts after the file (heap.c). */
+#define DSCM_SESSION_MAX 0x00080000u
 #define DSCM_HEAP        (DSCM_SESSION + DSCM_SESSION_MAX)
 #define DSCM_STACK_SIZE  0x00002000u
 #define DSCM_STACK_TOP   (DSCM_BASE + DSCM_SIZE)
