@@ -6,7 +6,7 @@ Which rcheevos DScheevos builds, and why. Checked 2026-10-12.
 
 - Submodule `external/rcheevos`: upstream `develop` at `683197d` ("restructure src folder", 2026-10-04) plus one patch, on the fork `skierrz/rcheevos` branch `dscheevos-683197d`. `git describe` of the base: `v12.5.0-9-g683197d`.
 - Patches (each one commit, proven identical to stock with `tests/difftest` on every real set):
-  1. **clean stores** (`src/runtime/rc_condset.c` only): a condition's `is_true`, a ResetNextIf'd zero `current_hits` and a condset's `is_paused` are stored only when they change. Same values everywhere; an unchanged store no longer dirties a data-cache line (on the DS each dirty line costs a write-back when evicted). Kirby: the game's own cycles +63.5k -> +54.3k a frame, dirty write-backs we cause 300 -> 155. Upstream PR: (to open).
+  1. **clean stores** (`src/runtime/rc_condset.c` only): a condition's `is_true`, a ResetNextIf'd zero `current_hits` and a condset's `is_paused` are stored only when they change. Same values everywhere; an unchanged store no longer dirties a data-cache line (on the DS each dirty line costs a write-back when evicted). Kirby: the game's own cycles +63.5k -> +54.3k a frame, dirty write-backs we cause 300 -> 155. Upstream PR: [RetroAchievements/rcheevos#562](https://github.com/RetroAchievements/rcheevos/pull/562).
 - `RCHEEVOS_VERSION_STRING` still says 12.5.0, so the user agent says `rcheevos/12.5.0` while we run 9 commits past it.
 - Latest release tag: **v12.5.0**. Upstream `develop` is 3 commits past us: `aed817f` (runtime types made internal), `23bcf47` (project files), `116d018` (a test script).
 
