@@ -11,9 +11,9 @@ helpers that gather the data for an ARM7 evaluator.
 
 | lane | verdict | why | report |
 |---|---|---|---|
-| R1 DSP (Teak) | not worth it | Can't run unmodified rcheevos (16-bit char, 124 KB data space, buggy toolchain). As a snapshot copier it saves 0-5k cycles/frame on MKDS and 30-65k on Platinum (D), so no game goes from not fitting to fitting. Costs: ≥64 KB of NWRAM-B/C, a 5th upstream hook on the SCFG/MBK lock, and bus, coherency and DTCM risks melonDS can't show. | [r1-dsp.md](r1-dsp.md) |
+| R1 DSP (Teak) | not worth it | Can't run rcheevos, even with a minimal patch (16-bit char, 124 KB data space, buggy toolchain). As a snapshot copier it saves 0-5k cycles/frame on MKDS and 30-65k on Platinum (D), so no game goes from not fitting to fitting. Costs: ≥64 KB of NWRAM-B/C, a 5th upstream hook on the SCFG/MBK lock, and bus, coherency and DTCM risks melonDS can't show. | [r1-dsp.md](r1-dsp.md) |
 | R2 NDMA | not worth it | No gather or chaining, can't follow pointer chains, can't reach TCM or the cache. Of the per-frame work, NDMA could only take the copying of direct words: 0-2k cycles/frame on MKDS, 0-3k on Platinum. Evaluation is ~92% of the MKDS cost. | [r2-ndma.md](r2-ndma.md) |
-| R3 other | not worth it | AES, the divider, TCM/VRAM, cache lockdown, PLD, GX, camera, Atheros and the 3DS ARM11 each fail the hard rules or do nothing for us. No rcheevos public knob skips work soundly. A unity build of rcheevos is a no-op at -Os and saves ≤20k on MKDS at -O2: at most an extra arm of eval-speed's rank 7 LTO A/B. | [r3-other.md](r3-other.md) |
+| R3 other | not worth it | AES, the divider, TCM/VRAM, cache lockdown, PLD, GX, camera, Atheros and the 3DS ARM11 each fail the hard rules or do nothing for us. No rcheevos public knob skips work soundly (a minimal, provably identical patch can: change-driven evaluation, see [../rnd-change-driven/](../rnd-change-driven/)). A unity build of rcheevos is a no-op at -Os and saves ≤20k on MKDS at -O2: at most an extra arm of eval-speed's rank 7 LTO A/B. | [r3-other.md](r3-other.md) |
 
 Shared baseline (where ARM9 time goes per game): [baseline.md](baseline.md).
 

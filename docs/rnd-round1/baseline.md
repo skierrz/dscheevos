@@ -63,4 +63,4 @@ These must keep the snapshot semantics. Capture also needs ARM9 cache coherency:
   - LTO on runtime files only;
   - hot .text in NWRAM.
 
-  The best case is MKDS at about 560-620k, which is still above its 319k w1024. Closing that gap needs either a second processor running rcheevos unmodified (ARM7: 465-510k free cycles per frame in gameplay, `arm7-notes.md:41-49`; that lane belongs to arm7eval and idle-coverage) or the float build, which needs an RA ruling.
+  The best case is MKDS at about 560-620k, which is still above its 319k w1024. Closing that gap needs either a second processor running rcheevos (unmodified on the ARM7, or one rc_client split across both CPUs by the provably-identical partition patch now allowed by the 2026-10-13 rcheevos rule) (ARM7: 465-510k free cycles per frame in gameplay, `arm7-notes.md:41-49`; that lane belongs to arm7eval and idle-coverage) or the float build, which needs an RA ruling.
