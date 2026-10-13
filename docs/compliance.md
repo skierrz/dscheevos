@@ -32,7 +32,7 @@ Status: **done**, **partial**, **missing**, or **n/a** (the feature doesn't exis
 |---|---|---|
 | Cheats off | **partial** | Hardcore session: `cheatSize = 0` (`nds-bootstrap: arm9/source/dscheevos_session.c`), so TWiLight's cheat list never loads. Still open (audit 2026-10-12, below): `wideCheatData.bin` runs any Action Replay codes, user AP-fix `.ips`/`.bin` files patch the game, `softResetParams.bin` can boot other code, `patchOffsetCache` is trusted, and a donor ARM7 for one title. Fixes assigned (developer-db). |
 | No rewind | n/a | Not in nds-bootstrap. |
-| No slowdown or frame advance | **done** | The in-game menu's refresh-rate option (slow motion) is hidden in hardcore (`arm9_igm/inGameMenu.c`). No frame advance exists. The CPU and VRAM speed options (in-game menu, `BOOST_CPU`/`BOOST_VRAM`, `DSI_MODE = 2` on a DS game) make a game's own slowdown shorter, not longer: forced off in DScheevos sessions (owner ruling 2026-10-12: no 133 MHz). |
+| No slowdown or frame advance | **done** | The in-game menu's refresh-rate option (slow motion) is hidden in hardcore (`arm9_igm/inGameMenu.c`). No frame advance exists. The CPU and VRAM speed options (in-game menu, `BOOST_CPU`/`BOOST_VRAM`, `DSI_MODE = 2` on a DS game) make a game's own slowdown shorter, not longer: pending owner ruling (whether a player may choose them in hardcore; DScheevos never uses 133 MHz as its own lever). |
 | Loading save states blocked | n/a | Not in nds-bootstrap. |
 | Rich presence and leaderboards can't be turned off | **done** | No setting turns them off, and in hardcore the session always keeps Wi-Fi ("Send unlocks during play" is forced on and shown so). |
 | Resume must drop to casual | n/a | No resume feature. Every start goes through the launcher and a new session. |
@@ -111,7 +111,7 @@ Against RA's page as of 2026-10-12 (it now says "Casual" for softcore, and asks 
 | `patchOffsetCache/<TID>-<CRC>.bin` | nds-bootstrap's patches written at addresses from the file, unchecked | trusted | ignored or checked in hardcore (fix assigned (developer-db)) |
 | `DONOR20_NDS_PATH` (one title) | replaces the game's ARM7 binary | applied | off in hardcore (fix assigned (developer-db)) |
 | `session.used` renamed back, another ROM at the same path | a session hashed for one ROM runs another (nds-bootstrap matches the path only) | possible | invalidate the session after loading, and/or refuse an old one (fix assigned (developer-db)) |
-| in-game menu clock speed and VRAM mode; `BOOST_CPU`, `BOOST_VRAM`; `DSI_MODE = 2` on a DS game | 133 MHz / faster VRAM: shorter in-game slowdown | allowed | forced off in DScheevos sessions, owner ruling 2026-10-12 (fix assigned (developer-db)) |
+| in-game menu clock speed and VRAM mode; `BOOST_CPU`, `BOOST_VRAM`; `DSI_MODE = 2` on a DS game | 133 MHz / faster VRAM: shorter in-game slowdown | allowed | pending owner ruling (DScheevos never uses 133 MHz as its own lever) |
 | cheat list (`cheatData.bin`), RAM viewer, RAM dump, refresh rate | cheats, memory editing, slow motion | blocked | done |
 | key remaps, screen swap, region/language, colour LUT, sound rate, sleep, manual, save path | controls, display, compatibility; saves are user data | allowed | none needed |
 
