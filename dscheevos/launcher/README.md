@@ -9,6 +9,8 @@ Starts each RetroAchievements session before the game boots. TWiLight Menu++ run
 5. Sends what the last session couldn't (`_nds/dscheevos/pending.bin`, see below), then writes `_nds/dscheevos/session.bin` with the server's replies.
 6. Freezes its Wi-Fi driver on the ARM7 without disconnecting (`arm7/`), so the chip stays associated and the game can keep sending unlocks over the same connection. Then it boots the DScheevos build of nds-bootstrap (`_nds/dscheevos/nds-bootstrap.nds`). That build loads the module with the session. `source/chainload.c` does the boot through devkitPro's nds-bootloader (`_nds/dscheevos/load.bin`, built in `loader/`), the way TWiLight Menu++ and hbmenu boot programs.
 
+In hardcore, nds-bootstrap uses only its built-in AP-fix patches and ignores user files in `_nds/nds-bootstrap/apFix/` (they could patch the game after the launcher hashed it). If such a file exists for the game and nds-bootstrap has no built-in fix for it, hardcore isn't offered: the launcher asks to play in Casual (with the file) or without achievements.
+
 If the game has no set, achievements are off, or the game will run in DSi mode, it boots the game without achievements. If it can't get online, it asks: try again, or play without achievements. Hardcore needs a session started online, so it doesn't offer "play now, send later".
 
 ## Screens
@@ -16,8 +18,8 @@ If the game has no set, achievements are off, or the game will run in DSi mode, 
 - **First run.** Log in with your RetroAchievements username and password, typed on the touch keyboard. Only the token the server returns is saved. The password is never stored.
 - **Settings.** Press A on the game in TWiLight Menu++, then hold SELECT, to change them:
   - turn achievements off or on
-  - hardcore on or off
-  - send unlocks during play (softcore only: hardcore always keeps Wi-Fi, so it shows "on (hardcore)")
+  - hardcore on or off (off is Casual, RetroAchievements' name for softcore)
+  - send unlocks during play (Casual only: hardcore always keeps Wi-Fi, so it shows "on (hardcore)")
   - log out
 
   `SPECTATOR = 1` in `dscheevos.ini` (not in the menu) turns on rcheevos' spectator mode: the game evaluates and shows unlocks, nothing is sent, and no session starts on the server. The launcher shows "Spectator: nothing is sent". For bench runs on a real account.
