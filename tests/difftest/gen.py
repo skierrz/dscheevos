@@ -10,8 +10,8 @@
       sweeps through each condition's constants, freezes of 1-600 frames,
       toggles, pointer moves, short reads at the end of main RAM).
   gen.py scripts SET.json SEED FRAMES OUTDIR
-      the seven lifecycle scripts (clean, resets, hardcore off, pauses, short
-      read, award failures, unload/reload).
+      the eight lifecycle scripts (clean, resets, hardcore off, pauses, short
+      read, award failures, unload/reload, hit counts near 2^32).
   gen.py splits SET.json SEED N
       N random --split specs (and the extremes) for partition runs.
 
@@ -245,6 +245,7 @@ def cmd_scripts(setpath, seed, frames, outdir):
     w('6-award-fail.txt', ['0 FAIL award 3', '%d FAIL award 2' % (frames // 2), '%d FAIL submit 2' % (frames // 3)])
     u = rnd.randint(frames // 4, frames // 2)
     w('7-reload.txt', ['%d UNLOAD' % u, '%d LOAD' % (u + rnd.randint(1, 120))])
+    w('8-hits.txt', ['%d HITS %d' % (fr, rnd.getrandbits(31)) for fr in sorted(rnd.sample(range(10, frames), 3))])
 
 
 def cmd_splits(setpath, seed, n):

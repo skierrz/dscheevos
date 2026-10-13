@@ -44,5 +44,17 @@ $(BUILD)/difftest-run-patched-tsan: run.c sha256.h $(addprefix $(PATCHED)/src/,$
 	$(CC) -O1 -g -fsanitize=thread $(RC_DEFS) $(CD_DEF) $(PART_DEF) -DDIFFTEST_THREADS -I$(PATCHED)/include -I$(PATCHED)/src run.c \
 	  $(addprefix $(PATCHED)/src/,$(RC_FILES)) -lm -lpthread -o $@
 
+# measurement builds: copies of both trees with condition counters (stats.sh), --stats FILE
+$(BUILD)/difftest-stats-stock: run.c sha256.h $(BUILD)/stock/.ok
+	./mkstats.sh $(BUILD)/stock $(BUILD)/stats-stock
+	$(CC) $(CFLAGS) $(RC_DEFS) -DDIFFTEST_STATS -I$(BUILD)/stats-stock/include -I$(BUILD)/stats-stock/src run.c \
+	  $(addprefix $(BUILD)/stats-stock/src/,$(RC_FILES)) -lm -o $@
+
+.PHONY: $(BUILD)/difftest-stats-patched
+$(BUILD)/difftest-stats-patched: run.c sha256.h
+	./mkstats.sh $(PATCHED) $(BUILD)/stats-patched
+	$(CC) $(CFLAGS) $(RC_DEFS) $(CD_DEF) -DDIFFTEST_STATS -I$(BUILD)/stats-patched/include -I$(BUILD)/stats-patched/src run.c \
+	  $(addprefix $(BUILD)/stats-patched/src/,$(RC_FILES)) -lm -o $@
+
 clean:
 	rm -rf $(BUILD)

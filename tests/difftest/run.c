@@ -46,6 +46,15 @@
 #include "client/rc_client_internal.h"
 #include "runtime/rc_internal.h"
 
+/* ------------------------------------------------------------------ stats (measurement builds) */
+
+#ifdef DIFFTEST_STATS
+/* counters the measurement copy of the tree increments (stats.sh): conditions evaluated in
+ * groups, of them in the achievement phase, rc_test_condition calls, snapshot walk steps */
+unsigned long g_st_eval, g_st_ach, g_st_ach0, g_st_test, g_st_walk, g_st_lb, g_st_lb0;
+static FILE* g_stats;
+#endif
+
 /* ------------------------------------------------------------------ util */
 
 static void die(const char* fmt, ...)
@@ -413,9 +422,22 @@ static void state_block(rc_client_t* client)
   size_t n;
   uint32_t i, j;
 
+  uint8_t* progress = NULL;
+  int progress_result = 0;
+  size_t progress_size;
+
   g_state_len = 0;
   if (!g_state) { g_state_cap = 65536; g_state = (char*)malloc(g_state_cap); }
   g_state[0] = 0;
+
+  /* serialize the progress first: with change-driven evaluation, what is owed to skipped
+   * achievements' hit counts is settled by it (internal state is only exact once observed through
+   * the API); stock serializing changes nothing, so the order is the same for both */
+  progress_size = rc_client_progress_size(client);
+  if (progress_size) {
+    progress = (uint8_t*)malloc(progress_size);
+    progress_result = rc_client_serialize_progress_sized(client, progress, progress_size);
+  }
 
   al = rc_client_create_achievement_list(client, RC_CLIENT_ACHIEVEMENT_CATEGORY_PROMOTED_AND_UNPROMOTED, RC_CLIENT_ACHIEVEMENT_LIST_GROUPING_LOCK_STATE);
   if (al) {
@@ -450,14 +472,11 @@ static void state_block(rc_client_t* client)
   state_printf("summary %u %u %u %u %u %u %ld %ld\n", sum.num_promoted_achievements, sum.num_unpromoted_achievements,
                sum.num_unlocked_achievements, sum.num_unsupported_achievements, sum.points_available, sum.points_unlocked,
                (long)sum.beaten_time, (long)sum.completed_time);
-  n = rc_client_progress_size(client);
-  if (n) {
-    uint8_t* p = (uint8_t*)malloc(n);
-    int r = rc_client_serialize_progress_sized(client, p, n);
+  if (progress) {
     char h[65];
-    hash_hex(p, n, h);
-    state_printf("progress %d %zu %s\n", r, n, h);
-    free(p);
+    hash_hex(progress, progress_size, h);
+    state_printf("progress %d %zu %s\n", progress_result, progress_size, h);
+    free(progress);
   }
 }
 
@@ -596,6 +615,45 @@ static void parse_split(const char* spec)
 }
 #endif
 
+/* ------------------------------------------------------------------ hit counts near 2^32 */
+
+/* HITS seed: round-trips the progress through serialize/deserialize (so a change-driven index is
+ * dropped), then sets every non-zero hit count without a target in the active achievements to just
+ * below 2^32 or just below 2^32 - 0x10000, so they wrap (or near a skip limit) within the run.
+ * The same on both sides. */
+static void hits_near_wrap(rc_client_t* client, uint32_t seed)
+{
+  const rc_client_subset_info_t* subset;
+  size_t n;
+  uint8_t* p;
+  if (!client->game) return;
+  n = rc_client_progress_size(client);
+  if (!n) return;
+  p = (uint8_t*)malloc(n);
+  if (rc_client_serialize_progress_sized(client, p, n) == RC_OK)
+    rc_client_deserialize_progress_sized(client, p, n);
+  free(p);
+  for (subset = client->game->subsets; subset; subset = subset->next) {
+    uint32_t i;
+    for (i = 0; i < subset->public_.num_achievements; i++) {
+      const rc_trigger_t* t = subset->achievements[i].trigger;
+      const rc_condset_t* cs;
+      int k = 0;
+      if (!t || !rc_trigger_state_active(t->state)) continue;
+      for (cs = t->requirement; cs || k == 0; cs = (k == 0) ? t->alternative : cs->next, k++) {
+        rc_condition_t* c;
+        if (!cs) { if (k == 0) continue; break; }
+        for (c = cs->conditions; c; c = c->next) {
+          if (c->current_hits && !c->required_hits) {
+            seed = seed * 1103515245u + 12345u;
+            c->current_hits = ((seed >> 16) & 1 ? 0xFFFFFFFFu : 0xFFFEFFFFu) - ((seed >> 17) % 400u);
+          }
+        }
+      }
+    }
+  }
+}
+
 /* ------------------------------------------------------------------ script */
 
 typedef struct { uint32_t frame; char cmd[16]; char a[32]; uint32_t b, c; } command_t;
@@ -684,7 +742,7 @@ int main(int argc, char** argv)
   const char *set = NULL, *session = NULL, *trace = NULL, *script = NULL, *out = NULL;
   const char *mode = "single", *split = "none", *features = "";
   int hardcore = 1, paused = 0, i, flags, ci = 0;
-  long full_from = -1, max_frames = -1;
+  long full_from = -1, max_frames = -1, state_sparse = 0;
   uint32_t frame, frames_done = 0;
   rc_client_t* client;
   char h[65];
@@ -702,7 +760,11 @@ int main(int argc, char** argv)
     else if (ARG("--hardcore")) hardcore = atoi(argv[++i]);
     else if (ARG("--full")) full_from = atol(argv[++i]);
     else if (ARG("--frames")) max_frames = atol(argv[++i]);
+    else if (ARG("--state-sparse")) state_sparse = atol(argv[++i]);
     else if (ARG("--out")) out = argv[++i];
+#ifdef DIFFTEST_STATS
+    else if (ARG("--stats")) { g_stats = fopen(argv[++i], "w"); if (!g_stats) die("can't write stats"); }
+#endif
     else if (!strcmp(a, "--fault")) {
 #ifdef DIFFTEST_PARTITION
       g_fault = 1;
@@ -773,6 +835,7 @@ int main(int argc, char** argv)
       else if (!strcmp(c->cmd, "RESET")) rc_client_reset(client);
       else if (!strcmp(c->cmd, "HARDCORE")) rc_client_set_hardcore_enabled(client, atoi(c->a));
       else if (!strcmp(c->cmd, "PAUSE")) paused = (int)strtol(c->a, NULL, 0);
+      else if (!strcmp(c->cmd, "HITS")) hits_near_wrap(client, (uint32_t)strtoul(c->a, NULL, 0));
       else if (!strcmp(c->cmd, "SHORTREAD") && g_short_count < MAX_SHORT) {
         g_short[g_short_count].addr = (uint32_t)strtoul(c->a, NULL, 0);
         g_short[g_short_count].len = c->b;
@@ -794,6 +857,21 @@ int main(int argc, char** argv)
       rc_client_do_frame(client);
     for (i = 0; i < g_short_count; i++)
       if (g_short[i].frames) g_short[i].frames--;
+#ifdef DIFFTEST_STATS
+    if (g_stats) {
+      /* measurement: no state block (it serializes, which would settle owed tallies every frame) */
+      fprintf(g_stats, "%u %lu %lu %lu %lu %lu\n", frame, g_st_eval, g_st_ach, g_st_test, g_st_walk, g_st_lb);
+      g_st_eval = g_st_ach = g_st_test = g_st_walk = g_st_lb = 0;
+      frames_done++;
+      continue;
+    }
+#endif
+    /* --state-sparse K: the state block (which serializes the progress) on about 1 frame in K,
+     * so what change-driven evaluation owes skipped achievements builds up between them */
+    if (state_sparse > 1 && ((frame * 2654435761u) >> 8) % (uint32_t)state_sparse != 0) {
+      frames_done++;
+      continue;
+    }
     state_block(client);
     hash_hex(g_state, g_state_len, h);
     fprintf(g_log, "S %s\n", h);
