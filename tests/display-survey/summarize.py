@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Summarise the M1 display survey (melonds-headless --survey output).
 
-usage: summarize.py RUNDIR [--gameplay gameplay.tsv] [--dumps DIR] [--json OUT]
+usage: summarize.py RUNDIR [RUNDIR...] [--gameplay gameplay.tsv] [--dumps DIR] [--json OUT]
 
 RUNDIR holds, per title, SLUG.json, SLUG.frames.csv.gz and titles.tsv (slug,
 ROM name) from run_survey.sh. gameplay.tsv (slug, yes/no/partial, note) is the
@@ -49,6 +49,31 @@ def stretches(flags, minlen=30, skip_start=True):
     return out
 
 
+def handler_core(code, ptr):
+    """The handler's own code: the dump up to its first literal pool (the
+    lowest PC-relative LDR target inside the dump), so the function that the
+    linker placed after it doesn't split variants. Needs capstone."""
+    try:
+        import capstone
+    except ImportError:
+        return code
+    thumb = ptr & 1
+    md = capstone.Cs(capstone.CS_ARCH_ARM, capstone.CS_MODE_THUMB if thumb else capstone.CS_MODE_ARM)
+    md.detail = True
+    base = ptr & ~1
+    end = len(code)
+    for ins in md.disasm(bytes(code), base):
+        if ins.address - base >= end:
+            break
+        if ins.mnemonic.startswith("ldr") and "[pc" in ins.op_str:
+            for op in ins.operands:
+                if op.type == capstone.arm.ARM_OP_MEM and op.mem.base == capstone.arm.ARM_REG_PC:
+                    tgt = ((ins.address + (4 if thumb else 8)) & ~3) + op.mem.disp
+                    if 0 <= tgt - base < end:
+                        end = tgt - base
+    return code[:end]
+
+
 def lit_mask(code, ptr):
     """Mask literal-pool words referenced by PC-relative LDRs inside the dump."""
     try:
@@ -90,7 +115,16 @@ def analyse(rundir, slug, gameplay):
     r["A_win_abs"] = sum(d["win_abs"] for d in dA if d["op"] == "w")
     r["A_win_lo"] = sum(d["win"] for d in dA if d["op"] == "w" and not b2(d["off"], d["size"]))
     r["A_win_reads_b2"] = sum(d["win"] for d in dA if d["op"] == "r" and b2(d["off"], d["size"]))
-    r["A_win_reads_b2_frames"] = None
+    # only while the strip could be live (A mode 1 at line 0 for >= 30 frames)
+    r["live_frames"] = j.get("live_frames", 0)
+    r["A_live_rmw"] = sum(d.get("live_rmw", 0) for d in dA if d["op"] == "w")
+    r["A_live_bad"] = sum(d.get("live_abs", 0) + d.get("live_rmw_mode", 0) for d in dA if d["op"] == "w")
+    r["A_live_bad_events"] = j.get("dispcnt_live_bad_writes", [])
+    # of those (from the capped event list): writes that change the mode bits vs keep mode 1
+    # (an absolute write of mode 1 only drops the strip for that frame)
+    r["A_live_modechg"] = sum(1 for e in r["A_live_bad_events"] if (int(e["old"], 16) ^ int(e["new"], 16)) & 0x30000)
+    r["A_live_reads_b2"] = sum(d.get("live_win", 0) for d in dA if d["op"] == "r" and b2(d["off"], d["size"]))
+    r["A_live_bare"] = sum(b.get("live_win", 0) for b in j.get("bare_reads", []))
     r["A_bare_win"] = sum(b["win"] for b in j.get("bare_reads", []))
     r["A_bare_win_pcs"] = sorted({b["pc"] for b in j.get("bare_reads", []) if b["win"]})
     r["A_win_abs_pcs"] = sorted({d["pc"] for d in dA if d["op"] == "w" and (d["win_abs"] or d["win_rmw_mode"])})
@@ -117,7 +151,7 @@ def analyse(rundir, slug, gameplay):
     hbl = j["hbl_lines"]
     r["hbl_any_r16"] = sum(hbl[R16_LO:R16_HI + 1])
     # display register writes: raster classification
-    raster, dma_raster, r16, r16_keys = 0, 0, 0, []
+    raster, dma_raster, r16, r16_keys, r16_band_total = 0, 0, 0, [], 0
     early_hist = [0] * 41
     for k in j["regwrites"]:
         lines = k["lines"]
@@ -131,7 +165,7 @@ def analyse(rundir, slug, gameplay):
         locked = k["frames"] >= 30 and n >= 30 and vis and best >= 0.8 * n
         band = sum(lines[R16_LO:R16_HI + 1])
         if is_dma:
-            if vis:
+            if vis and k["frames"] >= 30:   # repeated per-frame DMA (HBlank DMA), not a one-off fill
                 dma_raster += 1
             continue
         if (is_irq and vis) or locked:
@@ -139,9 +173,11 @@ def analyse(rundir, slug, gameplay):
             if band >= 5:
                 r16 += 1
                 r16_keys.append(f"{k['addr']}@{k['pc']}/{k['ctx']}:{band}")
+                r16_band_total += band
     r["raster_keys"] = raster
     r["dma_raster_keys"] = dma_raster
     r["r16_keys"] = r16_keys
+    r["r16_writes"] = r16_band_total
     r["early_hist"] = early_hist
     # capture / FIFO / DMA mode 4
     r["cap_en"] = j["capture_enables"]
@@ -187,10 +223,34 @@ def analyse(rundir, slug, gameplay):
         r["irq_code"] = code
         r["irq_raw"] = hashlib.sha1(code).hexdigest()[:10]
         r["irq_norm"] = hashlib.sha1(lit_mask(code, ptr)).hexdigest()[:10]
+        core = handler_core(code, ptr)
+        r["irq_core_len"] = len(core)
+        r["irq_core"] = hashlib.sha1(core).hexdigest()[:10]
         r["irq_stable"] = len({h["ptr"] for h in hs if h["code"]}) == 1 and len({h["code"] for h in hs if h["code"]}) == 1
     else:
         r["irq_ptr"] = None
     return r
+
+
+def verdict_lenient(r):
+    """Owner-alternative reading: an absolute write that keeps mode 1 only
+    drops the strip for a frame (hardware.md 2.1), so only mode-changing
+    writes count; R16 hits count only above 1 write per 1000 frames."""
+    g = r["gameplay"][0]
+    reasons = []
+    if r["cap_fifo"] or r["dma4"] or r["fifo_writes"]:
+        reasons.append("FIFO capture/DMA mode 4")
+    if r["A_live_modechg"]:
+        reasons.append(f"mode-changing DISPCNT A write in the window x{r['A_live_modechg']}")
+    if r["ie_abs_later"]:
+        reasons.append(f"absolute IE writes x{r['ie_abs_later']}")
+    if r["r16_writes"] > r["frames"] / 1000:
+        reasons.append(f"raster writes at lines {R16_LO}-{R16_HI} x{r['r16_writes']}")
+    if reasons:
+        return "no", "; ".join(reasons)
+    if g != "yes":
+        return "unknown", "no gameplay reached" if g == "no" else "gameplay only partly reached"
+    return "yes", ""
 
 
 def verdict(r, ie_hook=False):
@@ -198,8 +258,8 @@ def verdict(r, ie_hook=False):
     reasons = []
     if r["cap_fifo"] or r["dma4"] or r["fifo_writes"]:
         reasons.append("FIFO capture/DMA mode 4")
-    if r["A_win_abs"] or r["A_win_rmwmode"]:
-        reasons.append(f"DISPCNT A non-RMW write in window x{r['A_win_abs'] + r['A_win_rmwmode']}")
+    if r["A_live_bad"]:
+        reasons.append(f"DISPCNT A non-RMW write in the window while live x{r['A_live_bad']}")
     if r["ie_abs_later"] and not ie_hook:
         reasons.append(f"absolute IE writes x{r['ie_abs_later']}")
     if r["r16_keys"]:
@@ -213,7 +273,11 @@ def verdict(r, ie_hook=False):
 
 def main():
     args = sys.argv[1:]
-    rundir = args[0]
+    rundirs = []
+    for a in args:
+        if a.startswith("--"):
+            break
+        rundirs.append(a)
     gp_path = args[args.index("--gameplay") + 1] if "--gameplay" in args else None
     dumps = args[args.index("--dumps") + 1] if "--dumps" in args else None
     outjson = args[args.index("--json") + 1] if "--json" in args else None
@@ -224,68 +288,75 @@ def main():
                 p = line.rstrip("\n").split("\t")
                 gameplay[p[0]] = (p[1], p[2] if len(p) > 2 else "")
     titles = []
-    for line in open(os.path.join(rundir, "titles.tsv")):
-        s, name = line.rstrip("\n").split("\t", 1)
-        if os.path.exists(os.path.join(rundir, s + ".json")) and s not in [t[0] for t in titles]:
-            titles.append((s, name))
+    for rundir in rundirs:
+        for line in open(os.path.join(rundir, "titles.tsv")):
+            s, name = line.rstrip("\n").split("\t", 1)
+            if os.path.exists(os.path.join(rundir, s + ".json")) and s not in [t[0] for t in titles]:
+                titles.append((s, name, rundir))
+    titles.sort(key=lambda t: t[1].lower())
     res = []
-    for s, name in titles:
+    for s, name, rundir in titles:
         r = analyse(rundir, s, gameplay)
+        r["touchy"] = "input.txt" in os.listdir(rundir) and "--touchy" in open(os.path.join(rundir, "input.txt")).readline()
         r["name"] = name
         r["verdict"], r["why"] = verdict(r)
         r["verdict_iehook"], r["why_iehook"] = verdict(r, ie_hook=True)
+        r["verdict_lenient"], r["why_lenient"] = verdict_lenient(r)
         res.append(r)
     # IRQ variants
     variants = {}
     for r in res:
         if r.get("irq_ptr"):
-            variants.setdefault(r["irq_norm"], []).append(r)
+            variants.setdefault(r["irq_core"], []).append(r)
     vid = {h: f"V{i + 1}" for i, h in enumerate(sorted(variants, key=lambda h: -len(variants[h])))}
     for r in res:
-        r["irq_var"] = vid.get(r.get("irq_norm"), "-")
+        r["irq_var"] = vid.get(r.get("irq_core"), "-")
     if dumps:
         os.makedirs(dumps, exist_ok=True)
         with open(os.path.join(dumps, "variants.tsv"), "w") as f:
-            f.write("variant\traw_sha1\tnorm_sha1\tptr\tdtcm\tslug\n")
+            f.write("variant\tcore_sha1\tcore_len\traw_sha1\tnorm_sha1\tptr\tdtcm\tslug\n")
             for r in res:
                 if r.get("irq_ptr"):
                     open(os.path.join(dumps, r["slug"] + ".irq.bin"), "wb").write(r["irq_code"])
-                    f.write(f"{r['irq_var']}\t{r['irq_raw']}\t{r['irq_norm']}\t{r['irq_ptr']}\t{r['irq_dtcm']}\t{r['slug']}\n")
+                    f.write(f"{r['irq_var']}\t{r['irq_core']}\t{r['irq_core_len']}\t{r['irq_raw']}\t{r['irq_norm']}\t{r['irq_ptr']}\t{r['irq_dtcm']}\t{r['slug']}\n")
     # tables
     short = lambda n: n.split(" (")[0][:34]
-    print("| Title | Gameplay | DISPCNT A w/r per frame | A in window: byte-2 writes RMW / RMW-mode / abs; low-half writes | A byte-2 reads in window (bare) | A mode change outside VBlank | IE abs writes boot / later | HBlank IRQ frames | VCOUNT IRQ frames (lines) | raster keys (R16 hits) | HBlank-DMA keys | capture en / FIFO / DMA4 | fade>=12 % frames | black >=30f per 5 min (incl. fade 16) | IRQ handler |")
-    print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+    print("| Title | Gameplay | Live frames % | DISPCNT A w / r per frame | A window writes while live: RMW / non-RMW | A byte-2 reads in window while live (bare) | A mode change outside VBlank | Abs. IE writes boot / later | HBlank IRQ frames % | VCOUNT IRQ frames % (lines) | Raster keys (R16 band hits) | HBlank-DMA keys | Capture en / FIFO / DMA4 | Fade>=12 % | Black >=30f per 5 min (incl. fade 16) | IRQ handler |")
+    print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     for r in res:
-        print(f"| {short(r['name'])} | {r['gameplay'][0]} | {r['A_w_pf']:.1f} / {r['A_r_pf']:.1f} | {r['A_win_rmw']} / {r['A_win_rmwmode']} / {r['A_win_abs']}; {r['A_win_lo']} | "
-              f"{r['A_win_reads_b2']} ({r['A_bare_win']}) | {r['A_mode_outvbl']} | {r['ie_abs_boot']} / {r['ie_abs_later']} | {r['hbl_frames']} | "
-              f"{r['vc_frames']} ({','.join(map(str, r['vc_top_lines']))}) | {r['raster_keys']} ({len(r['r16_keys'])}) | {r['dma_raster_keys']} | "
-              f"{r['cap_en']} / {r['cap_fifo'] + r['fifo_writes']} / {r['dma4']} | {r['fade_frames_pct']:.1f} | {r['black_stretches_5min']:.1f} ({r['black16_stretches_5min']:.1f}) | {r['irq_var']} {r.get('irq_ptr') or ''} |")
+        fr = max(r["frames"], 1)
+        print(f"| {short(r['name'])}{' (t)' if r.get('touchy') else ''} | {r['gameplay'][0]} | {100 * r['live_frames'] / fr:.0f} | {r['A_w_pf']:.1f} / {r['A_r_pf']:.1f} | {r['A_live_rmw']} / {r['A_live_bad']} | "
+              f"{r['A_live_reads_b2']} ({r['A_live_bare']}) | {r['A_mode_outvbl']} | {r['ie_abs_boot']} / {r['ie_abs_later']} | {100 * r['hbl_frames'] / fr:.0f} | "
+              f"{100 * r['vc_frames'] / fr:.0f} ({','.join(map(str, r['vc_top_lines']))}) | {r['raster_keys']} ({len(r['r16_keys'])}) | {r['dma_raster_keys']} | "
+              f"{r['cap_en']} / {r['cap_fifo'] + r['fifo_writes']} / {r['dma4']} | {r['fade_frames_pct']:.1f} | {r['black_stretches_5min']:.1f} ({r['black16_stretches_5min']:.1f}) | {r['irq_var']} |")
     print()
-    print("| Title | P2 allow list | Reason | If the IE hook re-ORs bits 28-31 on every IE write |")
-    print("|---|---|---|---|")
+    print("| Title | P2 allow list (rules as set) | Reason | Lenient reading | Reason |")
+    print("|---|---|---|---|---|")
     for r in res:
-        print(f"| {short(r['name'])} | {r['verdict']} | {r['why']} | {r['verdict_iehook']} {('(' + r['why_iehook'] + ')') if r['why_iehook'] else ''} |")
+        print(f"| {short(r['name'])} | {r['verdict']} | {r['why']} | {r['verdict_lenient']} | {r['why_lenient']} |")
     n = len(res)
     cnt = lambda key, v: sum(1 for r in res if r[key] == v)
     print()
     print(f"titles {n}; reached gameplay {sum(1 for r in res if r['gameplay'][0] == 'yes')}")
-    for key in ("verdict", "verdict_iehook"):
+    for key in ("verdict", "verdict_iehook", "verdict_lenient"):
         y, no, u = cnt(key, "yes"), cnt(key, "no"), cnt(key, "unknown")
         print(f"{key}: yes {y} ({100 * y / n:.0f}%), no {no}, unknown {u}; of known {y}/{y + no} = {100 * y / max(y + no, 1):.0f}%")
     gp = [r for r in res if r["gameplay"][0] == "yes"]
     med = statistics.median([r["black_stretches_5min"] for r in res]) if res else 0
     med16 = statistics.median([r["black16_stretches_5min"] for r in res]) if res else 0
     medg = statistics.median([r["black_stretches_5min"] for r in gp]) if gp else 0
-    print(f"M3 black stretches/5 min: median all {med:.2f} (incl. fade-16 {med16:.2f}); median gameplay titles {medg:.2f}")
-    print(f"IRQ handler variants (normalised): {len(variants)}; sizes " + ", ".join(f"{vid[h]}={len(v)}" for h, v in sorted(variants.items(), key=lambda x: -len(x[1]))))
+    medg16 = statistics.median([r["black16_stretches_5min"] for r in gp]) if gp else 0
+    print(f"M3 black stretches/5 min: median all {med:.2f} (incl. fade-16 {med16:.2f}); median gameplay titles {medg:.2f} (incl. fade-16 {medg16:.2f})")
+    print(f"  titles with >=1 per 5 min: {sum(1 for r in res if r['black_stretches_5min'] >= 1)} (incl. fade-16 {sum(1 for r in res if r['black16_stretches_5min'] >= 1)})")
+    print(f"IRQ handler variants (handler code up to its literal pool): {len(variants)}; sizes " + ", ".join(f"{vid[h]}={len(v)}" for h, v in sorted(variants.items(), key=lambda x: -len(x[1]))))
     for h, v in sorted(variants.items(), key=lambda x: -len(x[1])):
         print(f"  {vid[h]}: " + ", ".join(short(r['name']) for r in v))
     rawv = {r["irq_raw"] for r in res if r.get("irq_ptr")}
-    print(f"IRQ handler variants (raw bytes): {len(rawv)}")
+    print(f"IRQ handler variants (raw 0x80 bytes): {len(rawv)}; with literal words masked: {len({r['irq_norm'] for r in res if r.get('irq_ptr')})}")
     for r in res:
-        if r["r16_keys"] or r["ie_abs_later"] or r["A_win_abs"] or r["A_win_rmwmode"] or r["A_bare_win_pcs"]:
+        if r["r16_keys"] or r["ie_abs_later"] or r["A_live_bad"] or r["A_live_bare"]:
             print(f"  detail {short(r['name'])}: r16={r['r16_keys'][:6]} ie_later_pcs={r['ie_abs_later_pcs'][:6]} ie_later_frames={r['ie_abs_later_frames']} "
-                  f"win_abs_pcs={r['A_win_abs_pcs'][:6]} bare_win_pcs={r['A_bare_win_pcs'][:6]} hbl_r16={r['hbl_any_r16']}")
+                  f"live_bad={[(e['frame'], e['line'], e['pc'], e['old'], e['new'], e['cls']) for e in r['A_live_bad_events'][:4]]} bare_win_pcs={r['A_bare_win_pcs'][:6]} hbl_r16={r['hbl_any_r16']}")
     if outjson:
         for r in res:
             r.pop("irq_code", None)
