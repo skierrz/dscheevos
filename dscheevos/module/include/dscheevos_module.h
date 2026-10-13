@@ -343,7 +343,8 @@ typedef struct dscm_header_t {
   dscm_list_t* volatile list;         /* 0x2C: published achievement list, 0 until the set is loaded */
   dscm_notices_t* notices;            /* 0x30 */
   dscm_journal_t* journal;            /* 0x34: cached-mirror address; the ARM7 reads RAM directly */
-  uint32_t reserved[2];
+  uint32_t nwram_base;                /* 0x38: NWRAM-B/C nds-bootstrap's ARM7 granted the */
+  uint32_t nwram_size;                /* 0x3C: module (set data), in the ARM9's hands at init; 0: none */
   volatile uint32_t notify_count;     /* 0x40: unlocks so far; own cache line, cleaned to RAM */
   void* net_ring;                     /* 0x44: dscm_shim.h ring, 0 if none; same line */
   volatile uint32_t cues;             /* 0x48: LED cues for the ARM7 (DSCM_CUE_*); same cache line, cleaned to RAM */

@@ -379,6 +379,68 @@ static void update_cues(void)
   }
 }
 
+/* ---- NWRAM-B/C ---- */
+
+/* nds-bootstrap's grant (header 0x38), if the memory is really there: one
+ * word in every 32 KB slot it spans, plus its last, written and read back
+ * (the MPU is off here: nothing is cached). Bytes are ours either way. */
+static int __attribute__((target("arm"), noinline)) nwram_usable(uint32_t base, uint32_t size)
+{
+  volatile uint32_t* w;
+  uint32_t a, ctrl, end = base + size;
+  __asm__ volatile("mrc p15, 0, %0, c1, c0, 0" : "=r"(ctrl));
+  if ((ctrl & 1u) || base < 0x03700000u || end > 0x03780000u || end <= base)
+    return 0;                          /* MPU on (a cache could fake it), or not NWRAM-B/C */
+  for (a = (base + 3u) & ~3u; a < end; a = (a | 0x7FFFu) + 1u) {
+    w = (volatile uint32_t*)a;
+    *w = a ^ 0x5A5AA5A5u;
+  }
+  w = (volatile uint32_t*)((end - 4u) & ~3u);
+  *w = (uint32_t)w ^ 0x3C3CC3C3u;
+  for (a = (base + 3u) & ~3u; a < end; a = (a | 0x7FFFu) + 1u)
+    if (*(volatile uint32_t*)a != (a ^ 0x5A5AA5A5u) && (uint32_t)w != a)
+      return 0;
+  return *w == ((uint32_t)w ^ 0x3C3CC3C3u);
+}
+
+/* The game's MPU (read only): which region maps the NWRAM zone, and whether
+ * it is cached and write-back. Logged for the hardware log; a game whose
+ * MPU leaves it uncached would make the zone slower than main RAM. */
+static void __attribute__((target("arm"), noinline)) nwram_mpu_check(void)
+{
+  uint32_t r[8], dc, wb, ap, a = dscm_g_heap.zone_base[0], v = NWRAM_MPU_SEEN | (0xFu << NWRAM_MPU_REGION_SHIFT);
+  int i;
+  __asm__ volatile("mrc p15, 0, %0, c6, c0, 0" : "=r"(r[0]));
+  __asm__ volatile("mrc p15, 0, %0, c6, c1, 0" : "=r"(r[1]));
+  __asm__ volatile("mrc p15, 0, %0, c6, c2, 0" : "=r"(r[2]));
+  __asm__ volatile("mrc p15, 0, %0, c6, c3, 0" : "=r"(r[3]));
+  __asm__ volatile("mrc p15, 0, %0, c6, c4, 0" : "=r"(r[4]));
+  __asm__ volatile("mrc p15, 0, %0, c6, c5, 0" : "=r"(r[5]));
+  __asm__ volatile("mrc p15, 0, %0, c6, c6, 0" : "=r"(r[6]));
+  __asm__ volatile("mrc p15, 0, %0, c6, c7, 0" : "=r"(r[7]));
+  __asm__ volatile("mrc p15, 0, %0, c2, c0, 0" : "=r"(dc));
+  __asm__ volatile("mrc p15, 0, %0, c3, c0, 0" : "=r"(wb));
+  __asm__ volatile("mrc p15, 0, %0, c5, c0, 2" : "=r"(ap));
+  for (i = 7; i >= 0; i--) {
+    uint64_t size = 2ull << ((r[i] >> 1) & 0x1Fu);
+    uint32_t start = r[i] & ~0xFFFu;
+    if (!(r[i] & 1u) || ((r[i] >> 1) & 0x1Fu) < 11u)
+      continue;                        /* off, or not a valid size */
+    if ((uint64_t)(a - (uint32_t)(start & ~(uint32_t)(size - 1u))) < size) {
+      uint32_t perm = (ap >> (4 * i)) & 0xFu;
+      v = NWRAM_MPU_SEEN | ((uint32_t)i << NWRAM_MPU_REGION_SHIFT);
+      if (perm == 1u || perm == 3u)    /* privileged read/write (the game runs privileged) */
+        v |= NWRAM_MPU_RW;
+      if (dc & (1u << i))
+        v |= NWRAM_MPU_DCACHE;
+      if (wb & (1u << i))
+        v |= NWRAM_MPU_BUFFER;
+      break;
+    }
+  }
+  dscm_g_heap.nwram_mpu = v;
+}
+
 /* ---- entry points ---- */
 
 extern char __bss_start[], __bss_end[];
@@ -406,6 +468,10 @@ int module_init(const dscm_boot_t* boot)
   }
   g_boot = *boot;
   g_session = (const char*)boot;
+  /* the set's zone: NWRAM-B/C if nds-bootstrap granted it, else main RAM */
+  dscm_g_heap.nwram_granted = DSCM_HEADER->nwram_size;
+  if (DSCM_HEADER->nwram_size && nwram_usable(DSCM_HEADER->nwram_base, DSCM_HEADER->nwram_size))
+    heap_zone_nwram((void*)DSCM_HEADER->nwram_base, DSCM_HEADER->nwram_size);
   heap_load_begin(boot->file_size);   /* before the first malloc */
   g_boot.host[sizeof(g_boot.host) - 1] = '\0';
   g_boot.username[sizeof(g_boot.username) - 1] = '\0';
@@ -427,6 +493,7 @@ int module_init(const dscm_boot_t* boot)
   platform.notices = &dscm_g_notices;
   platform.publish_list = publish_list;
   platform.frame = frame_count;
+  platform.shared_alloc = heap_shared;
 
   memset(&config, 0, sizeof(config));
   config.host = g_boot.host;
@@ -621,6 +688,8 @@ int module_idle(int idle_loop)
   }
   if (dscm_g_status.pending_requests)
     poll_network();   /* answers that came in since the last pass */
+  if (!dscm_g_heap.nwram_mpu && dscm_g_heap.zone_end[0])
+    nwram_mpu_check();   /* once, under the game's MPU */
   if (g_progress_stale)
     update_progress();
 

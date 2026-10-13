@@ -80,7 +80,14 @@ typedef struct dscm_heap_t {
   uint32_t zone_used[2], zone_holes[2]; /* at the end of the load: bytes in blocks, bytes freed below the top */
   uint32_t zone_blocks;               /* blocks in use (now) */
   uint32_t zone_missed;               /* load-time bytes no zone had room for (newlib's) */
+  uint32_t nwram_granted;             /* bytes nds-bootstrap granted (0: none); zone_end[0] 0 if they failed the check */
+  uint32_t nwram_mpu;                 /* under the game's MPU, at the first frame: NWRAM_MPU_* */
 } dscm_heap_t;
 extern dscm_heap_t dscm_g_heap;
+#define NWRAM_MPU_SEEN     0x01u      /* checked */
+#define NWRAM_MPU_RW       0x02u      /* data read and write allowed */
+#define NWRAM_MPU_DCACHE   0x04u
+#define NWRAM_MPU_BUFFER   0x08u      /* write-back */
+#define NWRAM_MPU_REGION_SHIFT 8      /* the region that maps it, 0xF00 if none */
 
 #endif

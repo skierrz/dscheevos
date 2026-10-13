@@ -20,6 +20,7 @@
  */
 #include "dscheevos.h"
 #include "dscheevos_module.h"
+#include "heap.h"
 
 #include <nds.h>
 #include <fat.h>
@@ -201,6 +202,101 @@ static void memory_tests(void)
        { int k; for (k = 0; k < 32; k++) write_seq(buf, 512); });
 }
 
+/* ---------------------------------------------------------------- where the set goes */
+
+/* sd:/dscheevos-lab/place.txt picks where the core and rcheevos put the
+ * loaded set, through the module's own heap.c (wrapped malloc):
+ *   newlib   (default) everything on newlib's heap, as before heap.c's zones
+ *   session  rc_api's parse in the session area, the rest newlib's: the
+ *            module before the set zones
+ *   zone     the set zone in main RAM (the module without NWRAM)
+ *   nwram    the set zone in NWRAM-B/C, mapped to the ARM9 at 0x03700000 as
+ *            nds-bootstrap does for a DS-mode game, MPU region 3 narrowed
+ *            to it and made cacheable and write-back as under the games'
+ *            MPU (libnds leaves 0x03000000 uncached), restored after */
+char dscm_host_session[HEAP_SESSION_HEAD + HEAP_ARENA_BYTES] __attribute__((aligned(32)));
+char dscm_host_main_zone[1u << 20] __attribute__((aligned(32)));
+uint32_t dscm_host_main_zone_size;
+enum { PLACE_NEWLIB, PLACE_SESSION, PLACE_ZONE, PLACE_NWRAM };
+static int place = PLACE_NEWLIB;
+static const char* place_name[] = { "newlib", "session", "zone", "nwram" };
+static u32 mpu3_saved, dc_saved, wb_saved;
+
+#define MBK_REG(n) (*(vu32*)(0x04004040 + 4 * ((n) - 1)))
+#define LAB_NWRAM 0x03700000u
+#define LAB_NWRAM_SIZE 0x80000u
+
+static u32 __attribute__((target("arm"), noinline)) cp15_read(int which)
+{
+  u32 v = 0;
+  if (which == 0) __asm__ volatile("mrc p15, 0, %0, c6, c3, 0" : "=r"(v));
+  if (which == 1) __asm__ volatile("mrc p15, 0, %0, c2, c0, 0" : "=r"(v));
+  if (which == 2) __asm__ volatile("mrc p15, 0, %0, c3, c0, 0" : "=r"(v));
+  return v;
+}
+static void __attribute__((target("arm"), noinline)) cp15_region3(u32 region, u32 dc, u32 wb)
+{
+  DC_FlushAll();
+  __asm__ volatile("mcr p15, 0, %0, c6, c3, 0\n mcr p15, 0, %1, c2, c0, 0\n mcr p15, 0, %2, c3, c0, 0"
+                   :: "r"(region), "r"(dc), "r"(wb) : "memory");
+  DC_InvalidateAll();
+}
+
+/* NWRAM-B/C to the ARM9 at 0x03700000-0x0377FFFF (C, then B), checked by
+ * writing every 32 KB slot. Returns 0 if the console won't give it. */
+static int nwram_take(void)
+{
+  u32 a;
+  MBK_REG(2) = 0x9094989C; MBK_REG(3) = 0x8084888C;   /* B: slots 7..0, ARM9 */
+  MBK_REG(4) = 0x9094989C; MBK_REG(5) = 0x8084888C;   /* C */
+  MBK_REG(7) = 0x07C03740;                            /* B at 0x03740000 */
+  MBK_REG(8) = 0x07403700;                            /* C at 0x03700000 */
+  for (a = LAB_NWRAM; a < LAB_NWRAM + LAB_NWRAM_SIZE; a += 0x8000) *(vu32*)a = a ^ 0xA5A55A5A;
+  for (a = LAB_NWRAM; a < LAB_NWRAM + LAB_NWRAM_SIZE; a += 0x8000)
+    if (*(vu32*)a != (a ^ 0xA5A55A5A)) {
+      say("NWRAM: not ours (MBK2 %08lx MBK7 %08lx MBK8 %08lx)", (unsigned long)MBK_REG(2),
+          (unsigned long)MBK_REG(7), (unsigned long)MBK_REG(8));
+      return 0;
+    }
+  mpu3_saved = cp15_read(0);
+  dc_saved = cp15_read(1);
+  wb_saved = cp15_read(2);
+  cp15_region3(LAB_NWRAM | (18u << 1) | 1u, dc_saved | 0x08, wb_saved | 0x08);   /* 512 KB, cached, write-back */
+  return 1;
+}
+static void nwram_give_back(void)
+{
+  cp15_region3(mpu3_saved, dc_saved, wb_saved);
+}
+
+static void place_begin(void)
+{
+  dscm_host_main_zone_size = place == PLACE_ZONE ? sizeof(dscm_host_main_zone) : 0;
+  if (place == PLACE_NWRAM) {
+    if (nwram_take()) {
+      heap_zone_nwram((void*)LAB_NWRAM, LAB_NWRAM_SIZE);
+      dscm_host_main_zone_size = sizeof(dscm_host_main_zone);   /* what NWRAM can't hold */
+    }
+    else {
+      place = PLACE_ZONE;
+      dscm_host_main_zone_size = sizeof(dscm_host_main_zone);
+    }
+  }
+  if (place != PLACE_NEWLIB)
+    heap_load_begin(0);
+}
+
+static void place_end(void)
+{
+  if (place == PLACE_NEWLIB)
+    return;
+  heap_load_end();
+  say("placed (%s): parse %lu B in the session area, %lu on the heap; zones: nwram %lu B (+%lu holes), main %lu B (+%lu), missed %lu",
+      place_name[place], (unsigned long)(dscm_g_heap.parse_top - dscm_g_heap.parse_base), (unsigned long)dscm_g_heap.parse_heap,
+      (unsigned long)dscm_g_heap.zone_used[0], (unsigned long)dscm_g_heap.zone_holes[0],
+      (unsigned long)dscm_g_heap.zone_used[1], (unsigned long)dscm_g_heap.zone_holes[1], (unsigned long)dscm_g_heap.zone_missed);
+}
+
 /* ---------------------------------------------------------------- the core on the typical set */
 
 static u8* ram;                       /* 4 MB fake game RAM */
@@ -271,8 +367,12 @@ static void answer_requests(void)
 {
   int i, n = req_count;
   req_count = 0;
-  for (i = 0; i < n; i++)
-    dsc_http_done(req[i].handle, 200, req[i].body, strlen(req[i].body));
+  for (i = 0; i < n; i++) {
+    u32 len = strlen(req[i].body);
+    heap_transient(len + 1);             /* the core's copy of the reply: as the module, not set data */
+    dsc_http_done(req[i].handle, 200, req[i].body, len);
+    heap_transient(0);
+  }
 }
 static void on_event(const dsc_event_t* e) { (void)e; }
 static void publish_list(struct dscm_list_t* list) { (void)list; }
@@ -343,7 +443,12 @@ static int core_tests(void)
   config.snapshot_slots = 1024;
   config.snapshot_bytes = 256 * 1024;
   config.capture_at_halt = 1;
-  if (dsc_init(&platform, &config) != 0 || dsc_begin_session("0123456789ABCDEF0123456789ABCDEF") != 0) {
+  platform.shared_alloc = heap_shared;
+  place_begin();
+  heap_arena_window(1);                  /* as the module: the snapshot arena in the session area */
+  i = dsc_init(&platform, &config);
+  heap_arena_window(0);
+  if (i != 0 || dsc_begin_session("0123456789ABCDEF0123456789ABCDEF") != 0) {
     say("FAIL init");
     return -1;
   }
@@ -351,6 +456,7 @@ static int core_tests(void)
     answer_requests();
     dsc_idle();
   }
+  place_end();
   if (!dsc_is_active()) { say("FAIL set not loaded"); return -1; }
   dsc_get_stats(&s);
   say("%s set, %s RAM: %lu addresses", set_json == patch_json ? "typical" : "SD", ram_dumped ? "dumped" : "random",
@@ -390,6 +496,8 @@ static int core_tests(void)
   report("idle (eval), warm", idle_warm, FRAMES);
   dsc_get_stats(&s);
   say("evaluated %lu, dropped %lu", (unsigned long)s.frames_evaluated, (unsigned long)s.frames_dropped);
+  if (place == PLACE_NWRAM)
+    nwram_give_back();
   return 0;
 }
 
@@ -406,6 +514,13 @@ int main(void)
   if (ok) {
     u32 n;
     char* j = load_file("sd:/dscheevos-lab/set.json", NULL);
+    char* pl = load_file("sd:/dscheevos-lab/place.txt", NULL);
+    if (pl) {
+      int k;
+      for (k = 0; k < 4; k++)
+        if (!strncmp(pl, place_name[k], strlen(place_name[k]))) place = k;
+      free(pl);
+    }
     char* r = load_file("sd:/dscheevos-lab/ram.bin", &n);
     if (j) set_json = j;
     if (r && n >= 0x400000) {
