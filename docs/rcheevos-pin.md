@@ -1,0 +1,41 @@
+# rcheevos version pin
+
+Which rcheevos DScheevos builds, and why. Checked 2026-10-12.
+
+## Where we are
+
+- Submodule `external/rcheevos`: upstream `develop` at `683197d` ("restructure src folder", 2026-10-04), unmodified. `git describe`: `v12.5.0-9-g683197d`.
+- `RCHEEVOS_VERSION_STRING` still says 12.5.0, so the user agent says `rcheevos/12.5.0` while we run 9 commits past it.
+- Latest release tag: **v12.5.0**. Upstream `develop` is 3 commits past us: `aed817f` (runtime types made internal), `23bcf47` (project files), `116d018` (a test script).
+
+## The 9 commits between v12.5.0 and our pin
+
+| Commit | What | Evaluation semantics | rc_client behaviour | Hashing | API / request format | DS memory map | We rely on it |
+|---|---|---|---|---|---|---|---|
+| `e904fc4` libretro: partial region chunks | `rc_libretro.c` only | - | - | - | - | - | no (not built) |
+| `ea43799` RetroArch compat for Wii/Vita/Switch | `rc_compat.c/.h` additions | - | - | - | - | - | no |
+| `ca7746b` rename core/unofficial to promoted/unpromoted | names only (`RC_CLIENT_ACHIEVEMENT_CATEGORY_PROMOTED`, `unpromoted_enabled`) | - | names only | - | none on the wire | - | **yes**: core and launcher use the new names (`core/src/dscheevos.c`, `launcher/source/session.c`) |
+| `e3f7b7d` `rc_peek_t` replaced by `rc_read_memory_func_t` | the memory read path: `rc_read_memory` reads `n` bytes in one callback call; rc_client's peek helpers removed | **yes, small.** A direct read that comes back short still disables its achievements and leaderboards (now in `rc_client_read_memory_validator`). A pointer-chain step that comes back short now keeps the bytes it got (zero-filled) instead of reading 0. Our read callback fails a read whole (0 bytes), so for us a chain step across a region end still reads 0, as `docs/architecture.md` says | `legacy_peek` setting removed | - | - | - | **yes**: the core's chain code calls `rc_read_memory` / `rc_get_modified_memref_value` with a read function |
+| `f06b14a` unpromoted leaderboards | the `achievementsets` request adds `v=2`; the reply's leaderboard `State` is parsed; unpromoted leaderboards get their own category | unpromoted leaderboards can be loaded | new leaderboard category | - | **yes: `v=2` on `achievementsets`** | - | yes, implicitly: our requests are rcheevos', so they carry `v=2` |
+| `f87c0de` rename softcore to casual | field names (`score_casual`, `unlock_time_casual`); JSON keys unchanged (`SoftcoreScore`) | - | names only | - | none on the wire | - | **yes**: core and launcher use the new names |
+| `e9a6d58` bound progress deserialization | `rc_runtime_progress.c` checks chunk bounds | safety fix for restoring progress (save states) | - | - | - | - | no (we don't restore progress) |
+| `c0a3ebd` stricter JSON arrays | a reply with an array of primitives where objects are expected is now `RC_INVALID_VALUE`; empty-body check uses the length | - | malformed replies rejected | - | parse only | - | no |
+| `683197d` restructure `src/` | `rapi/rhash/rcheevos` folders become `api/hash/runtime/util/client`; file renames; md5 moves to `util/` | - | - | **none**: `rc_hash_nintendo_ds` unchanged apart from include paths and a cast | - | none (`rc_consoleinfo.c` loses an unused include) | **yes**: our Makefiles, the launcher's wrapper files and `tools/rahash` use the new paths; the core includes `runtime/rc_internal.h` |
+
+## What pinning to v12.5.0 would take
+
+Our code uses four of these commits (`ca7746b`, `e3f7b7d`, `f87c0de`, `683197d`). Going back to the tag means porting the core's chain code to `rc_peek_t`, renaming back, changing every source path in nine Makefiles and 24 launcher wrapper files, and losing `v=2`. All of that is churn in our glue to land on an older rcheevos, and then forward again at the next release.
+
+## What the next release will bring
+
+`aed817f` (on `develop`, so in the next release) removes `include/rc_runtime_types.h` and splits the runtime internals into new private headers (`rc_condition.h`, `rc_condset.h`, `rc_alloc.h`, `rc_eval_state.h`, ...). For us:
+- The core reads rcheevos internals (`rc_modified_memref_t`, operands, memrefs) through `runtime/rc_internal.h`; those includes will need updating.
+- The float-operand build (`docs/ra-questions.md` Q11, `fltop.h`) forces a typedef change in `rc_runtime_types.h`, which no longer exists there. It would have to target the new header.
+- The struct sizes and the core's chain copies must be re-checked against the new layout (the core's `DSC_CHECK_FAST_STEPS` tests and the 32-set digest).
+
+## Recommendation
+
+1. **Stay on `683197d` now.** It is upstream code, unmodified, and every change since v12.5.0 is either something we use or harmless for a DS client. Don't move to newer `develop` until the next release: `aed817f` needs a planned port of the core.
+2. **Before the first public release, move to the first release tag that contains `683197d`** (expected v12.6.0). Port the core to the new private headers, rerun the core tests, the module tests, `tests/games`, the perf gate and the 32-set digest, then pin that tag. The user agent then names the exact rcheevos shipped.
+3. **If no such tag exists by release day**, ship `683197d`, and say so where RA and users can see it: `SOURCES.txt` already names exact commits; add "rcheevos 12.5.0 + 9 commits (683197d)" to the release notes. We can't change rcheevos' version string (rcheevos stays unmodified), and the user agent's rcheevos part comes from `rc_client_get_user_agent_clause`.
+4. Never pin a `develop` commit that isn't in a tag for a release that RA validates, if a tag is available: it's the cleanest answer to "which rcheevos is this?"
