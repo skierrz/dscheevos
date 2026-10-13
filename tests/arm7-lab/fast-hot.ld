@@ -1,0 +1,16 @@
+/* every-frame code in ARM7 WRAM: rcheevos' runtime evaluation, rc_client's
+ * per-frame path, the core's read path, memcpy/memset */
+*rc_condition.o(.text .text.*)
+*rc_condset.o(.text .text.*)
+*rc_operand.o(.text .text.*)
+*rc_memref.o(.text .text.*)
+*rc_trigger.o(.text .text.*)
+*rc_value.o(.text .text.*)
+*rc_lboard.o(.text .text.*)
+*rc_runtime.o(.text .text.*)
+*rc_richpresence.o(.text .text.*)
+*rc_client.o(.text.rc_client_do_frame* .text.rc_client_update_memref_values .text.rc_client_reset_pending_events .text.rc_client_raise_pending_events .text.rc_client_idle .text.rc_client_read_modified_memory_helper .text.rc_client_peek* .text.rc_client_update_* .text.rc_client_evaluate*)
+*dscheevos.o(.text.read_memory .text.table_lower .text.region_of .text.dsc_idle .text.load_unaligned)
+*libc.a:*memcpy*.o(.text .text.*)
+*libc.a:*memset.o(.text .text.*)
+*libgcc.a:*(.text .text.*)

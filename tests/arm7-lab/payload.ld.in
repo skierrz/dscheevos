@@ -1,0 +1,37 @@
+/* arm7-lab payload: main RAM image at LAB7_PAYLOAD_BASE, entry first; the
+ * .fast input sections (fast.ld, per variant) run from ARM7 WRAM, copied
+ * there by start7.s. Generated into the build directory by the Makefile. */
+OUTPUT_FORMAT("elf32-littlearm")
+OUTPUT_ARCH(arm)
+ENTRY(payload_entry)
+
+MEMORY {
+  image : ORIGIN = 0x02700000, LENGTH = 0x00400000
+  fast  : ORIGIN = @FAST_ORIGIN@, LENGTH = @FAST_LENGTH@
+}
+
+SECTIONS {
+  .entry  : { KEEP(*(.text.entry)) } > image
+  .fast   : {
+    __fast_vma = .;
+    INCLUDE fast.ld
+    . = ALIGN(4);
+    __fast_end = .;
+  } > fast AT> image
+  __fast_lma = LOADADDR(.fast);
+  .text   : { *(.text .text.* .gnu.linkonce.t.*) *(.glue_7) *(.glue_7t) *(.vfp11_veneer) *(.v4_bx) } > image
+  .rodata : { *(.rodata .rodata.* .gnu.linkonce.r.*) } > image
+  .ARM.exidx : { *(.ARM.exidx* .gnu.linkonce.armexidx.*) } > image
+  .init_array : { KEEP(*(.init_array*)) } > image
+  .data   : { *(.data .data.* .gnu.linkonce.d.*) } > image
+  . = ALIGN(4);
+  __image_end = .;
+  .bss (NOLOAD) : {
+    __bss_start = .;
+    *(.bss .bss.* .gnu.linkonce.b.*) *(COMMON)
+    . = ALIGN(32);
+    __bss_end = .;
+  } > @BSS_REGION@
+  __heap_start = @HEAP_START@;
+  /DISCARD/ : { *(.comment) *(.note*) }
+}
