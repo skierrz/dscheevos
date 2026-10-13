@@ -616,6 +616,8 @@ int module_idle(int idle_loop)
     g_reset_pending = 0;
     dsc_reset();
   }
+  if (dscm_g_status.pending_requests)
+    poll_network();   /* answers that came in since the last pass */
   if (g_progress_stale)
     update_progress();
 
