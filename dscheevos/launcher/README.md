@@ -52,7 +52,7 @@ docker run --rm -v $PWD:/repo -w /repo/dscheevos/launcher skylyrac/blocksds:slim
 docker run --rm -v $PWD:/repo -w /repo devkitpro/devkitarm:20260610 make -C dscheevos/launcher/loader   # load.bin
 ```
 
-The `rcheevos/` and `tls/mbedtls_*.c` files only include the unmodified submodule sources. `tls/dsc_mbedtls_config.h` picks what mbedTLS builds: a TLS 1.2 client with ECDHE, AES-GCM and ChaCha20-Poly1305. `tools/cacerts/gen.py` regenerates `tls/cacerts.c`.
+The `rcheevos/` and `tls/mbedtls_*.c` files only include the submodule sources (rcheevos: upstream plus the patches listed in `docs/rcheevos-pin.md`). `tls/dsc_mbedtls_config.h` picks what mbedTLS builds: a TLS 1.2 client with ECDHE, AES-GCM and ChaCha20-Poly1305. `tools/cacerts/gen.py` regenerates `tls/cacerts.c`.
 
 ## Testing in the emulator
 
