@@ -7,7 +7,8 @@
 #
 # Optional: FRAMES (default 60), BYTES (bytes of RAM changed per frame, 512),
 #   FLOAT=1 (also the float-operand variant, information only),
-#   RAM_<game id>=<file> (a game RAM dump to use instead of random RAM).
+#   RAM_<game id>=<file> (a game RAM dump to use instead of random RAM),
+#   CAPTURES (dsc_capture calls per frame, all counted as the frame's capture; 1).
 # Output: build/realsets/counts.tsv and the table from realsets_report.py.
 # Sets are the server's achievementsets replies; they are not in the repo.
 #
@@ -44,7 +45,7 @@ for v in $VARIANTS; do
     for mode in core rc; do
       line=$(docker run --rm -v "$PWD/$OUT:/b:ro" -v "$SETS:/sets:ro" $ramdirs $QIMAGE \
         qemu-arm-plug -cpu arm946 -plugin /usr/local/lib/icount.so,mb=$mb,me=$me \
-        /b/$v/realsets.elf $mode /sets/$set_file $FRAMES $BYTES $ram 2>&1 | tr '\n' ' ')
+        /b/$v/realsets.elf $mode /sets/$set_file $FRAMES $BYTES ${ram:--} ${CAPTURES:-1} 2>&1 | tr '\n' ' ')
       case $line in *DONE*) ;; *) echo "$id $v $mode: $line" >&2 ;; esac
       printf '%s\t%s\t%s\t%s\t%s\n' "$id" "$v" "$mode" "${ram:+dump}" "$line" >> $OUT/counts.tsv
       echo "$id $v $mode done"

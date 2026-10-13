@@ -291,6 +291,19 @@ static void change_memory(int n)
 
 #define FRAMES 60
 static u32 cap_cold[FRAMES], idle_cold[FRAMES], cap_warm[FRAMES], idle_warm[FRAMES];
+static u32 rewake_cold[FRAMES], rewake_warm[FRAMES];
+
+/* The game's idle thread wakes many times a frame and each wake captures
+ * again: a capture after the game evicted the D-cache (reads through 8 KB
+ * elsewhere, I-cache emptied), then one right after with nothing evicted. */
+static void __attribute__((noinline)) evict_dcache(void)
+{
+  static volatile u32 sink2;
+  u32 k, x = 0;
+  for (k = 0; k < 8192 / 4; k += 8)
+    x += buf[k];
+  sink2 = x;
+}
 
 static void report(const char* label, u32* v, int n)
 {
@@ -371,6 +384,16 @@ static int core_tests(void)
     t0 = now();
     dsc_capture();
     cap = (now() - t0) * 2;
+    if (cold) {
+      evict_dcache();
+      IC_InvalidateAll();
+      t0 = now();
+      dsc_capture();
+      rewake_cold[i] = (now() - t0) * 2;
+      t0 = now();
+      dsc_capture();
+      rewake_warm[i] = (now() - t0) * 2;
+    }
     REG_IME = ime;
     dsc_vblank();
     answer_requests();
@@ -387,6 +410,8 @@ static int core_tests(void)
   report("capture, cold", cap_cold, FRAMES);
   report("idle (eval), cold", idle_cold, FRAMES);
   report("capture, warm", cap_warm, FRAMES);
+  report("capture, rewake cold", rewake_cold, FRAMES);
+  report("capture, rewake warm", rewake_warm, FRAMES);
   report("idle (eval), warm", idle_warm, FRAMES);
   dsc_get_stats(&s);
   say("evaluated %lu, dropped %lu", (unsigned long)s.frames_evaluated, (unsigned long)s.frames_dropped);

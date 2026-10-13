@@ -5,10 +5,12 @@
  * instruction between mark_begin and mark_end and prints one "PHASE n count"
  * line per pair, in order.
  *
- *   realsets.elf core|rc <set.json> [frames] [bytes changed per frame] [ram dump]
+ *   realsets.elf core|rc <set.json> [frames] [bytes changed per frame] [ram dump|-] [captures per frame]
  *
  * core: through the DScheevos core as module.c drives it. Per frame:
- *       dsc_capture (counted), dsc_vblank, dsc_idle (counted).
+ *       dsc_capture (counted), dsc_vblank, dsc_idle (counted). With more
+ *       captures per frame (the game's idle thread wakes many times a frame),
+ *       the counted phase holds all of them, on the same memory.
  * rc:   rc_client_do_frame alone (counted), reading the fake RAM directly.
  *
  * The set file is an achievementsets reply as the server sends it. Without
@@ -318,6 +320,7 @@ static void fill_memory(const char* dump)
   free(data);
 }
 
+static int captures = 1;
 static void run_core(int n, int mutate)
 {
   dsc_platform_t platform;
@@ -376,7 +379,11 @@ static void run_core(int n, int mutate)
     frames++;
     change_memory(mutate);
     mark_begin();
-    dsc_capture();    /* the game halts at the end of its frame: the snapshot */
+    {
+      int k;
+      for (k = 0; k < captures; k++)
+        dsc_capture();    /* the game halts at the end of its frame: the snapshot */
+    }
     mark_end();
     dsc_vblank();
     answer_requests();
@@ -435,7 +442,9 @@ int main(int argc, char** argv)
     out("usage: realsets.elf core|rc <set.json> [frames] [bytes] [ram dump]\n");
     quit(2);
   }
-  fill_memory(argc > 5 ? argv[5] : NULL);
+  if (argc > 6)
+    captures = atoi(argv[6]) > 0 ? atoi(argv[6]) : 1;
+  fill_memory(argc > 5 && strcmp(argv[5], "-") ? argv[5] : NULL);
   if (!strcmp(argv[1], "rc"))
     run_rc(n, mutate);
   else

@@ -248,8 +248,6 @@ static struct {
   volatile int has_last;
   volatile uint32_t last_offset;
   /* capture_at_halt: slots[slot_head] holds a capture for the next VBlank (Q.stage) */
-  int stage_same;              /* its bytes and targets equal the newest queued snapshot's */
-  uint32_t stage_prev;         /* slot_head - 1 when it was taken */
   volatile int stage_failed;   /* the last capture found no room: the frame is dropped */
   int capturing;               /* in dsc_capture with interrupt_pending: poll it */
   uint32_t capture_frame;      /* Q.count when the copy began */
@@ -896,6 +894,19 @@ static HOT __attribute__((noinline)) target_t* run_step(const cstep_t* s, target
   return g;
 }
 
+/* A target's fields, stored only where they changed: the snapshot being
+ * filled usually holds the copy from the idle pass before (dsc_capture
+ * replaces it at every halt), so most stores are skipped and its cache
+ * lines stay clean. The result is the same as storing them. */
+static inline HOT __attribute__((always_inline)) void set_target(target_t* g, uint32_t address, uint32_t length, uint32_t v)
+{
+  if ((g->address ^ address) | (g->length ^ length) | (*(const word_t*)g->bytes ^ v)) {
+    g->address = address;
+    g->length = length;
+    *(word_t*)g->bytes = v;
+  }
+}
+
 /* One leaf (see leaf_t) of size n, main RAM mapped at ram. */
 static inline HOT __attribute__((always_inline)) void run_leaf(const leaf_t* l, uint32_t n, target_t* g, const mem_t* m, const uint8_t* ram)
 {
@@ -904,64 +915,40 @@ static inline HOT __attribute__((always_inline)) void run_leaf(const leaf_t* l, 
     v = load(ram + a, n);
   else
     length = peek(m, a, n, &v);    /* DTCM, or nothing */
-  g->address = a;
-  g->length = length;
-  *(word_t*)g->bytes = v;
+  set_target(g, a, length, v);
 }
 
-/* Leaves of size n. With *prev (the newest queued snapshot's targets),
- * compares each target with it until one differs, then sets *prev to NULL
- * and just runs the rest. */
+/* Leaves of size n. */
 static inline HOT __attribute__((always_inline)) target_t* run_leaves(const leaf_t* l, uint32_t count, uint32_t n, target_t* g,
-                                                                  const mem_t* m, const uint8_t* ram, const target_t** prev)
+                                                                  const mem_t* m, const uint8_t* ram)
 {
   const leaf_t* end = l + count;
-  const target_t* p = *prev;
-  if (p) {
-    for (; l < end; l++, g++, p++) {
-      run_leaf(l, n, g, m, ram);
-      /* the length follows from the address, with the same regions readable (slot_t.map) */
-      if ((p->address ^ g->address) | (*(const word_t*)p->bytes ^ *(const word_t*)g->bytes)) {
-        p = NULL;
-        l++;
-        g++;
-        break;
-      }
-    }
-    *prev = p;
-  }
   for (; l < end; l++, g++)
     run_leaf(l, n, g, m, ram);
   return g;
 }
 
 /* Leaves without a memory map (or main RAM): through peek. */
-static HOT target_t* run_leaves_slow(const leaf_t* l, const uint32_t* count, target_t* g, const mem_t* m, const target_t** prev)
+static HOT target_t* run_leaves_slow(const leaf_t* l, const uint32_t* count, target_t* g, const mem_t* m)
 {
-  const target_t* p = *prev;
   uint32_t k, n;
   for (k = 0; k < 3; k++) {
     for (n = count[k]; n; n--, l++, g++) {
-      uint32_t a, v;
+      uint32_t a, v, length;
       peek(m, l->root, 4, &a);
       a = (a & l->mask) + l->k;
-      g->address = a;
-      g->length = peek(m, a, 1u << k, &v);
-      *(word_t*)g->bytes = v;
-      if (p && memcmp(p++, g, sizeof(*g)) != 0)
-        p = NULL;
+      length = peek(m, a, 1u << k, &v);
+      set_target(g, a, length, v);
     }
   }
-  *prev = p;
   return g;
 }
 
 /* At VBlank, after the table's bytes are copied: advance the chain copies one
  * frame on live memory, as rc_update_memref_values does for the real ones.
- * Every target slot is written: leaves first, then the other steps'. With
- * prev (the newest queued snapshot's targets), returns 1 if every target
- * is the same as there, else 0; -1 if it stopped for an interrupt. */
-static HOT __attribute__((noinline)) int run_chains(target_t* targets, const mem_t* m, const target_t* prev)
+ * Every target slot is written: leaves first, then the other steps'.
+ * Returns 0, or -1 if it stopped for an interrupt. */
+static HOT __attribute__((noinline)) int run_chains(target_t* targets, const mem_t* m)
 {
   const chains_t* c = &S.chains;
   const uint8_t* ram = m->direct ? m->base[REGION_MAIN] : NULL;
@@ -991,9 +978,9 @@ static HOT __attribute__((noinline)) int run_chains(target_t* targets, const mem
   if (stop_now())
     return -1;
 
-  /* leaves, by size: compared as they are read while the targets match */
+  /* leaves, by size */
   if (!ram) {
-    g = run_leaves_slow(l, c->leaf_count, g, m, &prev);
+    g = run_leaves_slow(l, c->leaf_count, g, m);
     if (stop_now())
       return -1;
   }
@@ -1002,7 +989,7 @@ static HOT __attribute__((noinline)) int run_chains(target_t* targets, const mem
 #define LEAVES(index, size) \
     for (left = c->leaf_count[index]; left; left -= k, l += k) { \
       k = left < POLL_WORDS ? left : POLL_WORDS; \
-      g = run_leaves(l, k, size, g, m, ram, &prev); \
+      g = run_leaves(l, k, size, g, m, ram); \
       if (stop_now()) \
         return -1; \
     }
@@ -1038,26 +1025,20 @@ static HOT __attribute__((noinline)) int run_chains(target_t* targets, const mem
         n &= ~FAST_STATE;
       }
       a = (p & s->mask) + s->k;
-      g->address = a;
       if (a <= MAIN_SIZE - n) {
         v = load(ram + a, n);
-        g->length = n;
+        set_target(g, a, n, v);
       }
       else {
-        g->length = peek(m, a, n, &v);    /* DTCM, or nothing */
+        uint32_t length = peek(m, a, n, &v);    /* DTCM, or nothing */
+        set_target(g, a, length, v);
       }
-      *(word_t*)g->bytes = v;
       *out = v;
       g++;
     }
   }
 
-  /* the other steps' targets, if the leaves all matched */
-  if (!prev)
-    return 0;
-  l = c->leaves + c->leaf_count[0] + c->leaf_count[1] + c->leaf_count[2];
-  g = targets + (l - c->leaves);
-  return memcmp(g, prev, (c->target_count - (l - c->leaves)) * sizeof(target_t)) == 0;
+  return 0;
 }
 
 static void free_chain_copies(chains_t* c)
@@ -2471,61 +2452,39 @@ static HOT int same_words(const uint8_t* x, const uint8_t* y, const uint32_t* ma
   return 1;
 }
 
-/* Single words: a load and a store each. */
+/* Copies into a snapshot store only the words that changed. dsc_capture
+ * fills the same stage at every halt of a frame (the game's idle thread
+ * wakes many times a frame), so the stage usually holds the copy from the
+ * pass before and few words differ: the store-miss each word cost (no
+ * write-allocate) becomes a line fill per 8 words, and the stage's lines
+ * stay in the cache, clean, for the next pass and for evaluation. The
+ * bytes are the same as a plain copy's: every word is read from game
+ * memory again, and stored unless the stage already holds that value. */
+#define PUT(d, v) do { if (*(d) != (v)) *(d) = (v); } while (0)
+
+/* Single words. */
 static inline HOT void copy_words(word_t* d, const uint8_t* base, const uint32_t* src, uint32_t n)
 {
   for (; n >= 4; n -= 4, src += 4, d += 4) {
     uint32_t o0 = src[0], o1 = src[1], o2 = src[2], o3 = src[3];
     uint32_t a = *(const word_t*)(base + o0), b = *(const word_t*)(base + o1);
     uint32_t c = *(const word_t*)(base + o2), e = *(const word_t*)(base + o3);
-    d[0] = a;
-    d[1] = b;
-    d[2] = c;
-    d[3] = e;
+    PUT(d, a);
+    PUT(d + 1, b);
+    PUT(d + 2, c);
+    PUT(d + 3, e);
   }
-  while (n--)
-    *d++ = *(const word_t*)(base + *src++);
-}
-
-/* The same, comparing with the previous snapshot until a watched byte
- * differs (whole words first: the mask is only needed when they differ).
- * Returns 1 if none did. */
-static inline HOT int copy_words_same(word_t* d, const uint8_t* base, const uint32_t* src, uint32_t n,
-                                  const word_t* prev, const uint32_t* mask)
-{
-  for (; n >= 4; n -= 4, src += 4, d += 4, prev += 4, mask += 4) {
-    uint32_t o0 = src[0], o1 = src[1], o2 = src[2], o3 = src[3];
-    uint32_t a = *(const word_t*)(base + o0), b = *(const word_t*)(base + o1);
-    uint32_t c = *(const word_t*)(base + o2), e = *(const word_t*)(base + o3);
-    d[0] = a;
-    d[1] = b;
-    d[2] = c;
-    d[3] = e;
-    if (((a ^ prev[0]) | (b ^ prev[1]) | (c ^ prev[2]) | (e ^ prev[3])) &&
-        (((a ^ prev[0]) & mask[0]) | ((b ^ prev[1]) & mask[1]) | ((c ^ prev[2]) & mask[2]) | ((e ^ prev[3]) & mask[3]))) {
-      copy_words(d + 4, base, src + 4, n - 4);
-      return 0;
-    }
-  }
-  for (; n; n--) {
+  for (; n; n--, d++) {
     uint32_t v = *(const word_t*)(base + *src++);
-    *d++ = v;
-    if ((v ^ *prev++) & *mask++) {
-      copy_words(d, base, src, n - 1);
-      return 0;
-    }
+    PUT(d, v);
   }
-  return 1;
 }
 
-/* Copy the table's words into a snapshot (see build_program). With prev,
- * the newest queued snapshot of the same table, returns 1 if every watched
- * byte is the same as there (the repeat check), else 0; -1 if it stopped
- * for an interrupt (dsc_capture). */
-static HOT __attribute__((noinline)) int copy_snapshot(const table_t* t, uint8_t* data, const mem_t* m, const uint8_t* prev)
+/* Copy the table's words into a snapshot (see build_program). Returns 0, or
+ * -1 if it stopped for an interrupt (dsc_capture). */
+static HOT __attribute__((noinline)) int copy_snapshot(const table_t* t, uint8_t* data, const mem_t* m)
 {
   word_t* d = (word_t*)data;
-  int same = prev != NULL;
   uint32_t i, at = 0;
 
   if (!m->direct) {
@@ -2545,26 +2504,22 @@ static HOT __attribute__((noinline)) int copy_snapshot(const table_t* t, uint8_t
       for (j = 0; j < r->length; j++)
         data[where[j]] = S.scratch[j];
     }
-    return same && same_words(data, prev, t->mask, 0, t->words);
+    return 0;
   }
 
-  /* single words, compared as they are copied */
+  /* single words */
   for (i = 0; i < 2; i++) {
     const uint8_t* base = m->base[i];
     const uint32_t* src = t->single + (i ? t->single_main : 0);
     uint32_t n = i ? t->single_count - t->single_main : t->single_main;
     if (!base) {
       memset((void*)(d + at), 0, n * 4);
-      same = same && same_words(data, prev, t->mask, at, at + n);
     }
     else {
       uint32_t k, c;
       for (k = 0; k < n; k += c) {
         c = n - k < POLL_WORDS ? n - k : POLL_WORDS;
-        if (same)
-          same = copy_words_same(d + at + k, base, src + k, c, (const word_t*)prev + at + k, t->mask + at + k);
-        else
-          copy_words(d + at + k, base, src + k, c);
+        copy_words(d + at + k, base, src + k, c);
         if (stop_now())
           return -1;
       }
@@ -2589,26 +2544,35 @@ static HOT __attribute__((noinline)) int copy_snapshot(const table_t* t, uint8_t
       n -= k;
       for (; k >= 4; k -= 4, s += 4, d += 4) {
         uint32_t a = s[0], b = s[1], c = s[2], e = s[3];
-        d[0] = a;
-        d[1] = b;
-        d[2] = c;
-        d[3] = e;
+        PUT(d, a);
+        PUT(d + 1, b);
+        PUT(d + 2, c);
+        PUT(d + 3, e);
       }
-      while (k--)
-        *d++ = *s++;
+      for (; k; k--, s++, d++)
+        PUT(d, *s);
       if (stop_now())
         return -1;
     }
   }
 
   /* words read_memory would not read, then bytes copied one by one */
-  memset((void*)d, 0, t->zero_words * 4);
+  if (t->zero_words)
+    memset((void*)d, 0, t->zero_words * 4);
   for (i = 0; i < t->fix_count; i++) {
     uint32_t v;
     peek(m, t->fix[i].address, 1, &v);
     data[t->fix[i].at] = (uint8_t)v;
   }
-  return same && same_words(data, prev, t->mask, at, t->words);
+  return 0;
+}
+
+/* The repeat check: a snapshot of table t holds the same watched bytes and
+ * chain targets as prev (taken with the same table and memory map). */
+static int same_snapshot(const slot_t* slot, const slot_t* prev, const table_t* t)
+{
+  return same_words(slot->data, prev->data, t->mask, 0, t->words) &&
+         memcmp(slot->targets, prev->targets, S.chains.target_count * sizeof(target_t)) == 0;
 }
 
 #ifdef DSC_CHECK_FAST_STEPS
@@ -2694,7 +2658,16 @@ static void commit(int staged)
   if (staged) {
     S.sync_dirty = 0;            /* the chain copies' state is this frame's now */
     S.stats.frames_snapshotted++;
-    if (S.stage_same && prev && S.stage_prev == S.slot_head - 1 && prev->state == SLOT_READY) {
+    /* Same watched bytes and targets as the newest queued frame, which idle
+     * hasn't started on: count it there (see dsc_vblank_copy). Checked once
+     * a frame here rather than at every capture of the frame. */
+    int same = prev && prev->state == SLOT_READY && !prev->carry && prev->table == slot->table && prev->map == slot->map &&
+               same_snapshot(slot, prev, slot->table);
+#ifdef DSC_CHECK_FAST_STEPS
+    if (prev && prev->state == SLOT_READY && !prev->carry && same != check_repeat(prev, slot, slot->table))
+      check_failed("repeat decision", same);
+#endif
+    if (same) {
       prev->repeats++;
       slot->state = SLOT_FREE;
       S.stats.frames_repeated++;
@@ -2827,8 +2800,9 @@ HOT void dsc_vblank_copy(void)
   slot->size = size;
   slot->data = S.arena + offset;
   slot->targets = (target_t*)(slot->data + t->words * 4);
-  same = copy_snapshot(t, slot->data, &m, prev ? prev->data : NULL);
-  same = run_chains(slot->targets, &m, same ? prev->targets : NULL) && same;
+  copy_snapshot(t, slot->data, &m);
+  run_chains(slot->targets, &m);
+  same = prev && same_snapshot(slot, prev, t);
   slot->table = t;
   slot->frame = S.frame_counter;
   S.stats.frames_snapshotted++;
@@ -2856,20 +2830,32 @@ int dsc_capture(void)
 {
   const table_t* t;
   slot_t* slot;
-  slot_t* prev = NULL;
   mem_t m;
   int32_t offset;
   uint32_t size, head;
-  int same, chains;
+  int chains;
 
   if (!S.active || !S.config.capture_at_halt)
     return -1;
   drain();
+  t = S.current;
+  slot = &S.slots[S.slot_head % MAX_SLOTS];
+  if (Q.stage && slot->table == t) {
+    /* The usual case: it replaces the capture taken at the halt before, in
+     * this frame (the game ran since). No VBlank came since then (it would
+     * have taken the stage), so nothing was committed or allocated: the
+     * stage keeps its place in the arena, and the chain state saved for it
+     * is still the committed one. */
+    Q.stage = 0;
+    sync_restore();
+    S.sync_dirty = 1;
+    slot->map = mem_open(&m);
+    goto copy;
+  }
   /* replaces a capture taken earlier in this frame: the game ran since */
   Q.stage = 0;
   sync_restore();
 
-  t = S.current;
   size = t->words * 4 + S.chains.target_count * sizeof(target_t);
   offset = S.slot_head - S.slot_tail < S.slot_count ? arena_alloc(size) : -1;
   if (offset < 0) {
@@ -2878,13 +2864,7 @@ int dsc_capture(void)
   }
   S.stage_failed = 0;
 
-  slot = &S.slots[S.slot_head % MAX_SLOTS];
   slot->map = mem_open(&m);
-  if (S.slot_head != S.slot_tail) {
-    prev = &S.slots[(S.slot_head - 1) % MAX_SLOTS];
-    if (prev->state != SLOT_READY || prev->carry || prev->table != t || prev->map != slot->map)
-      prev = NULL;
-  }
   slot->state = SLOT_FILLING;
   slot->offset = (uint32_t)offset;
   slot->size = size;
@@ -2892,11 +2872,13 @@ int dsc_capture(void)
   slot->targets = (target_t*)(slot->data + t->words * 4);
   slot->table = t;
   sync_save();
+copy:
   head = S.slot_head;
   S.capture_frame = Q.count;
   S.capturing = S.platform.interrupt_pending != NULL;
-  same = copy_snapshot(t, slot->data, &m, prev ? prev->data : NULL);
-  chains = same < 0 ? -1 : run_chains(slot->targets, &m, same ? prev->targets : NULL);
+  chains = copy_snapshot(t, slot->data, &m);
+  if (chains == 0 && (S.chains.target_count | S.chains.root_count | S.chains.step_count))
+    chains = run_chains(slot->targets, &m);
   S.capturing = 0;
   if (chains < 0) {
     sync_restore();
@@ -2905,15 +2887,10 @@ int dsc_capture(void)
     S.stats.captures_stopped++;
     return 1;
   }
-  same = chains && same;
 #ifdef DSC_CHECK_FAST_STEPS
   check_snapshot(slot, t);
-  if (prev && same != check_repeat(prev, slot, t))
-    check_failed("repeat decision", same);
 #endif
   S.stats.captures++;
-  S.stage_same = same;
-  S.stage_prev = S.slot_head - 1;
   PUBLISH_BARRIER();
   Q.stage = 1;
   return 0;
