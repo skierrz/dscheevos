@@ -5,7 +5,7 @@ The questions DScheevos needs RetroAchievements to answer before it can apply fo
 Drafted 2026-10-11 (questions 1-13, first draft in `docs/overlay-research.md`), expanded 2026-10-12 with the owner's pending decisions and the compliance audit. Not sent yet.
 
 **Before sending**, check that these statements are true of the build (fixes assigned 2026-10-12, see `docs/compliance.md`):
-- Q10: user patch files (`_nds/nds-bootstrap/apFix/*.ips|.bin`) are ignored in hardcore, and the in-game menu's clock-speed and VRAM options are hidden in hardcore.
+- Q10: the hardcore fixes from the 2026-10-12 audit have landed (`docs/compliance.md`, "Audit 2026-10-12": user patch files, widescreen code file, soft-reset boot file, patch offset cache, donor ARM7, session replay), and the 133 MHz / VRAM boost options are forced off in DScheevos sessions.
 - Q2: the UI says "Casual" (RA's current word), not "Softcore".
 - The owner has ruled on the decisions behind Q8, Q11 and Q14 (or wants RA's view first: then send as is).
 
@@ -35,7 +35,7 @@ The one hard rule we hold ourselves to: **the game must not lose any time or beh
 | 7 | Lag frames | Evaluate a frame the game didn't finish with the last finished frame's memory? | not sent |
 | 8 | Games we can't keep up with | May the client refuse a set it can't evaluate in full? | not sent |
 | 9 | Games with no idle hook | May the client refuse a game it can't hook, without a per-game hack? | not sent |
-| 10 | nds-bootstrap options | Anything else to block? Is the 133 MHz CPU option allowed? | not sent |
+| 10 | nds-bootstrap options | Anything else to block? | not sent |
 | 11 | Float-operand build | Is a build flag that stores rcheevos' float constants as `float` acceptable, given proven-identical results? | not sent |
 | 12 | No save states | Does a client without save states, rewind or fast-forward simplify review? | not sent |
 | 13 | Live sending + offline queue | Acceptable? Max age? Do offline hardcore unlocks count? What does "securely cached" require? | not sent |
@@ -122,13 +122,9 @@ DScheevos gets its spare time from the NitroSDK idle thread's `OS_Halt`. Some ga
 
 ### 10. nds-bootstrap options
 
-In a hardcore session DScheevos blocks: cheats (TWiLight's cheat list), the in-game RAM viewer (it can edit memory), the RAM dump, refresh rates below 60 Hz (slow motion), and user-supplied patch files for the game. It keeps nds-bootstrap's built-in compatibility patches (anti-piracy fixes, save fixes) that games need to run, button remapping and screen swap. nds-bootstrap has no save states, rewind, fast-forward, frame advance or input playback.
+In a hardcore session DScheevos blocks: cheats (TWiLight's cheat list and nds-bootstrap's widescreen code file), the in-game RAM viewer (it can edit memory), the RAM dump, refresh rates below 60 Hz (slow motion), user-supplied patch files for the game, and booting anything but the hashed game. The console always runs at the DS's own speed: nds-bootstrap's options to run the DSi's ARM9 at 133 MHz or speed up VRAM are forced off in DScheevos sessions, since they shorten a game's own slowdown. It keeps nds-bootstrap's built-in compatibility patches (anti-piracy fixes, save fixes) that games need to run, button remapping (no turbo) and screen swap. nds-bootstrap has no save states, rewind, fast-forward, frame advance or input playback.
 
-nds-bootstrap can also run the DSi's ARM9 at 133 MHz instead of 67 MHz. It makes a game's own slowdown shorter (and gives DScheevos more spare time), and some games break with it.
-
-**Asks:**
-1. Anything else to block in hardcore?
-2. Is the 133 MHz option acceptable in hardcore, either chosen before the game boots or switched in the in-game menu? (Until you answer, the menu option is hidden in hardcore.)
+**Ask:** anything else to block in hardcore?
 
 ### 11. Float-operand build
 

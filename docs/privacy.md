@@ -39,6 +39,16 @@ All in `sd:/_nds/dscheevos/`:
 
 The folder also holds the program files and, if you added one, `ca.pem` (an extra trusted certificate for a test server). Nothing else is stored, and nothing is written to the console's internal memory (NAND), firmware or Wi-Fi settings.
 
+## How long it is kept, and where
+
+- **On the console:** everything DScheevos keeps is in the files above, on your SD card, until it is replaced or deleted. `session.bin`/`session.used` are rewritten at every game start. `pending.bin` is emptied once its entries are sent. Files in `unsent/` are kept until they are sent (when their user is logged in) or until you delete them; there is no time limit. The Wi-Fi key is kept in the console's memory only while the game runs.
+- **DScheevos itself** runs no servers and keeps no data anywhere else: nothing is sent to the DScheevos project, and there is no telemetry.
+- **RetroAchievements** keeps what you send it on its own servers; where they are and how long data is kept is covered by RetroAchievements' privacy policy and terms (<https://retroachievements.org/terms>).
+
+## GDPR
+
+DScheevos collects no personal data for itself and keeps no telemetry, so the DScheevos project holds nothing about you to access, correct or erase. The data on your SD card is under your control (see below). For data held by RetroAchievements, including requests under the GDPR, contact RetroAchievements as their privacy policy describes.
+
 ## Deleting your data
 
 - **Log out:** in the DScheevos settings (press A on the game in TWiLight Menu++, then hold SELECT), press Y. This removes your username and login token from `dscheevos.ini`. The last game's `session.used` keeps a copy of the token, and `pending.bin` and the `unsent` folder keep your username and the unlocks not yet sent, until you delete them. Deleting `pending.bin` and the `unsent` folder throws those unlocks away.

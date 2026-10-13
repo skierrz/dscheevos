@@ -18,10 +18,10 @@ Status: **done**, **partial**, **missing**, or **n/a** (the feature doesn't exis
 |---|---|---|
 | Achievement list reachable in the client | **done** | In-game menu > "Achievements..." (`nds-bootstrap: arm9_igm/dscheevosMenu.c`): a summary page (game, mode, totals, this session's unlocks, network), then every achievement of the set with its state, points and measured progress, and a detail page with the description. The module publishes the list (`dscm_list_t`, ABI v6). |
 | Triggers evaluate correctly | **done** | rcheevos `rc_client`, unmodified. `tests/games` checks unlock frames against rcheevos reading live memory every frame, with and without a 10 s backlog. |
-| Measured and Trigger (challenge) indicators shown in the list and during play | **partial** | In the list: measured progress and an active-challenge mark per achievement, plus the active challenges and leaderboard trackers on the summary page. During play (DSi): Wi-Fi LED cues from the module's notices: 3 blinks per unlock, 1 per measured-progress update, 2 per leaderboard start/fail/submit, held while a challenge is primed. Nothing is drawn over the game; whether RA accepts this is question 1 in `docs/overlay-research.md`. |
+| Measured and Trigger (challenge) indicators shown in the list and during play | **partial** | In the list: measured progress and an active-challenge mark per achievement, plus the active challenges and leaderboard trackers on the summary page. During play (DSi): Wi-Fi LED cues from the module's notices: 3 blinks per unlock, 1 per measured-progress update, 2 per leaderboard start/fail/submit, held while a challenge is primed. Nothing is drawn over the game; whether RA accepts this is question 1 in `docs/ra-questions.md`. |
 | Rich presence works | **done** | rc_client pings every 2 minutes during play. A hardcore session always keeps the Wi-Fi connection for it; softcore does when "Send unlocks during play" is on. |
 | Leaderboards work | **partial** | Evaluated, submitted and queued offline like unlocks; trackers and results show in the in-game menu. No on-screen tracker or start/fail notice during play (see the indicators row). |
-| Offline queueing: unlocks made offline are cached and sent later | **done** | The module keeps every unlock and leaderboard entry of the session in a journal (`dscm_journal_t`); nds-bootstrap's ARM7 copies it to `_nds/dscheevos/pending.bin` at safe points only (in-game menu opening, Reset, Exit, the soft-reset and return combos, a reset the game asks for). The launcher sends what is unsent at the next start with the time since each unlock (`o=`), and sets a file aside in `unsent/` if it still can't. Turning the console off without one of those safe points loses what was unsent since the last one. Tested in melonDS (`tests/launcher/run.sh` with `--fail-awards`, then a normal run). |
+| Offline queueing: unlocks made offline are cached and sent later | **done** | The module keeps every unlock and leaderboard entry of the session in a journal (`dscm_journal_t`); nds-bootstrap's ARM7 copies it to `_nds/dscheevos/pending.bin` at safe points only (in-game menu opening, Reset, Exit, the soft-reset and return combos, a reset the game asks for). The launcher sends what is unsent at the next start with the time since each unlock (`o=`), and sets a file aside in `unsent/` if it still can't. Turning the console off without one of those safe points loses what was unsent since the last one. Tested in melonDS (`tests/launcher/run.sh` with `--fail-awards`, then a normal run). RA asks that offline unlocks be "securely cached" without saying what that means: `pending.bin` (and the set in `session.bin`) are plain files, as editable as the login token next to them, so a checksum on the console would add nothing real. RA question 13. |
 | Save state hit storage | n/a | nds-bootstrap has no save states. |
 | RAIntegration (Windows) | n/a | No Windows build. |
 | Standard save files | **done** | nds-bootstrap's `.sav` files, the same raw format emulators use. |
@@ -30,20 +30,20 @@ Status: **done**, **partial**, **missing**, or **n/a** (the feature doesn't exis
 
 | Requirement | Status | Where |
 |---|---|---|
-| Cheats off | **done** | Hardcore session: `cheatSize = 0` (`nds-bootstrap: arm9/source/dscheevos_session.c`), so TWiLight's cheat list never loads. |
+| Cheats off | **partial** | Hardcore session: `cheatSize = 0` (`nds-bootstrap: arm9/source/dscheevos_session.c`), so TWiLight's cheat list never loads. Still open (audit 2026-10-12, below): `wideCheatData.bin` runs any Action Replay codes, user AP-fix `.ips`/`.bin` files patch the game, `softResetParams.bin` can boot other code, `patchOffsetCache` is trusted, and a donor ARM7 for one title. Fixes assigned (developer-db). |
 | No rewind | n/a | Not in nds-bootstrap. |
-| No slowdown or frame advance | **done** | The in-game menu's refresh-rate option (slow motion) is hidden in hardcore (`arm9_igm/inGameMenu.c`). No frame advance exists. |
+| No slowdown or frame advance | **done** | The in-game menu's refresh-rate option (slow motion) is hidden in hardcore (`arm9_igm/inGameMenu.c`). No frame advance exists. The CPU and VRAM speed options (in-game menu, `BOOST_CPU`/`BOOST_VRAM`, `DSI_MODE = 2` on a DS game) make a game's own slowdown shorter, not longer: forced off in DScheevos sessions (owner ruling 2026-10-12: no 133 MHz). |
 | Loading save states blocked | n/a | Not in nds-bootstrap. |
 | Rich presence and leaderboards can't be turned off | **done** | No setting turns them off, and in hardcore the session always keeps Wi-Fi ("Send unlocks during play" is forced on and shown so). |
 | Resume must drop to casual | n/a | No resume feature. Every start goes through the launcher and a new session. |
 | No switch from casual to hardcore mid-session | **done** | The mode is chosen in the launcher before the game boots. The session file is used once. Nothing in the game changes it. |
-| Memory editors, debuggers, scripting | **done** | RAM viewer (it can edit memory) hidden in hardcore; RAM dump hidden whenever DScheevos runs. |
+| Memory editors, debuggers, scripting/TAS/input playback | **done** | RAM viewer (it can edit memory) hidden in hardcore; RAM dump hidden whenever DScheevos runs. No scripting or input playback exists in shipped builds (the lab rig's input injection is a lab-only build, never shipped). |
 
 ## C. Identity
 
 | Requirement | Status | Where |
 |---|---|---|
-| Unique, stable user agent `Name/version (OS) core/version` | **done** | `DScheevos/<VERSION> (Nintendo DSi) rcheevos/<version>`, from the launcher (`launcher/source/session.c`) and the module (`module/src/module.c`). `VERSION` at the repo root is the only place the number lives; the release workflow refuses a tag that doesn't match it. |
+| Unique, stable user agent `Name/version (OS) core/version` | **done** | `DScheevos/<VERSION> (Nintendo DSi) rcheevos/<version>`, from the launcher (`launcher/source/session.c`) and the module (`module/src/module.c`). `VERSION` at the repo root is the only place the number lives; the release workflow refuses a tag that doesn't match it. The rcheevos part comes from rcheevos itself (`rc_client_get_user_agent_clause` in the launcher, `RCHEEVOS_VERSION_STRING` in the module). A 3DS also says "Nintendo DSi" today; RA question 16. |
 | Never identified as another client | **done** | DScheevos has always sent its own user agent. |
 
 ## D. Timeline
@@ -57,7 +57,7 @@ Status: **done**, **partial**, **missing**, or **n/a** (the feature doesn't exis
 | Requirement | Status | Where |
 |---|---|---|
 | Hardcore on by default (recommended) | **done** | `launcher/source/config.c` defaults to `HARDCORE = 1`. |
-| Hardcore state shown during play | **partial** | Before the game's first frame, a card on the top screen shows the title, HARDCORE or Softcore and the totals for 1.5 s (A, B or START skip it); the launcher and the in-game menu show the mode too. Nothing on screen while the game runs; RA question 2 in `docs/overlay-research.md`. |
+| Hardcore state shown during play | **partial** | Before the game's first frame, a card on the top screen shows the title, HARDCORE or Softcore and the totals for 1.5 s (A, B or START skip it); the launcher and the in-game menu show the mode too. Nothing on screen while the game runs; RA question 2 in `docs/ra-questions.md`. RA now calls the other mode "Casual"; our UI still says "Softcore" (renaming assigned 2026-10-12). |
 
 ## F. Transparency and legality
 
@@ -66,7 +66,7 @@ Status: **done**, **partial**, **missing**, or **n/a** (the feature doesn't exis
 | Monetization disclosure | **done** | None: DScheevos is free, with no paid features, ads or required donations. Stated in `README.md` and the zip's `README.txt`. |
 | Licences of everything shipped | **done** | The zip's `_nds/dscheevos/licenses/` has DScheevos (GPL-3.0), rcheevos, mbedTLS, lwIP, nds-bootloader, nds-bootstrap, and the toolkit libraries linked into the binaries: BlocksDS libnds, DSWiFi, start-up code and picolibc (launcher); devkitARM newlib (module), libnds 1.8 and libfat (nds-bootstrap), libnds 2 and calico (`load.bin`). The toolkit texts are vendored in `release/licenses/`; `SOURCES.txt` says which binary links what. |
 | GPL obligations for shipped binaries | **done** | DScheevos, nds-bootstrap (GPL-3.0) and nds-bootloader (GPL-2.0+): `SOURCES.txt` names the exact commits, and the zip carries each one's licence text. |
-| Privacy policy | **done** | `docs/privacy.md`, shipped as `privacy.txt`: what goes to RetroAchievements (username, token, game hash, unlocks, leaderboard entries, rich presence), the Wi-Fi key kept in RAM only, every file on the SD card including the offline queue, how to delete it, contact through the issue tracker. |
+| Privacy policy | **done** | `docs/privacy.md`, shipped as `privacy.txt`: what goes to RetroAchievements (username, token, game hash, unlocks, leaderboard entries, rich presence), the Wi-Fi key kept in RAM only, every file on the SD card including the offline queue, how long each is kept and where (RA's page now asks for retention periods, server locations and GDPR handling: added 2026-10-12), how to delete it, contact through the issue tracker. |
 
 ## G. Auto-fail criteria
 
@@ -81,6 +81,32 @@ Status: **done**, **partial**, **missing**, or **n/a** (the feature doesn't exis
 | Non-commercial cores with commercialization | none shipped, no commercialization |
 | Privacy policy with placeholders or contradictions | complete policy, no placeholders (F) |
 
+## Audit 2026-10-12
+
+Against RA's page as of 2026-10-12 (it now says "Casual" for softcore, and asks the privacy policy for retention periods, server locations and GDPR handling). Product fixes are assigned by developer-db; this table tracks them.
+
+**Hardcore: SD card and ini paths that change the game** (paths in nds-bootstrap `retail/`):
+
+| Path | What it can do | Today | Fix |
+|---|---|---|---|
+| `_nds/nds-bootstrap/apFix/*.ips` / `*.bin` (`arm9/source/pck_load.cpp` `loadApFix`) | patch any code (IPS), or feed Action Replay codes to the cheat engine (`.bin`); found before the built-in `nitro:/apfix.pck` | applied | hardcore uses only the built-in pack; a game that needs a user file runs casual only (fix assigned (developer-db)) |
+| `_nds/nds-bootstrap/wideCheatData.bin` (`arm9/source/conf_sd.cpp`, `bootloaderi/source/arm7/hook_arm7.c`) | any Action Replay codes, not only widescreen | applied | off in hardcore (fix assigned (developer-db)) |
+| `_nds/nds-bootstrap/softResetParams.bin` + `pagefile.sys` (`bootloaderi/source/arm7/main.arm7.c`) | `LOAD` boots code from the page file; `srlAddr` boots another program inside the ROM file, outside the DS hash | applied | ignored on a fresh hardcore boot (fix assigned (developer-db)) |
+| `patchOffsetCache/<TID>-<CRC>.bin` | nds-bootstrap's patches written at addresses from the file, unchecked | trusted | ignored or checked in hardcore (fix assigned (developer-db)) |
+| `DONOR20_NDS_PATH` (one title) | replaces the game's ARM7 binary | applied | off in hardcore (fix assigned (developer-db)) |
+| `session.used` renamed back, another ROM at the same path | a session hashed for one ROM runs another (nds-bootstrap matches the path only) | possible | invalidate the session after loading, and/or refuse an old one (fix assigned (developer-db)) |
+| in-game menu clock speed and VRAM mode; `BOOST_CPU`, `BOOST_VRAM`; `DSI_MODE = 2` on a DS game | 133 MHz / faster VRAM: shorter in-game slowdown | allowed | forced off in DScheevos sessions, owner ruling 2026-10-12 (fix assigned (developer-db)) |
+| cheat list (`cheatData.bin`), RAM viewer, RAM dump, refresh rate | cheats, memory editing, slow motion | blocked | done |
+| key remaps, screen swap, region/language, colour LUT, sound rate, sleep, manual, save path | controls, display, compatibility; saves are user data | allowed | none needed |
+
+**Other findings:**
+- **Offline queue "securely cached".** `pending.bin` and the set in `session.bin` are plain files beside the login token; a checksum on the console would protect nothing the token doesn't already expose. Asked as RA question 13.
+- **User agent on 3DS** says "Nintendo DSi". Asked as RA question 16 (separate approval needs separate identities).
+- **rcheevos version.** The submodule is upstream `develop` at `683197d` (v12.5.0 plus 9 commits, unmodified), which reports itself as 12.5.0. Pin a release tag before applying, so the user agent's version names exactly the code shipped.
+- **Wording.** "Softcore" becomes "Casual" in the launcher, placard and menu (fix assigned (developer-db)).
+- **Spectator mode** sends no unlocks, leaderboard entries or session start; its journal is discarded (`pending.spectator`). Matches rc_client's spectator mode; nothing to change.
+- **What is sent** matches `docs/privacy.md`: login, game hash, set, session start, unlocks, leaderboard entries, rich presence pings, all to `retroachievements.org` with the DScheevos user agent. The real-account bench run (`tests/real/`) checks this against the live server.
+
 ## Targets
 
 1. **DSi / DSi XL** (DS games in DS mode): the first target.
@@ -90,6 +116,6 @@ Status: **done**, **partial**, **missing**, or **n/a** (the feature doesn't exis
 ## What's left, in order
 
 1. On-screen notices during play. Built so far without touching the game: the pre-boot card with the mode and the Wi-Fi LED cues. Anything drawn over the game needs the owner's decision and RetroAchievements' answer first (`docs/overlay-research.md`): on the DSi nothing can draw over the game without touching its display state.
-2. Ask RetroAchievements (RAdmin) to validate the client; the questions are in `docs/overlay-research.md`.
+2. Ask RetroAchievements (RAdmin) to validate the client; the questions are in `docs/ra-questions.md`.
 3. Real hardware: the tests listed in `docs/handoff.md` and `docs/overlay-research.md`.
 4. A first public release, which starts the 6-month clock.
