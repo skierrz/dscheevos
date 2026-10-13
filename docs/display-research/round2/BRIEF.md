@@ -18,7 +18,7 @@ Target: DSi (and DSi XL) running DS games natively through nds-bootstrap. 3DS la
 - Never touch the game's RAM. Game-owned VRAM, OAM, palettes and display registers count as game state; any use is a residual the owner must accept explicitly.
 - No SD writes during play; SD reads only through nds-bootstrap's path.
 - No game TIMERs.
-- rcheevos unmodified.
+- rcheevos changes only where results are proven identical to stock (diff-tested), minimal and offered upstream (owner ruling 2026-10-12; compliance.md §4). The display needs none.
 - Game wireless stays stock.
 - Nothing writes NAND, firmware or the Wi-Fi EEPROM.
 

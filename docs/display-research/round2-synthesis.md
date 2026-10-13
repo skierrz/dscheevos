@@ -74,6 +74,19 @@ A newer merge rule (COMMON.md "Game-cost evidence") also counts the game's own c
 
 **Class D: Golden Sun DD and Code Lyoko.** They never wait, so DScheevos itself gets no CPU today. The display is moot until idle-coverage's busy-loop work gives the module time.
 
+## NDMA channels (round-1 rnd conflict, settled 2026-10-12)
+
+nds-bootstrap's ARM9 card engine (CE9) starts its transfers on **NDMA0** (`ndmaCopyWordsAsynch(0, ...)`) and checks **NDMA0/1** for busy. DS-mode games can't use NDMA at all. The display therefore takes:
+
+| Channel | Use | Notes |
+|---|---|---|
+| NDMA2 | D1_F: the FIFO feed (startup 09h) | Lower priority than CE9's NDMA0, but the strip never runs during a card read (guard), so they never compete |
+| NDMA3 | D1_A: the H-Blank DISPCNT table | |
+| NDMA1 | D1_B: the H-Blank write that starts D1_F at line E-1 | **Only if needed:** if the DSi drains the FIFO only on mode-3 lines (H10a / D1c), D1_F is enabled at arming and NDMA1 isn't used. If needed, it is shared with CE9 by construction: the strip arms only while CE9 is idle (NDMA0/1 not busy, no read in flight), and anything that could start a card read first wakes the game, which aborts the strip and frees NDMA1 |
+| NDMA0 | CE9 only | never touched by the display |
+
+idle-coverage's wait gate must not use NDMA1-3.
+
 ## Chosen build order (nothing game-facing before the owner's rulings)
 
 1. **Hardware first.** The DSi lab-ROM run (already batched with the owner):

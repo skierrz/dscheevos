@@ -67,10 +67,13 @@ static void say(const char* fmt, ...) {
 		loglen += n;
 		logbuf[loglen++] = '\n';
 	}
-	char m[260] = "@@";                 /* the headless runner's test-line prefix */
-	strncat(m, b, sizeof m - 4);
-	strcat(m, "\n");
-	nocashMessage(m);
+	/* libnds's nocashMessage copies into a ~120-byte buffer inside its own
+	 * code: longer strings overwrite the code after it. Send chunks. */
+	char m[100];
+	for (int at = 0; at == 0 || at < n; at += 90) {
+		snprintf(m, sizeof m, "@@%.90s%s", b + at, at + 90 >= n ? "\n" : "");
+		nocashMessage(m);
+	}
 }
 
 static bool sd_ok;
@@ -157,7 +160,7 @@ static void setup_game(void) {
 
 /* ---------------------------------------------------------------- raw IRQ phase */
 
-enum { T_NONE, T_H1, T_H2A, T_H2B, T_NEW, T_STRESS_NDMA, T_STRESS_DMA3, T_BOTTOM, T_T1, T_COUNTER };
+enum { T_NONE, T_H1, T_H2A, T_H2B, T_NEW, T_STRESS_NDMA, T_STRESS_DMA3, T_BOTTOM, T_T1, T_COUNTER, T_D1 };
 static volatile int test;
 static volatile u32 frame;
 
@@ -261,7 +264,84 @@ static void strip_exit_or_guard(void) {
 
 static VoidFn saved_handler;
 static u32 saved_ie;
-#define RAW_BITS (IRQ_VBLANK | IRQ_NDMA(2) | IRQ_NDMA(3))
+#define RAW_BITS (IRQ_VBLANK | IRQ_NDMA(2) | IRQ_NDMA(3) | IRQ_VCOUNT)
+
+/* D1 (round2-synthesis.md): the all-NDMA strip. While the "game" waits,
+ * up to three channels are armed and then nothing of ours runs. Channels
+ * follow the design's plan, clear of nds-bootstrap's card engine (NDMA0):
+ *   D1_F (NDMA2): the FIFO feed (startup 09h);
+ *   D1_A (NDMA3): on each H-Blank, writes a whole DISPCNT word from a table
+ *          (mode 1, then mode 3 for lines E..190, then mode 1 at 191);
+ *   D1_B (NDMA1): on each H-Blank, writes D1_F's control word from a table
+ *          (0, then the enable value at line E-1), so the FIFO starts with no
+ *          CPU. Variant "no starter": D1_F is enabled at arming instead, which
+ *          works only if the FIFO isn't drained while the mode is 1 (H10a).
+ * A game IRQ while armed runs the abort first: stop all three, mode 1. */
+#define D1_F 2
+#define D1_A 3
+#define D1_B 1
+#define D1_E (191 - N)                      /* first strip line; the strip is E..190 */
+#define D1_ARM 100                          /* line the stand-in game goes idle */
+static u32 d1_dtab[192] __attribute__((aligned(32)));
+static u32 d1_btab[192] __attribute__((aligned(32)));
+static volatile int d1_armed, d1_abort_every;
+static volatile u32 d1_frames, d1_shown, d1_bad_vblank, d1_aborts;
+static const u16* d1_src;                   /* FIFO source: main RAM or NWRAM */
+static volatile int d1_no_starter;          /* enable the FIFO at arming, no D1_B */
+
+static void d1_abort(void) {
+	NDMA_CNT(D1_A) = 0;
+	NDMA_CNT(D1_B) = 0;
+	NDMA_CNT(D1_F) = 0;
+	while (NDMA_CNT(D1_A) & NDMA_ON) {}     /* no in-flight write may land after the restore */
+	if (mode_get() == 3) mode_set(1);
+	d1_armed = 0;
+}
+
+static u32 d1_fifo_cnt(void) { return NDMA_ON | NDMA_START(0x09) | NDMA_PHYS(2) | NDMA_DFIX; }
+
+/* Arm at line D1_ARM, with IRQs off (atomic arming). */
+static void d1_arm(void) {
+	const int ime = REG_IME;
+	REG_IME = 0;
+	const u32 vc = REG_VCOUNT;
+	const u32 d = (DISPCNT_A & ~0x30000u) | 0x10000u;    /* captured now: the game is idle */
+	const u32 n = 191 - vc;                  /* H-Blanks of lines vc..190 */
+	for (u32 i = 0; i < n; i++) {
+		const u32 line = vc + i + 1;         /* the line this H-Blank's write affects */
+		d1_dtab[i] = (line >= D1_E && line <= 190) ? (d | 0x30000u) : d;
+		d1_btab[i] = (line == D1_E) ? d1_fifo_cnt() : 0;
+	}
+	DC_FlushRange(d1_dtab, sizeof d1_dtab);
+	DC_FlushRange(d1_btab, sizeof d1_btab);
+	NDMA_CNT(D1_F) = 0;
+	NDMA_SAD(D1_F) = (u32)d1_src;
+	NDMA_DAD(D1_F) = MMEM_FIFO;
+	NDMA_TCNT(D1_F) = (N + M) * 128;
+	NDMA_WCNT(D1_F) = 4;
+	NDMA_BCNT(D1_F) = 0;
+	NDMA_CNT(D1_A) = 0;
+	NDMA_SAD(D1_A) = (u32)d1_dtab;
+	NDMA_DAD(D1_A) = 0x04000000;
+	NDMA_TCNT(D1_A) = n;
+	NDMA_WCNT(D1_A) = 1;
+	NDMA_BCNT(D1_A) = 0;
+	NDMA_CNT(D1_A) = NDMA_ON | NDMA_START(0x07) | NDMA_DFIX | NDMA_PHYS(0);
+	if (d1_no_starter) {
+		NDMA_CNT(D1_F) = d1_fifo_cnt();
+	} else {
+		NDMA_CNT(D1_B) = 0;
+		NDMA_SAD(D1_B) = (u32)d1_btab;
+		NDMA_DAD(D1_B) = (u32)&NDMA_CNT(D1_F);
+		NDMA_TCNT(D1_B) = D1_E - vc;         /* stops after starting the FIFO */
+		NDMA_WCNT(D1_B) = 1;
+		NDMA_BCNT(D1_B) = 0;
+		NDMA_CNT(D1_B) = NDMA_ON | NDMA_START(0x07) | NDMA_DFIX | NDMA_PHYS(0);
+	}
+	d1_armed = 1;
+	d1_shown++;
+	REG_IME = ime;
+}
 
 __attribute__((target("arm"), noinline)) static void raw_isr(void) {
 	const u32 f = REG_IE & REG_IF & RAW_BITS;
@@ -320,8 +400,17 @@ __attribute__((target("arm"), noinline)) static void raw_isr(void) {
 			}
 		}
 	}
+	if (f & IRQ_VCOUNT) {                    /* D1: a "game" IRQ in the strip: abort first */
+		REG_IF = IRQ_VCOUNT;
+		if (test == T_D1 && d1_armed) { d1_abort(); d1_aborts++; }
+	}
 	if (f & IRQ_VBLANK) {
 		REG_IF = IRQ_VBLANK;
+		if (test == T_D1) {
+			if (mode_get() == 3) { d1_bad_vblank++; mode_set(1); }
+			d1_armed = 0;
+			d1_frames++;
+		}
 		frame++;
 		scroll++;
 		REG_BG0HOFS = scroll;
@@ -676,6 +765,129 @@ static void test_t1(void) {
 	say("T1 X = smallest k where on == off (owner decides if it counts as zero)");
 }
 
+/* ---- D1 and NWRAM ---- */
+static u16* nwram_banner(void) {
+	/* A WRAM-A/B/C window mapped to the ARM9 (MBK6-8), if this boot left one. */
+	const u32 mbk6 = REG32(0x04004054), mbk7 = REG32(0x04004058), mbk8 = REG32(0x0400405C);
+	say("NW MBK1-5 %08lx %08lx %08lx %08lx %08lx MBK6-8 %08lx %08lx %08lx",
+	    REG32(0x04004040), REG32(0x04004044), REG32(0x04004048), REG32(0x0400404C), REG32(0x04004050), mbk6, mbk7, mbk8);
+	const u32 c_start = 0x03000000 + ((mbk8 >> 3) & 0x1FF) * 0x8000;
+	const u32 c_end = 0x03000000 + ((mbk8 >> 19) & 0x3FF) * 0x8000;
+	const u32 b_start = 0x03000000 + ((mbk7 >> 3) & 0x1FF) * 0x8000;
+	const u32 b_end = 0x03000000 + ((mbk7 >> 19) & 0x3FF) * 0x8000;
+	const u32 need = sizeof banner;
+	u32 at = 0;
+	/* a slot of WRAM-C, then B, mastered by the ARM9 (master bits 0-1 = 0) and enabled */
+	for (int k = 0; k < 8 && !at; k++) {
+		const u8 slot = *(vu8*)(0x0400404C + k);
+		if ((slot & 0x80) && (slot & 3) == 0 && c_end > c_start + need) at = c_start;
+	}
+	for (int k = 0; k < 8 && !at; k++) {
+		const u8 slot = *(vu8*)(0x04004044 + k);
+		if ((slot & 0x80) && (slot & 3) == 0 && b_end > b_start + need) at = b_start;
+	}
+	if (!at) { say("NW no ARM9-mapped WRAM-B/C window: NWRAM test skipped"); return 0; }
+	u16* dst = (u16*)at;
+	for (u32 i = 0; i < 256 * (N + M); i++) dst[i] = banner[i];
+	if (dst[1000] != banner[1000]) { say("NW window at %08lx not writable: skipped", at); return 0; }
+	say("NW banner copied to %08lx", at);
+	return dst;
+}
+
+static void d1_run(const char* name, const u16* src, int abort_every, int frames, int no_starter) {
+	title(name);
+	say("%s look: banner on lines %d-190, game above%s", name, D1_E,
+	    abort_every ? "; every 4th frame cut short at line 169" : "");
+	d1_src = src;
+	d1_no_starter = no_starter;
+	d1_abort_every = abort_every;
+	d1_frames = d1_shown = d1_bad_vblank = d1_aborts = 0;
+	raw_begin(T_D1);
+	REG_DISPSTAT = DISP_VBLANK_IRQ | ((169 & 0xFF) << 8) | ((169 & 0x100) >> 1);
+	{ const u32 f0 = frame; while (frame == f0) {} }   /* start at a frame boundary */
+	for (int i = 0; i < frames; i++) {
+		const int cut = abort_every && (frame % 4) == 0;
+		REG_DISPSTAT = cut ? (REG_DISPSTAT | DISP_YTRIGGER_IRQ) : (REG_DISPSTAT & ~DISP_YTRIGGER_IRQ);
+		while (REG_VCOUNT != D1_ARM) {}          /* its frame work ends at line 100 */
+		d1_arm();
+		const u32 f1 = frame;
+		while (frame == f1) asm volatile("" ::: "memory");   /* waits for VBlank: the next frame starts */
+	}
+	REG_DISPSTAT = DISP_VBLANK_IRQ;
+	raw_end();
+	say("%s frames=%lu armed=%lu bad-at-vblank=%lu aborts=%lu (pass: bad 0)", name, d1_frames, d1_shown, d1_bad_vblank, d1_aborts);
+}
+
+static void test_d1(void) {
+	d1_run("D1 all-NDMA strip, main RAM (10 s)", banner, 0, 600, 0);
+	d1_run("D1b all-NDMA strip, abort on a game IRQ (10 s)", banner, 1, 600, 0);
+	d1_run("D1c all-NDMA strip, no starter channel (10 s)", banner, 0, 600, 1);
+	u16* nw = nwram_banner();
+	if (nw) d1_run("D1n all-NDMA strip, FIFO from NWRAM (10 s)", nw, 0, 600, 0);
+}
+
+static void hold(int frames);
+
+/* ---- C1: D-cache clean by address (rnd's ARM7-route question) ---- */
+static u32 c1buf[4096] __attribute__((aligned(32)));    /* 16 KB */
+
+__attribute__((target("arm"), noinline)) static u32 c1_clean(u32 start, u32 lines) {
+	timer_start();
+	for (u32 i = 0; i < lines; i++) asm volatile("mcr p15, 0, %0, c7, c10, 1" :: "r"(start + i * 32));
+	asm volatile("mcr p15, 0, %0, c7, c10, 4" :: "r"(0));   /* drain the write buffer */
+	return timer_read();
+}
+
+static void test_c1(void) {
+	title("C1 D-cache clean by address: cost");
+	const int ime = REG_IME;
+	REG_IME = 0;
+	/* (1) 4 KB, all lines dirty in the cache */
+	for (int i = 0; i < 1024; i++) c1buf[i] = (u32)i;
+	const u32 dirty = c1_clean((u32)c1buf, 128);
+	/* (2) the same 4 KB again: present but now clean */
+	const u32 clean = c1_clean((u32)c1buf, 128);
+	/* (3) 4 KB not in the cache: write 16 KB, then clean the first 4 KB */
+	for (int i = 0; i < 4096; i++) c1buf[i] = (u32)i ^ 0x5A5A5A5A;
+	const u32 absent = c1_clean((u32)c1buf, 128);
+	REG_IME = ime;
+	/* timer ticks are 33.5 MHz; ARM9 cycles are twice that */
+	say("C1 per 4KB (128 lines), ARM9 cycles: dirty=%lu clean=%lu not-cached=%lu", dirty * 2, clean * 2, absent * 2);
+	say("C1 per line: dirty=%lu.%02lu clean=%lu.%02lu not-cached=%lu.%02lu",
+	    dirty * 2 / 128, dirty * 200 / 128 % 100, clean * 2 / 128, clean * 200 / 128 % 100, absent * 2 / 128, absent * 200 / 128 % 100);
+}
+
+/* ---- A7: ARM7 latency and sound while the ARM9 runs NDMA ---- */
+static void a7_start(void) { fifoSendValue32(FIFO_USER_02, 1); }
+static void a7_stop(const char* phase) {
+	fifoSendValue32(FIFO_USER_02, 2);
+	u32 v[3];
+	for (int i = 0; i < 3; i++) {
+		while (!fifoCheckValue32(FIFO_USER_02)) swiWaitForVBlank();
+		v[i] = fifoGetValue32(FIFO_USER_02);
+	}
+	/* timer ticks at 33.514 MHz -> tenths of a microsecond */
+	say("A7 %s: IRQ lateness max %lu.%lu us avg %lu.%lu us over %lu ticks", phase,
+	    v[0] * 10 / 335 / 10, v[0] * 10 / 335 % 10, v[1] * 10 / 335 / 10, v[1] * 10 / 335 % 10, v[2]);
+}
+
+static void test_a7(void) {
+	title("A7 ARM7 latency + tone under ARM9 NDMA (20 s)");
+	say("A7 listen: a steady 440 Hz tone; any click or dropout is a fail");
+	a7_start();
+	hold(300);
+	a7_stop("idle");
+	a7_start();
+	raw_begin(T_STRESS_NDMA);
+	strip_main_loop_frames(300, 1);
+	raw_end();
+	a7_stop("NDMA1 128-word copies + FIFO strip");
+	a7_start();
+	d1_run("A7/D1 strip while timing", banner, 0, 300, 0);
+	a7_stop("D1 strip");
+	say("A7 pass: max lateness under load <= idle max + 10 us, and no audible glitch");
+}
+
 /* ---- H11 ---- */
 static void test_h11(void) {
 	static u32 buf[4096] __attribute__((aligned(32)));
@@ -854,11 +1066,14 @@ int main(void) {
 	say("new timing uses %s", use_vblank_start ? "V-Blank startup (H2b)" : "one-shot from VBlank (H2a)");
 	test_h3();      flush_log();
 	test_h10();     flush_log();
+	test_d1();      flush_log();
 	test_h5();      flush_log();
 	test_h6();      flush_log();
 	test_h6b();     flush_log();
 	test_h9();      flush_log();
 	test_h11();     flush_log();
+	test_c1();      flush_log();
+	test_a7();      flush_log();
 
 	consoleClear();
 	say("Main tests done. A: run T1 slack probe (about 6 min), B: finish");
