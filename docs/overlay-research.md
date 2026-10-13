@@ -48,7 +48,7 @@ On the DSi, every notice also inherits the evaluation backlog. rc_client events 
 
 **Cost:** 1-2 days.
 
-**Built** (`retail/bootloaderi`): after the module's init the ARM7 draws the card into the ESRB screen's buffer with the in-game menu's font (state `ARM9_DSCHEEVOS_PLACARD`): "RetroAchievements", the game title, HARDCORE or Softcore (plus a line when hardcore was refused), unlocked/total achievements and points, and "Spectator: nothing is sent" in spectator sessions. It stays up 1.5 s from when it appears, counting the fade-in, while the ARM7 keeps loading; A, B or START skip it, and the screen is then cleared only once the key is let go (up to 2 s), so the game doesn't read it as a new press. `clearScreen()` runs after it unchanged.
+**Built** (`retail/bootloaderi`): after the module's init the ARM7 draws the card into the ESRB screen's buffer with the in-game menu's font (state `ARM9_DSCHEEVOS_PLACARD`): "RetroAchievements", the game title, HARDCORE or Casual (plus a line when hardcore was refused), unlocked/total achievements and points, and "Spectator: nothing is sent" in spectator sessions. It stays up 1.5 s from when it appears, counting the fade-in, while the ARM7 keeps loading; A, B or START skip it, and the screen is then cleared only once the key is let go (up to 2 s), so the game doesn't read it as a new press. `clearScreen()` runs after it unchanged.
 
 **Test:**
 - melonDS: take a screenshot during init. The first game frames must be pixel-identical to a run with the placard off.

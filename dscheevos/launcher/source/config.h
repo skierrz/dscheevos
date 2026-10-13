@@ -15,7 +15,7 @@ typedef struct dsc_settings_t {
   char host[64];
 } dsc_settings_t;
 
-/* Hardcore always keeps Wi-Fi during play; softcore follows the setting. */
+/* Hardcore always keeps Wi-Fi during play; Casual follows the setting. */
 #define settings_keep_wifi(s) ((s)->live || (s)->hardcore)
 
 void settings_load(dsc_settings_t* s);
