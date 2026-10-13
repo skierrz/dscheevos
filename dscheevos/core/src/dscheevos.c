@@ -263,6 +263,8 @@ static struct {
   volatile uint32_t frame_counter;
 
   http_pending_t http[MAX_PENDING_HTTP];
+  volatile uint32_t http_ready;  /* answers dsc_http_done() stored, not yet given to rcheevos */
+  uint32_t idle_clock;         /* platform frame (or millis) when dsc_idle() last did its housekeeping */
   char game_hash[33];
 
   dscm_list_t* list_buf[2];    /* double buffer; list_published is the one readers may use */
@@ -2920,6 +2922,7 @@ static void finish_http(void)
       resp.body_length = p->body_length;
       resp.http_status_code = p->status;
       p->used = 0;
+      S.http_ready--;
       S.stats.pending_requests--;
       if (p->journal_kind && request_answered(p->journal_kind, &resp)) {
         journal_answered(p->journal_kind, p->journal_id, p->journal_score);
@@ -2942,6 +2945,17 @@ int dsc_idle(void)
 
   if (!S.initialized)
     return 0;
+
+  /* The game's idle thread wakes at every IRQ, often many times a frame.
+   * In the same frame as the last call, with no VBlank to commit, nothing
+   * queued and no answer waiting, there is nothing to do: return before
+   * touching more memory (rcheevos' own timers run once a frame below). */
+  {
+    uint32_t clock = S.platform.frame ? S.platform.frame() : S.platform.millis();
+    if (clock == S.idle_clock && Q.frames == Q.taken && S.slot_tail == S.slot_head && !S.http_ready)
+      return 0;
+    S.idle_clock = clock;
+  }
 
   finish_http();
   drain();
@@ -3026,6 +3040,7 @@ void dsc_http_done(void* handle, int http_status, const char* body, size_t body_
     p->status = RC_API_SERVER_RESPONSE_RETRYABLE_CLIENT_ERROR;
   }
   p->done = 1;
+  S.http_ready++;
 }
 
 void dsc_get_stats(dsc_stats_t* stats)
