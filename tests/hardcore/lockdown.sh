@@ -18,6 +18,7 @@
 # Optional: LAUNCHER (default: the repo's), MODE=hc|casual (default hc).
 # Usage: lockdown.sh CASE...   cases: ips bin widecheat srl cache stale wipe
 #                                     launcher-ips launcher-builtin launcher-donor
+#                                     wrong-rom (item: the ROM's hash must match the session's)
 #                                     boost dsimode2 boost-excluded (speed-ups: ROM_EXCLUDED is a
 #                                     game on nds-bootstrap's twlClockExcludeList, e.g. Sonic Rush)
 # Wrap it in emu-lock: it runs one emulator at a time. (Variables set for one
@@ -61,6 +62,9 @@ print("cache: ver", struct.unpack_from("<H", d, 0)[0], "cardReadStartOffset", he
 struct.pack_into("<I", d, 0x3C, 0x02000004)
 open(f, "wb").write(d)
 EOF
+  # the runner keeps the SD card in <sd>.img and may not see a change made in the
+  # same second as its index: rebuild the image from the folder
+  rm -f "$2.img" "$2.img.idx"
   exit 0 ;;
 esac
 
@@ -68,14 +72,29 @@ esac
 session_args=
 [ "$mode" = casual ] && session_args=--softcore
 hc=1; [ "$mode" = casual ] && hc=0
-hash=${HASH:-6d77d9f9b34323e4060206b675620b8d}   # Kirby Super Star Ultra (USA); only the module uses it
+# the RetroAchievements DS hash (rcheevos' rc_hash_nintendo_ds): header, ARM9, ARM7, icon
+rahash() {
+  python3 - "$1" <<'PY'
+import hashlib, struct, sys
+f = open(sys.argv[1], 'rb'); h = f.read(512)
+a9, a9s = struct.unpack_from('<I', h, 0x20)[0], struct.unpack_from('<I', h, 0x2C)[0]
+a7, a7s = struct.unpack_from('<I', h, 0x30)[0], struct.unpack_from('<I', h, 0x3C)[0]
+icon = struct.unpack_from('<I', h, 0x68)[0]
+m = hashlib.md5(h[:0x160])
+for off, n in ((a9, a9s), (a7, a7s)):
+    f.seek(off); m.update(f.read(n))
+f.seek(icon); d = f.read(0xA00); m.update(d + bytes(0xA00 - len(d)))
+print(m.hexdigest())
+PY
+}
+hash_of() { [ -n "${HASH:-}" ] && echo "$HASH" || rahash "$1"; }
 
 marker() {  # marker RAM.BIN -> applied / not applied
   python3 -c 'import sys; d=open(sys.argv[1],"rb").read(8); print("applied" if d[4:8]==b"DSCX" else "not applied (%s)" % d[4:8].hex())' "$1" 2>/dev/null || echo "no RAM dump"
 }
-boot() {  # boot WORK FRAMES [SD_SETUP step]: nds-bootstrap with a fresh session
+boot() {  # boot WORK FRAMES [SD_SETUP step]: nds-bootstrap with a fresh session for $ROM (or $SESSION_ROM)
   WORK=$1 SESSION_ARGS="$session_args ${EXTRA_SESSION_ARGS:-}" SD_SETUP="${3:+$0 $3}" \
-    "$repo/tests/bootstrap/run.sh" "$hash" "$set_json" "$2" > "$1/out.txt" 2>&1
+    "$repo/tests/bootstrap/run.sh" "$(hash_of "${SESSION_ROM:-$ROM}")" "$set_json" "$2" > "$1/out.txt" 2>&1
 }
 used() { [ -f "$1/sd/_nds/dscheevos/session.used" ] && echo "session used" || echo "session NOT used"; }
 lboot() {  # lboot WORK FRAMES [SD_SETUP step]: the launcher flow (presses A now and then for prompts)
@@ -122,6 +141,11 @@ for c in "$@"; do
     python3 -c 'import struct,sys; f=open(sys.argv[1],"r+b"); f.seek(0xC); f.write(b"AYIE"); f.seek(0x3C); f.write(struct.pack("<I",0x25F70))' "$rom"
     (ROM=$rom; lboot "$w" 1800 setup-donor)
     echo "launcher-donor (asked $mode): server session $(server_mode "$w"); launcher: $(grep -h 'donor' "$w/sd/_nds/dscheevos/launcher.log" 2>/dev/null | head -1)" ;;
+  wrong-rom)  # a session for the clean ROM, booted on a modified one at the same path (a replay)
+    rom=$w/mod.nds; cp "$ROM" "$rom"
+    printf 'DSCX' | dd of="$rom" bs=1 seek=$((0x4004)) conv=notrunc 2>/dev/null
+    (SESSION_ROM=$ROM; ROM=$rom; boot "$w" 1800)
+    echo "wrong-rom ($mode): $(used "$w"); module $(grep -m1 -E '^progress|module not loaded' "$w/out.txt"); marker $(marker "$w/ram.bin")" ;;
   boost|dsimode2|boost-excluded)
     step=setup-$c; [ "$c" = boost-excluded ] && step=setup-boost
     if [ "$c" = boost-excluded ]; then (ROM=${ROM_EXCLUDED:?}; boot "$w" 1800 $step); else boot "$w" 1800 $step; fi
