@@ -22,6 +22,14 @@
  *     bump-allocated after the session file, freed before the load ends.
  * So the set's raw and parsed JSON cost no heap: load peak = steady state,
  * as long as the session file plus the parsed set fit in the arena.
+ *
+ * Every other allocation of the load goes to a set zone (heap.c), in
+ * allocation order, which is the order rcheevos evaluates in: first DSi
+ * NWRAM-B/C when nds-bootstrap grants it (heap_zone_nwram; its line fills
+ * cost about half of main RAM's), then the bottom of the high heap piece,
+ * whose rest newlib then gets. The parsed set's data is never interleaved
+ * with newlib's headers or with later allocations. Blocks the load freed are
+ * reused by the load; after it, nothing new goes to a zone.
  */
 #ifndef DSCM_HEAP_H
 #define DSCM_HEAP_H
@@ -41,6 +49,15 @@ void heap_arena_window(int open);
 /* Lend body (in the session, body[len] a NUL the file has spare) to the
  * next malloc(len + 1): the core's copy of a reply. NULL: stop lending. */
 void heap_lend(const char* body, uint32_t len);
+/* Before heap_load_begin: memory of its own for the set (DSi NWRAM-B/C,
+ * see dscm_boot_t), or size 0 for none. */
+void heap_zone_nwram(void* base, uint32_t size);
+/* The next malloc(n) is short-lived (a reply's copy that can't be lent):
+ * newlib's, not a set zone's. 0: none. */
+void heap_transient(uint32_t n);
+/* Around allocations another party finds by address range (the achievement
+ * list, which the in-game menu checks against the module's RAM): newlib's. */
+void heap_shared(int on);
 /* The load is over: nothing load-time may stay in the arena. Returns 0 if
  * nothing does, else -1 (the arena would overwrite it: don't start). */
 int heap_load_end(void);
@@ -57,6 +74,12 @@ typedef struct dscm_heap_t {
   uint32_t parse_base, parse_top;     /* rc_api's parsed set in the arena: start, high-water */
   uint32_t parse_heap;                /* bytes of it that didn't fit there (heap) */
   uint32_t load_left;                 /* load-time blocks still alive at the end (0) */
+  /* set zones, [0] NWRAM (0s if none), [1] main RAM (bottom of the high piece) */
+  uint32_t zone_base[2], zone_top[2];  /* start, high-water */
+  uint32_t zone_end[2];               /* NWRAM: the grant's end; main RAM: 0 */
+  uint32_t zone_used[2], zone_holes[2]; /* at the end of the load: bytes in blocks, bytes freed below the top */
+  uint32_t zone_blocks;               /* blocks in use (now) */
+  uint32_t zone_missed;               /* load-time bytes no zone had room for (newlib's) */
 } dscm_heap_t;
 extern dscm_heap_t dscm_g_heap;
 

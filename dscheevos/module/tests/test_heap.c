@@ -20,6 +20,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+void* __wrap_malloc(size_t n);
+void __wrap_free(void* p);
+void* __wrap_calloc(size_t n, size_t size);
+void* __wrap_realloc(void* p, size_t n);
+
 static int failures, checks;
 #define CHECK(cond) do { checks++; if (!(cond)) { failures++; printf("  FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); } } while (0)
 
@@ -69,6 +74,13 @@ void* h_realloc(void* v, size_t n)
 #define AREA (8u << 20)
 char dscm_host_session[AREA] __attribute__((aligned(32)));
 static dscm_boot_t* boot = (dscm_boot_t*)dscm_host_session;
+/* the high heap piece's bottom (the main-RAM set zone) and NWRAM-B/C */
+#define MAIN_ZONE_BYTES (4u << 20)
+char dscm_host_main_zone[MAIN_ZONE_BYTES] __attribute__((aligned(32)));
+uint32_t dscm_host_main_zone_size = MAIN_ZONE_BYTES;
+static char nwram[512 * 1024] __attribute__((aligned(32)));
+static uint32_t nwram_bytes;             /* granted to the zone in run(); 0: none */
+#define IN(p, base, n) ((const char*)(p) >= (const char*)(base) && (const char*)(p) < (const char*)(base) + (n))
 static const char* g_session = dscm_host_session;
 
 static const char login[] = "{\"Success\":true,\"User\":\"tester\",\"Token\":\"tok\",\"Score\":0,\"SoftcoreScore\":0,\"Messages\":0}";
@@ -115,7 +127,14 @@ static uint32_t unix_time(void) { return 1760000000u + frames / 60; }
 static int no_interrupt(void) { return 0; }
 static dscm_journal_t journal;
 static dscm_notices_t notices;
-static void publish_list(dscm_list_t* l) { (void)l; }
+static uint32_t lists_in_zone, lists;
+static void publish_list(dscm_list_t* l)
+{
+  if (!l) return;
+  lists++;
+  if (IN(l, dscm_host_main_zone, MAIN_ZONE_BYTES) || IN(l, nwram, sizeof(nwram)))
+    lists_in_zone++;
+}
 
 static uint32_t digest, unlocks, late_answers;
 static void on_event(const dsc_event_t* e)
@@ -135,8 +154,11 @@ static void http_send(const dsc_http_request_t* r)
     const char* body = g_session + off;
     if (lend && off + len < boot->file_size && body[len] == '\0')
       heap_lend(body, len);
+    else
+      heap_transient(len + 1);
     dsc_http_done(r->handle, 200, body, len);
     heap_lend(NULL, 0);
+    heap_transient(0);
     return;
   }
   if (k >= 0) late_answers++;
@@ -170,12 +192,16 @@ static result_t run(int place, uint32_t arena_bytes, uint32_t n)
   rng = 12345;
   for (i = 0; i < sizeof(ram); i += 4) { uint32_t v = rnd(); if (!(v & 7)) v = 0x02000000u | (rnd() & 0x3FFFFCu); memcpy(ram + i, &v, 4); }
 
-  if (place)
+  lists = lists_in_zone = 0;
+  if (place) {
+    heap_zone_nwram(nwram_bytes ? nwram : NULL, nwram_bytes);
     heap_load_begin(boot->file_size);
+  }
   memset(&pl, 0, sizeof(pl));
   pl.read_memory = read_memory; pl.memory_map = memory_map; pl.interrupt_pending = no_interrupt;
   pl.millis = millis; pl.http_send = http_send; pl.event = on_event; pl.unix_time = unix_time;
   pl.journal = &journal; pl.notices = &notices; pl.publish_list = publish_list; pl.frame = frame;
+  pl.shared_alloc = heap_shared;
   memset(&c, 0, sizeof(c));
   c.host = "https://retroachievements.org"; c.username = "tester"; c.token = "tok"; c.hardcore = 1;
   c.max_addresses = 4096; c.snapshot_slots = 1024; c.snapshot_bytes = arena_bytes;
@@ -312,6 +338,101 @@ static void test_no_arena(void)
   CHECK(a.heap.arena == 0);
 }
 
+static void test_zones(void)
+{
+  result_t b, a, t;
+  size_t n = sizeof(small_set) - 1;
+  printf("set zones: NWRAM, main RAM, overflow\n");
+  make_session(small_set, n, 0);
+  b = run(0, HEAP_ARENA_BYTES, 600);
+  /* main-RAM zone only */
+  nwram_bytes = 0;
+  make_session(small_set, n, 0);
+  a = run(1, HEAP_ARENA_BYTES, 600);
+  CHECK(a.active && a.left == 0 && a.digest == b.digest && a.unlocks == b.unlocks);
+  CHECK(a.heap.zone_base[0] == 0 && a.heap.zone_used[0] == 0);
+  CHECK(a.heap.zone_used[1] > 0 && a.heap.zone_missed == 0);
+  CHECK(a.after_load == 2 * ((sizeof(dscm_list_t) + 3 * sizeof(dscm_list_entry_t) + 4 + 7) & ~(size_t)7));   /* newlib: the two lists */
+  CHECK(lists > 0 && lists_in_zone == 0);
+  /* NWRAM first */
+  nwram_bytes = sizeof(nwram);
+  make_session(small_set, n, 0);
+  a = run(1, HEAP_ARENA_BYTES, 600);
+  CHECK(a.active && a.left == 0 && a.digest == b.digest && a.unlocks == b.unlocks);
+  CHECK(a.heap.zone_used[0] > 0 && a.heap.zone_used[1] == 0 && a.heap.zone_missed == 0);
+  CHECK(a.heap.zone_base[0] == (uint32_t)(uintptr_t)nwram && a.heap.zone_end[0] == (uint32_t)(uintptr_t)(nwram + sizeof(nwram)));
+  CHECK(lists > 0 && lists_in_zone == 0);
+  /* a small NWRAM grant: the rest goes on in main RAM */
+  nwram_bytes = 4096 + 31;
+  make_session(small_set, n, 0);
+  t = run(1, HEAP_ARENA_BYTES, 600);
+  CHECK(t.active && t.left == 0 && t.digest == b.digest && t.unlocks == b.unlocks);
+  CHECK(t.heap.zone_used[0] > 0 && t.heap.zone_used[1] > 0 && t.heap.zone_missed == 0);
+  CHECK(t.heap.zone_top[0] <= t.heap.zone_end[0] && t.heap.zone_end[0] - t.heap.zone_base[0] == 4096);
+  /* too small to bother: no NWRAM zone */
+  nwram_bytes = 4000;
+  make_session(small_set, n, 0);
+  t = run(1, HEAP_ARENA_BYTES, 100);
+  CHECK(t.active && t.heap.zone_base[0] == 0 && t.heap.zone_used[0] == 0);
+  nwram_bytes = 0;
+  printf("  NWRAM zone: %u bytes in blocks, %u in holes\n", a.heap.zone_used[0], a.heap.zone_holes[0]);
+}
+
+/* The zone allocator alone: random mallocs, frees and reallocs while
+ * loading, every block's bytes checked; freed, everything goes back. */
+static void test_zone_stress(void)
+{
+  enum { N = 400 };
+  static struct { unsigned char* p; size_t n; unsigned char v; } b[N];
+  uint32_t i, k, bad = 0, in_nw = 0;
+  printf("zone allocator: random mallocs, frees, reallocs\n");
+  memset(b, 0, sizeof(b));
+  rng = 777;
+  heap_zone_nwram(nwram, 64 * 1024);
+  heap_load_begin(0);
+  for (i = 0; i < 20000; i++) {
+    k = rnd() % N;
+    if (b[k].p) {
+      size_t j;
+      for (j = 0; j < b[k].n; j++) if (b[k].p[j] != b[k].v) { bad++; break; }
+      if (rnd() & 1) {
+        size_t m = 1 + rnd() % ((rnd() & 7) ? 300 : 5000);
+        unsigned char* q = (unsigned char*)__wrap_realloc(b[k].p, m);
+        if (!q) { bad++; continue; }
+        for (j = 0; j < (m < b[k].n ? m : b[k].n); j++) if (q[j] != b[k].v) { bad++; break; }
+        b[k].p = q; b[k].n = m;
+        memset(q, b[k].v, m);
+      }
+      else {
+        __wrap_free(b[k].p);
+        b[k].p = NULL;
+      }
+    }
+    else {
+      b[k].n = 1 + rnd() % ((rnd() & 7) ? 300 : 5000);
+      b[k].v = (unsigned char)rnd();
+      b[k].p = (unsigned char*)((rnd() & 3) ? __wrap_malloc(b[k].n) : __wrap_calloc(1, b[k].n));
+      if (!b[k].p) { bad++; continue; }
+      if (IN(b[k].p, nwram, sizeof(nwram))) in_nw++;
+      memset(b[k].p, b[k].v, b[k].n);
+    }
+  }
+  for (k = 0; k < N; k++) {
+    size_t j;
+    if (!b[k].p) continue;
+    for (j = 0; j < b[k].n; j++) if (b[k].p[j] != b[k].v) { bad++; break; }
+    __wrap_free(b[k].p);
+  }
+  heap_load_end();
+  CHECK(bad == 0);
+  CHECK(in_nw > 0 && dscm_g_heap.zone_top[0] <= dscm_g_heap.zone_end[0]);
+  CHECK(dscm_g_heap.zone_top[1] > dscm_g_heap.zone_base[1]);   /* NWRAM overflowed into main RAM */
+  CHECK(dscm_g_heap.zone_used[0] == 0 && dscm_g_heap.zone_holes[0] == 0);   /* all merged back into the top */
+  CHECK(dscm_g_heap.zone_used[1] == 0 && dscm_g_heap.zone_holes[1] == 0);
+  CHECK(dscm_g_heap.zone_blocks == 0);
+  heap_zone_nwram(NULL, 0);
+}
+
 int main(void)
 {
   const char* path = getenv("SET");
@@ -325,6 +446,19 @@ int main(void)
     b = run(0, HEAP_ARENA_BYTES, frames_n);
     make_session(set, n, 0);
     a = run(1, HEAP_ARENA_BYTES, frames_n);
+    {
+      result_t w;
+      nwram_bytes = getenv("NWRAM") ? (uint32_t)strtoul(getenv("NWRAM"), NULL, 0) : 480 * 1024;
+      if (nwram_bytes > sizeof(nwram)) nwram_bytes = sizeof(nwram);
+      make_session(set, n, 0);
+      w = run(1, HEAP_ARENA_BYTES, frames_n);
+      printf("zones: main-RAM only: used=%u holes=%u top-base=%u missed=%u newlib_after_load=%zu lists_in_zone=%u\n"
+             "       NWRAM %u: nwram used=%u holes=%u main used=%u holes=%u missed=%u newlib_after_load=%zu same=%d\n",
+             a.heap.zone_used[1], a.heap.zone_holes[1], a.heap.zone_top[1] - a.heap.zone_base[1], a.heap.zone_missed, a.after_load, lists_in_zone,
+             nwram_bytes, w.heap.zone_used[0], w.heap.zone_holes[0], w.heap.zone_used[1], w.heap.zone_holes[1], w.heap.zone_missed,
+             w.after_load, w.digest == b.digest && w.unlocks == b.unlocks);
+      nwram_bytes = 0;
+    }
     /* session area: today 256 KB (or the file), now the header + the arena,
      * or the file and the parsed set if they are bigger */
     printf("set=%zu file=%u ach=%u active=%d/%d same=%d unlocks=%u\n"
@@ -341,6 +475,8 @@ int main(void)
   test_old_layout();
   test_parse_overflow();
   test_no_arena();
+  test_zones();
+  test_zone_stress();
   printf("%d checks, %d failures\n", checks, failures);
   return failures != 0;
 }

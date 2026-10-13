@@ -1986,8 +1986,12 @@ static void list_alloc(void)
     return;
   S.list_max = core ? core->public_.num_achievements : 0;
   size = sizeof(dscm_list_t) + S.list_max * sizeof(dscm_list_entry_t);
+  if (S.platform.shared_alloc)
+    S.platform.shared_alloc(1);
   S.list_buf[0] = (dscm_list_t*)malloc(size);
   S.list_buf[1] = (dscm_list_t*)malloc(size);
+  if (S.platform.shared_alloc)
+    S.platform.shared_alloc(0);
   if (!S.list_buf[0] || !S.list_buf[1]) {
     dsc_log("no memory for the achievement list");
     list_free();

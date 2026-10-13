@@ -106,6 +106,10 @@ typedef struct dsc_platform_t {
    * then) and returns nonzero if the copy must start over: game code may
    * have run meanwhile. May be NULL. */
   int (*interrupt_pending)(void);
+  /* Brackets allocations that another party finds by address (the
+   * achievement list): on(1) before, on(0) after, so the platform can keep
+   * them where that party looks. May be NULL. */
+  void (*shared_alloc)(int on);
 } dsc_platform_t;
 
 typedef struct dsc_config_t {

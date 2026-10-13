@@ -235,8 +235,11 @@ static void http_send(const dsc_http_request_t* request)
        * is the reply itself (heap.h): no heap for it. */
       if (offset + length < g_boot.file_size && body[length] == '\0')
         heap_lend(body, length);
+      else
+        heap_transient(length + 1);   /* the copy, freed once parsed: not set data */
       dsc_http_done(request->handle, 200, body, length);
       heap_lend(NULL, 0);
+      heap_transient(0);
     }
     else {
       static const char missing[] = "{\"Success\":false,\"Error\":\"Not fetched at session start\"}";
