@@ -11,6 +11,7 @@ intervals had any OS_Halt time, and a class:
   oshalt   most halted time is in the SDK's OS_Halt (what DScheevos uses today)
   bios     most halted time is a BIOS wait (SWI IntrWait / VBlankIntrWait / Halt)
   cp15     most halted time is another CP15 halt (custom code)
+  oshalt-x most halted time is OS_Halt from a caller the module doesn't accept
   busy     halted < 2% of the time: the game polls or never waits
 Then the top halt sites, PC hot spots while running, and IO pollers.
 """
@@ -20,7 +21,7 @@ import os
 import sys
 
 FRAME = 560190 * 4      # one interval in 133 MHz units (the runner's unit)
-KINDS = {"1": "OS_Halt", "2": "cp15", "104": "SWI4 IntrWait", "105": "SWI5 VBlankIntrWait", "106": "SWI6 Halt",
+KINDS = {"1": "OS_Halt", "2": "cp15", "3": "OS_Halt (other caller)", "104": "SWI4 IntrWait", "105": "SWI5 VBlankIntrWait", "106": "SWI6 Halt",
          "100": "BIOS (no SWI seen)"}
 
 
@@ -32,11 +33,11 @@ def load(d):
     return rows
 
 
-def classify(halted, osh, bios, oth):
+def classify(halted, osh, bios, oth, osx=0):
     if halted < 0.02:
         return "busy"
-    m = max(osh, bios, oth)
-    return "oshalt" if m == osh else "bios" if m == bios else "cp15"
+    m = max(osh, bios, oth, osx)
+    return "oshalt" if m == osh else "bios" if m == bios else "oshalt-x" if m == osx else "cp15"
 
 
 def segment(rows, a, b):
@@ -47,14 +48,17 @@ def segment(rows, a, b):
     tot = lambda k: sum(r[k] for r in sel) / n / FRAME
     busy, halted = tot("busy"), tot("halted")
     osh, bios, oth = tot("halted_oshalt"), tot("halted_bios"), tot("halted_other")
+    osx = tot("halted_oshalt_other") if "halted_oshalt_other" in sel[0] else 0
     with_osh = sum(1 for r in sel if r["halted_oshalt"] > 0)
     # per interval class
     pc = {}
     for r in sel:
-        c = classify(r["halted"] / FRAME, r["halted_oshalt"], r["halted_bios"], r["halted_other"])
+        c = classify(r["halted"] / FRAME, r["halted_oshalt"], r["halted_bios"], r["halted_other"], r.get("halted_oshalt_other", 0))
         pc[c] = pc.get(c, 0) + 1
-    return dict(n=n, busy=busy, halted=halted, oshalt=osh, bios=bios, other=oth, with_oshalt=with_osh,
-                cls=classify(halted, osh, bios, oth), per_interval=pc)
+    lines = [r["wait_line"] for r in sel] if "wait_line" in sel[0] else []
+    by = {L: sum(1 for x in lines if 0 <= x <= L) / n for L in (160, 176, 184, 191)} if lines else {}
+    return dict(n=n, busy=busy, halted=halted, oshalt=osh, bios=bios, other=oth, oshalt_other=osx, with_oshalt=with_osh,
+                cls=classify(halted, osh, bios, oth, osx), per_interval=pc, waiting_by_line=by)
 
 
 def main():
@@ -112,6 +116,10 @@ def main():
                   name, s["n"], s["cls"], 100 * s["busy"], 100 * s["halted"], 100 * s["oshalt"], 100 * s["bios"],
                   100 * s["other"], s["with_oshalt"], 100.0 * s["with_oshalt"] / s["n"],
                   " ".join("%s:%d" % kv for kv in sorted(s["per_interval"].items()))))
+    for name, s in out["segments"].items():
+        if s and s["waiting_by_line"]:
+            print("%-8s OS_Halt from other callers %.1f%%; intervals already waiting at VBlank since line <=160/176/184/191: %s" % (
+                name, 100 * s["oshalt_other"], " ".join("%.0f%%" % (100 * v) for v in s["waiting_by_line"].values())))
     print("halt sites (share of halted time):")
     for s in out["sites"]:
         print("  %5.1f%%  %-22s pc %s lr %s  halts %d" % (100 * s["share"], s["kind"], s["pc"], s["lr"], s["halts"]))

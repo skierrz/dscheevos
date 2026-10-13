@@ -9,8 +9,14 @@ Counts, per ROM:
              custom halts, outside the OS_Halt shape
   swi4/5/6   BIOS IntrWait / VBlankIntrWait / Halt wrappers: Thumb "swi N; bx lr"
              or ARM "swi N<<16; bx lr" (and loose swi instructions, counted apart)
-  idle       NitroSDK idle-thread loop: a call to OS_Halt followed by a branch
-             back to it (bl OS_Halt; b <bl>), the shape the module accepts
+  idle       NitroSDK idle-thread loop, ARM or Thumb: a call to OS_Halt followed
+             by a branch right back to it (bl OS_Halt; b <bl>), the shape the
+             module accepts
+  idle_other a call to OS_Halt followed by a short branch further back (the loop
+             calls something else too): the module gives these the stock halt
+  callers4/5/6  bl/blx calls to those wrappers from the binary and overlays (the
+             SDK's own OS_WaitVBlankIntr doesn't use SWI 5: a caller of the SWI 5
+             wrapper is the game or middleware waiting in the BIOS)
 plus the SDK version from the module params and the "[SDK+...]" middleware
 tags in the binary.
 
@@ -98,7 +104,7 @@ OSHALT = struct.pack("<III", 0xE3A00000, 0xEE070F90, 0xE12FFF1E)
 
 
 def scan_code(b, base, static):
-    r = dict(oshalt=[], cp15halt=[], swi={4: [], 5: [], 6: []}, swiloose={4: 0, 5: 0, 6: 0}, idle=[])
+    r = dict(oshalt=[], cp15halt=[], swi={4: [], 5: [], 6: []}, swiloose={4: 0, 5: 0, 6: 0}, idle=[], idle_other=[])
     # ARM, word aligned
     n = len(b) // 4
     words = struct.unpack_from("<%dI" % n, b, 0)
@@ -131,10 +137,29 @@ def scan_code(b, base, static):
                         boff -= 0x1000000
                     btgt = base + (i + 1) * 4 + 8 + boff * 4
                     if base + i * 4 - 0x20 <= btgt <= base + i * 4:
-                        r["idle"].append(base + i * 4)
+                        (r["idle"] if nx == 0xEAFFFFFD else r["idle_other"]).append(base + i * 4)
     # Thumb, halfword aligned: swi N; bx lr
     m = len(b) // 2
     hw = struct.unpack_from("<%dH" % m, b, 0)
+    # calls to OS_Halt from Thumb (bl / blx pair) followed by a branch back:
+    # "b .-4" right back to the call is the shape the module accepts
+    if halts:
+        for i in range(m - 2):
+            a, c = hw[i], hw[i + 1]
+            if (a & 0xF800) == 0xF000 and (c & 0xE800) == 0xE800:
+                off = ((a & 0x7FF) << 12) | ((c & 0x7FF) << 1)
+                if off & 0x400000:
+                    off -= 0x800000
+                tgt = base + i * 2 + 4 + off
+                if (c & 0xF800) == 0xE800:
+                    tgt &= ~3
+                if tgt in halts and (hw[i + 2] & 0xF800) == 0xE000:
+                    boff = hw[i + 2] & 0x7FF
+                    if boff & 0x400:
+                        boff -= 0x800
+                    btgt = base + (i + 2) * 2 + 4 + boff * 2
+                    if base + i * 2 - 0x20 <= btgt <= base + i * 2:
+                        (r["idle"] if hw[i + 2] == 0xE7FC else r["idle_other"]).append(base + i * 2)
     for i, h in enumerate(hw[:-1]):
         if h in (0xDF04, 0xDF05, 0xDF06):
             num = h & 0xFF
@@ -144,6 +169,45 @@ def scan_code(b, base, static):
                 r["swiloose"][num] += 1
     return r
 
+
+def branch_targets(b, base):
+    """Yield (site, target) for every bl/blx (ARM and Thumb) in code b at base."""
+    n = len(b) // 4
+    words = struct.unpack_from("<%dI" % n, b, 0)
+    for i, w in enumerate(words):
+        if (w & 0x0F000000) == 0x0B000000 or (w >> 25) == 0x7D:
+            off = w & 0xFFFFFF
+            if off & 0x800000:
+                off -= 0x1000000
+            t = base + i * 4 + 8 + off * 4
+            if (w >> 28) == 0xF:
+                t += ((w >> 24) & 1) * 2
+            yield base + i * 4, t
+    m = len(b) // 2
+    hw = struct.unpack_from("<%dH" % m, b, 0)
+    for i in range(m - 1):
+        a, c = hw[i], hw[i + 1]
+        if (a & 0xF800) == 0xF000 and (c & 0xE800) == 0xE800:
+            off = ((a & 0x7FF) << 12) | ((c & 0x7FF) << 1)
+            if off & 0x400000:
+                off -= 0x800000
+            t = base + i * 2 + 4 + off
+            if (c & 0xF800) == 0xE800:
+                t &= ~3
+            yield base + i * 2, t
+
+
+def calls_to(b, base, wrappers):
+    """Count calls landing on a wrapper: wrappers maps (lo, hi) -> key, a call
+    to any address in [lo, hi] (the SWI and up to 3 setup instructions before
+    it) counts."""
+    cnt = {k: [] for k in wrappers}
+    for site, t in branch_targets(b, base):
+        for (lo, hi) in wrappers:
+            if lo <= t <= hi:
+                cnt[(lo, hi)].append(site)
+                break
+    return cnt
 
 TAG = re.compile(rb"\[SDK\+([A-Za-z0-9_\-\. ]+):([^\]\x00]{0,60})\]")
 
@@ -162,15 +226,36 @@ def scan(path):
     res["oshalt"] = len(s["oshalt"])
     res["cp15halt"] = len(s["cp15halt"])
     res["idle"] = len(s["idle"])
+    res["idle_other"] = len(s["idle_other"])
     res["sites"]["static"] = dict(oshalt=[hex(x) for x in s["oshalt"]], cp15halt=[hex(x) for x in s["cp15halt"]],
-                                  idle=[hex(x) for x in s["idle"]],
+                                  idle=[hex(x) for x in s["idle"]], idle_other=[hex(x) for x in s["idle_other"]],
                                   swi={k: [hex(x) for x in v] for k, v in s["swi"].items()})
     for k in (4, 5, 6):
         res["swi"][k] = len(s["swi"][k])
         res["swiloose"][k] = s["swiloose"][k]
+    wrappers = {}
+    for k in (4, 5, 6):
+        for a in s["swi"][k]:
+            o = a - ram
+            th = struct.unpack_from("<H", a9, o)[0] == 0xDF00 + k
+            lo = a - (6 if th else 12)
+            # don't reach back past the end of the function before (bx lr)
+            for x in range(a - (2 if th else 4), lo - 1, -(2 if th else 4)):
+                ins = struct.unpack_from("<H" if th else "<I", a9, x - ram)[0]
+                if ins == (0x4770 if th else 0xE12FFF1E):
+                    lo = x + (2 if th else 4)
+                    break
+            wrappers[(lo, a)] = k
+    ovls = overlays(rom)
+    res["callers"] = {4: 0, 5: 0, 6: 0}
+    res["sites"]["callers"] = {4: [], 5: [], 6: []}
+    for code_b, code_base in [(a9, ram)] + [(d, oram) for _, oram, d in ovls]:
+        for key, sites in calls_to(code_b, code_base, wrappers).items():
+            res["callers"][wrappers[key]] += len(sites)
+            res["sites"]["callers"][wrappers[key]] += [hex(x) for x in sites]
     for t in TAG.findall(a9):
         res["tags"].add((t[0] + b":" + t[1]).decode("ascii", "replace"))
-    for oid, oram, data in overlays(rom):
+    for oid, oram, data in ovls:
         o = scan_code(data, oram, False)
         res["ovl_cp15halt"] += len(o["cp15halt"]) + len(o["oshalt"])
         for k in (4, 5, 6):
@@ -192,7 +277,7 @@ def main():
         print(__doc__)
         sys.exit(2)
     if not js:
-        print("rom\tcode\tsdk\toshalt\tidle\tcp15halt\tswi4\tswi5\tswi6\tloose4/5/6\tovl_cp15\tovl_swi4/5/6\ttags")
+        print("rom\tcode\tsdk\toshalt\tidle\tidle_other\tcp15halt\tswi4\tswi5\tswi6\tloose4/5/6\tovl_cp15\tovl_swi4/5/6\tcallers4/5/6\ttags")
     for p in args:
         try:
             r = scan(p)
@@ -203,10 +288,11 @@ def main():
             print(json.dumps(r))
         else:
             print("\t".join(str(x) for x in (
-                r["rom"], r["code"], r["sdk"], r["oshalt"], r["idle"], r["cp15halt"],
+                r["rom"], r["code"], r["sdk"], r["oshalt"], r["idle"], r["idle_other"], r["cp15halt"],
                 r["swi"][4], r["swi"][5], r["swi"][6],
                 "%d/%d/%d" % (r["swiloose"][4], r["swiloose"][5], r["swiloose"][6]),
                 r["ovl_cp15halt"], "%d/%d/%d" % (r["ovl_swi"][4], r["ovl_swi"][5], r["ovl_swi"][6]),
+                "%d/%d/%d" % (r["callers"][4], r["callers"][5], r["callers"][6]),
                 " ".join(t for t in r["tags"] if not t.startswith("NINTENDO:")) or "-")))
 
 
