@@ -293,10 +293,10 @@ static const struct dsd_badge_t* badge(void* ctx, const dsd_item_t* it) {
   return it->id == 101 ? &test_badge : 0;
 }
 
-static void render(const char* name, uint16_t kind, uint32_t id, int32_t value, uint16_t* px) {
+static void render_side(const char* name, uint16_t kind, uint32_t id, int32_t value, uint16_t* px, int side) {
   static dscm_notices_t n;
   dsd_t d;
-  const dsd_config_t cfg = { .font = &dsd_font_latin, .text = text, .badge = badge, .hardcore = 1 };
+  const dsd_config_t cfg = { .font = &dsd_font_latin, .text = text, .badge = badge, .side = (uint8_t)side, .hardcore = 1 };
   dsd_init(&d, &cfg);
   memset(&n, 0, sizeof(n));
   n.magic = DSCM_NOTICES_MAGIC;
@@ -315,6 +315,10 @@ static void render(const char* name, uint16_t kind, uint32_t id, int32_t value, 
   golden(name, px, 256, 32);
 }
 
+static void render(const char* name, uint16_t kind, uint32_t id, int32_t value, uint16_t* px) {
+  render_side(name, kind, id, value, px, DSD_SIDE_LEFT);
+}
+
 static void test_notices_with_badges(void) {
   static uint8_t px[64 * 64 * 3];
   synth(px, 64, 64, 3, 3);
@@ -324,6 +328,7 @@ static void test_notices_with_badges(void) {
   render("badge_unlock", DSCM_NOTICE_UNLOCK, 101, 10, a);
   render("badge_progress_locked", DSCM_NOTICE_PROGRESS, 101, 0, b);
   render("badge_missing", DSCM_NOTICE_UNLOCK, 555, 10, c);   /* not loaded: the icon */
+  render_side("badge_unlock_right", DSCM_NOTICE_UNLOCK, 101, 10, a, DSD_SIDE_RIGHT);
 
   /* The locked look is grey. */
   uint16_t grey[16];

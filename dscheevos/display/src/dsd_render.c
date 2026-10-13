@@ -182,14 +182,16 @@ static void layout(dsd_t* d, const dsd_item_t* it, int compact, int w) {
   /* The value goes at the right of line 0; the label gives way to it. */
   const int vw = width_of(d, value, nv);
   d->line_len[0] = (uint8_t)fit(d, d->line[0], n0, avail - (nv ? vw + 8 : 0));
-  d->line_x[0] = d->line_x[1] = d->line_x[2] = (uint8_t)text_x;
+  const int right = d->cfg.side == DSD_SIDE_RIGHT;
+  for (int k = 0; k < 3; k++)                       /* right side: text ends at the badge */
+    d->line_x[k] = (uint8_t)(right ? w - text_x - width_of(d, d->line[k], d->line_len[k]) : text_x);
   if (nv) {
     /* Stored after the label in the same buffer, drawn from its own x. */
     const int at = d->line_len[0];
     if (at + nv <= DSD_LINE_MAX) {
       memcpy(d->line[0] + at, value, (size_t)nv);
       d->value_at = (uint8_t)at;
-      d->value_x = (uint8_t)(w - RIGHT_PAD - vw);
+      d->value_x = (uint8_t)(right ? RIGHT_PAD : w - RIGHT_PAD - vw);
       d->line_len[0] = (uint8_t)(at + nv);
     }
   } else {
@@ -233,14 +235,16 @@ int dsd_render(dsd_t* d, dsd_surface_t* s, int max_rows) {
     uint16_t* row = s->pixels + y * s->stride;
     const uint16_t bg = palette[y == s->h - 1 ? C_EDGE : C_BG];
     for (int x = 0; x < s->w; x++) row[x] = bg;
-    row[0] = row[1] = row[2] = palette[accent];
+    const int right = d->cfg.side == DSD_SIDE_RIGHT;
+    if (right) row[s->w - 1] = row[s->w - 2] = row[s->w - 3] = palette[accent];
+    else row[0] = row[1] = row[2] = palette[accent];
 
     if (d->badge) {
       /* drawn below, after the row loop */
     } else if (y >= icon_y && y < icon_y + 16) {
       uint16_t bits = icons[styles[it->kind].icon][y - icon_y];
       for (int j = 0; bits; j++, bits >>= 1)
-        if (bits & 1) row[6 + j] = palette[accent];
+        if (bits & 1) row[right ? s->w - 22 + j : 6 + j] = palette[accent];
     }
 
     for (int k = 0; k < 3; k++) {
@@ -262,7 +266,8 @@ int dsd_render(dsd_t* d, dsd_surface_t* s, int max_rows) {
      * an achievement not yet unlocked, so it shows the locked look. */
     const int locked = it->kind == DSD_ITEM_PROGRESS || it->kind == DSD_ITEM_CHALLENGE;
     dsd_surface_t band = { s->pixels + d->render_row * s->stride, s->w, (uint16_t)(end - d->render_row), s->stride };
-    dsd_badge_blit(d->badge, locked, &band, 4, (s->h - DSD_BADGE_SIZE) / 2 - d->render_row);
+    const int bx = d->cfg.side == DSD_SIDE_RIGHT ? s->w - 4 - DSD_BADGE_SIZE : 4;
+    dsd_badge_blit(d->badge, locked, &band, bx, (s->h - DSD_BADGE_SIZE) / 2 - d->render_row);
   }
   d->render_row = (uint16_t)end;
   return d->render_row >= s->h;
