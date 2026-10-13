@@ -204,8 +204,15 @@ int main(int argc, char** argv)
       continue;
     }
 
-    ui_status("Starting the session...");
-    r = session_start(&settings, rom_path, hash, &info, &error);
+    ui_status("Loading the achievements...");
+    {
+      bench_result_t bench;
+      r = session_prepare(&settings, hash, &bench, &error);
+    }
+    if (r == SESSION_OK) {
+      ui_status("Starting the session...");
+      r = session_start(&settings, rom_path, hash, &info, &error);
+    }
     if ((r == SESSION_OK || r == SESSION_NO_SET) && send_pending(hash) && r == SESSION_OK)
       r = session_start(&settings, rom_path, hash, &info, &error);
     if (r == SESSION_OK) {

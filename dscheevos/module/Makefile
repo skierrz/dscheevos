@@ -58,12 +58,13 @@ $(BUILD)/%.o: src/%.c src/heap.h include/dscheevos_module.h $(CORE)/include/dsch
 # fewer instructions per frame evaluated, docs/rcheevos-arm9-footprint.md).
 # The core marks its own hot functions ARM (HOT in dscheevos.c).
 RC_ARM   := client/% runtime/%
+RC_HOT_FLAGS ?= -marm
 $(BUILD)/dscheevos.o: $(CORE)/src/dscheevos.c $(CORE)/include/dscheevos.h include/dscheevos_module.h
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 $(BUILD)/rc/%.o: $(RCHEEVOS)/src/%.c
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) $(if $(filter $(RC_ARM),$*),-marm) -w -c $< -o $@
+	$(CC) $(CFLAGS) $(if $(filter $(RC_ARM),$*),$(RC_HOT_FLAGS)) -w -c $< -o $@
 $(BUILD)/lwip/%.o: $(LWIP)/src/%.c src/net/lwipopts.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -w -c $< -o $@

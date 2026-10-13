@@ -1,4 +1,5 @@
 #include "session.h"
+#include "bench.h"
 #include "log.h"
 #include "net.h"
 #include "dscheevos_module.h"
@@ -22,6 +23,9 @@ static char* g_reply[DSCM_PRELOAD_COUNT];
 static size_t g_reply_len[DSCM_PRELOAD_COUNT];
 
 static int g_done, g_result;
+/* session_prepare() fetched the login and set replies: session_start()
+ * answers those two requests from them, so only startsession goes out */
+static int g_replay;
 static char g_error[128];
 
 /* Logs the request's API name and the answer (never the parameters: they hold the token). */
@@ -57,6 +61,23 @@ static void RC_CCONV server_call(const rc_api_request_t* request, rc_client_serv
   int kind = request_kind(request->post_data);
   (void)client;
 
+  if (g_replay && (kind == DSCM_PRELOAD_LOGIN || kind == DSCM_PRELOAD_SET) && g_reply[kind]) {
+    memset(&response, 0, sizeof(response));
+    response.http_status_code = 200;
+    response.body = g_reply[kind];
+    response.body_length = g_reply_len[kind];
+    callback(&response, callback_data);
+    return;
+  }
+  if (bench_active) {
+    /* the benchmark's fake memory must never reach the server */
+    memset(&response, 0, sizeof(response));
+    response.http_status_code = RC_API_SERVER_RESPONSE_CLIENT_ERROR;
+    response.body = "";
+    callback(&response, callback_data);
+    return;
+  }
+
   http_request(request->url, request->post_data, request->content_type, &r);
   session_log_request(request->post_data, r.status);
   memset(&response, 0, sizeof(response));
@@ -80,8 +101,11 @@ static void RC_CCONV server_call(const rc_api_request_t* request, rc_client_serv
 
 static uint32_t RC_CCONV read_memory(uint32_t address, uint8_t* buffer, uint32_t num_bytes, rc_client_t* client)
 {
-  (void)address; (void)buffer; (void)client;
-  return num_bytes ? 0 : 0;   /* no game memory here */
+  (void)client;
+  if (bench_active)
+    return bench_read(address, buffer, num_bytes);
+  (void)address; (void)buffer;
+  return 0;   /* no game memory here */
 }
 
 static void RC_CCONV on_done(int result, const char* error_message, rc_client_t* client, void* userdata)
@@ -165,6 +189,64 @@ static int hardcore_refused(rc_client_t* client)
   return found;
 }
 
+static void clear_replies(void)
+{
+  int i;
+  for (i = 0; i < DSCM_PRELOAD_COUNT; i++) { free(g_reply[i]); g_reply[i] = NULL; g_reply_len[i] = 0; }
+  g_replay = 0;
+}
+
+int session_prepare(const dsc_settings_t* settings, const char* hash, bench_result_t* bench, const char** error)
+{
+  dsc_settings_t spectator = *settings;
+  rc_client_t* client;
+  int result;
+  *error = g_error;
+  g_error[0] = '\0';
+  memset(bench, 0, sizeof(*bench));
+  clear_replies();
+  /* spectator from the start: rc_client logs in and fetches the set, but
+   * starts no session on the server, whatever the benchmark decides */
+  spectator.spectator = 1;
+  client = make_client(&spectator);
+  if (!client) { strcpy(g_error, "Out of memory"); return SESSION_ERROR; }
+
+  g_done = 0;
+  rc_client_begin_login_with_token(client, settings->username, settings->token, on_done, NULL);
+  result = wait_done();
+  if (result != RC_OK) {
+    rc_client_destroy(client);
+    clear_replies();
+    if (!g_error[0]) strcpy(g_error, "Login failed");
+    return (result == RC_INVALID_CREDENTIALS || result == RC_EXPIRED_TOKEN || result == RC_ACCESS_DENIED)
+      ? SESSION_LOGIN_FAILED : SESSION_ERROR;
+  }
+  g_done = 0;
+  rc_client_begin_load_game(client, hash, on_done, NULL);
+  result = wait_done();
+  if (result == RC_OK && !(rc_client_get_game_info(client) && rc_client_get_game_info(client)->id))
+    result = RC_NO_GAME_LOADED;
+  if (result == RC_OK) {
+    if (bench_run(client, 60, 1500, bench) == 0)
+      log_line("bench: %u frames, median %u max %u cycles at 67 MHz, %u ms",
+               (unsigned)bench->frames, (unsigned)bench->median, (unsigned)bench->max, (unsigned)bench->ms);
+    else
+      log_line("bench: no memory");
+  }
+  rc_client_destroy(client);
+  if (result == RC_NO_GAME_LOADED) {
+    clear_replies();
+    return SESSION_NO_SET;
+  }
+  if (result != RC_OK) {
+    clear_replies();
+    if (!g_error[0]) strcpy(g_error, "Couldn't load the game's achievements");
+    return SESSION_ERROR;
+  }
+  g_replay = 1;
+  return SESSION_OK;
+}
+
 int session_start(const dsc_settings_t* settings, const char* rom_path, const char* hash,
                   session_info_t* info, const char** error)
 {
@@ -174,7 +256,13 @@ int session_start(const dsc_settings_t* settings, const char* rom_path, const ch
   *error = g_error;
   g_error[0] = '\0';
   memset(info, 0, sizeof(*info));
-  for (i = 0; i < DSCM_PRELOAD_COUNT; i++) { free(g_reply[i]); g_reply[i] = NULL; g_reply_len[i] = 0; }
+  if (!g_replay)
+    clear_replies();
+  else {
+    free(g_reply[DSCM_PRELOAD_SESSION]);
+    g_reply[DSCM_PRELOAD_SESSION] = NULL;
+    g_reply_len[DSCM_PRELOAD_SESSION] = 0;
+  }
   if (!client) { strcpy(g_error, "Out of memory"); return SESSION_ERROR; }
 
   g_done = 0;
@@ -210,6 +298,7 @@ int session_start(const dsc_settings_t* settings, const char* rom_path, const ch
     info->hardcore_refused = settings->hardcore && hardcore_refused(client);
   }
   rc_client_destroy(client);
+  g_replay = 0;   /* the next start fetches everything again */
 
   if (result == RC_NO_GAME_LOADED || (result == RC_OK && info->game_id == 0))
     return SESSION_NO_SET;

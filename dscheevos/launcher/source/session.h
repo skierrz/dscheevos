@@ -4,6 +4,7 @@
 #define DSC_SESSION_H
 
 #include "config.h"
+#include "bench.h"
 
 typedef struct session_info_t {
   char game_title[64];
@@ -26,6 +27,11 @@ enum {
 
 /* Logs in with a password and stores the token in settings. */
 int session_login(dsc_settings_t* settings, const char* password, const char** error);
+
+/* Logs in with the token and fetches the game's set in spectator mode (no
+ * session on the server), then times the set's evaluation (bench.h) for the
+ * CPU gate. A session_start() right after it reuses both replies. */
+int session_prepare(const dsc_settings_t* settings, const char* hash, bench_result_t* bench, const char** error);
 
 int session_start(const dsc_settings_t* settings, const char* rom_path, const char* hash,
                   session_info_t* info, const char** error);
