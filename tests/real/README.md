@@ -57,3 +57,16 @@ LIVE_UNLOCKS=1 FRAMES=4500 SCRIPT=tests/real/tetris-marathon.txt ~/Developer/DSc
 **4. Clean up.** Reset the Tetris DS progress on the website (game page: hover the completion percentage and reset, or Settings > reset game progress). Delete any `WORK` folder you kept: it holds the token.
 
 **5. Record** the results in `docs/compliance.md` ("Real-server results"): date, build (`git describe`), each pass mark, and a screenshot of the unlock on the game page.
+
+**6. Rich presence** (a longer live run; do it after step 4's reset, or the achievement is simply re-sent):
+
+```sh
+LIVE_UNLOCKS=1 FRAMES=12000 SCRIPT=tests/real/tetris-marathon.txt ~/Developer/DScheevos/bin/emu-lock -l real tests/real/run.sh --expect 230051 --expect-sent 1
+```
+
+12000 frames give about 9,700 frames (2 min 40 s) of game after the launcher, past rc_client's first two rich-presence pings. On the mock server (2026-10-12) the same run sent a ping soon after the session started with ` Standard | Marathon | Score: 0 | Lines Cleared: 0` and a second one 2 minutes of game time later with a score; `runner.log` showed the game from frame 2221.
+
+- Pass, terminal: `RESULT PASS`, 1 unlock sent, 0 dropped.
+- Pass, website, test account, while the run is going or within 2 minutes after: the profile's rich presence for Tetris DS reads `Standard | Marathon | Score: <n> | Lines Cleared: <n>` (the set's own script text, not a generic "Playing Tetris DS").
+- Fail: no rich presence line, a generic one only, or text from another mode.
+- Then reset Tetris DS progress again (step 4) and record the result (step 5).

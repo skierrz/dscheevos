@@ -81,6 +81,23 @@ Status: **done**, **partial**, **missing**, or **n/a** (the feature doesn't exis
 | Non-commercial cores with commercialization | none shipped, no commercialization |
 | Privacy policy with placeholders or contradictions | complete policy, no placeholders (F) |
 
+## Real-server results
+
+Bench runs on the test account, per `tests/real/README.md` (melonDS, Tetris DS (USA, Australia), `tetris-marathon.txt`, `FRAMES=4500`).
+
+| Date | Build | Run | Result |
+|---|---|---|---|
+| 2026-10-12 | `ra-compliance` before merge (same tests/real) | 1. `--check` | pass: `login2` answered HTTP 401 over TLS (run by ra-compliance) |
+| 2026-10-12 | perf `390202f` | 2. spectator | **pass**: `login2`, `achievementsets` HTTP 200, no `startsession`; 230051 unlocked locally at game frame 972, 0 sent; hardcore state 2 (the server's warning entry seen); 0 frames dropped; nothing new on the website |
+| 2026-10-12 | perf `390202f` | 3. live | **pass**: `login2`, `achievementsets`, `startsession` HTTP 200; 230051 unlocked at game frame 852 and sent (1 sent); the website shows exactly that one unlock, **as casual**, as expected for an unrecognised client, and Tetris DS as last played; 0 frames dropped; no token in any log |
+| | | 4. clean-up | owner's step; not reported |
+
+Not covered yet: rich presence (the live run's game part was about 35 s, under the first 2-minute ping): see step 6 of the README. Offline-queue timing: see "Open" below.
+
+## Open
+
+- **Offline unlock times off by the console's UTC offset.** The module reads the DSi's clock, which holds local time, as if it were UTC, so a queued unlock sent later carries an award time a few hours off (about 4 h for the owner's console). Live unlocks are unaffected (the server stamps them). Product bug, fix in progress elsewhere; re-test with the offline-queue check in `docs/handoff.md` once it lands.
+
 ## Strict reading (owner, 2026-10-12)
 
 Meeting RA's published list is imperative, and the RA questions are on hold until DScheevos is ready to show. So nothing may rely on RA accepting an interpretation: each requirement is met on its plain, strictest reading. Zero gameplay cost still holds; where the two collide, the owner rules.
