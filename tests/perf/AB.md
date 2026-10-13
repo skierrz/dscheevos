@@ -115,6 +115,53 @@ module's ARM9 time: ~0.17 game cycles per module cycle on Kirby, ~0.03 on MKDS (
 game's IRQ handler runs get slower by ~80 cycles on average (208 -> 287, Kirby), well inside an
 HBlank (~1,200 cycles); the longest run (the VBlank handler) p99 31,189 -> 32,509.
 
+### Cache colours (Oct 2026)
+
+What the module costs the game depends heavily on **where** its hot code and data sit, not only on
+how much work it does: the game loses cycles when our lines evict its lines from the same cache
+sets (ARM946E-S: I-cache 8 KB 4-way, 2 KB per way; D-cache 4 KB 4-way, 1 KB per way). Found when
+a 320-byte change ahead of rcheevos in the link (the SDK5 cache fix, no per-frame work of its own)
+moved all rcheevos code by 0x140 and cost Kirby +28k cycles a frame (+2.5%); the same build padded
+so that the shift was a whole way (0x800) cost nothing.
+
+So `module.ld` pins them: rcheevos' runtime and client, then the core, start at a 2 KB way boundary
+plus `TEXT_COLOUR`, ahead of everything else that changes often; `.rodata`, `.data` and `.bss` (and
+the low heap after it) start at a 1 KB boundary plus `DATA_COLOUR`. `make -C dscheevos/module
+TEXT_COLOUR=0x.. DATA_COLOUR=0x..` builds other colours. Sweep (game's own cycles, on - off avg):
+
+| TEXT_COLOUR (DATA 0) | 0x000 | 0x100 | 0x200 | 0x300 | **0x400** | 0x500 | 0x600 | 0x700 |
+|---|---|---|---|---|---|---|---|---|
+| Kirby (1500 intervals) | 82.7k | 99.7k | 88.5k | 83.2k | **67.0k** | 75.2k | 69.8k | 72.0k |
+| MKDS race (2000-3000) | 21.7k | | | | **8.1k** | | 5.7k | |
+
+DATA_COLOUR at TEXT 0x400: 0 67.0k, 0x100 72.4k, 0x200 80.1k, 0x300 69.3k (Kirby). Chosen: text
+0x400, data 0. Cost: up to 2 KB + 3 x 1 KB of padding (+2,120 bytes today). The numbers come from
+melonDS's cache model (its replacement policy, optimistic timings); the hardware CPI lab
+(`tests/cpi-lab`) should confirm the ranking. Re-sweep when the hot code changes size a lot
+(say over 1 KB); a change that moves only cold code no longer moves the hot code.
+
+**For the ratchet below:** before the pin, any change that grew or shrank code ahead of rcheevos
+shifted the layout and moved Kirby's number by up to ±2.5% of a frame, ten times the ratchet.
+With the pin, a change only moves it through what it really runs, or by moving the pinned
+sections themselves (rcheevos, the core): for those, report the table at the chosen colour and the
+next best.
+
+### Baseline after the SDK5 cache fix and the colour pin (Oct 2026, perf-next)
+
+| | Kirby SSU (1500 intervals) | MKDS race (intervals 2000-3000) |
+|---|---|---|
+| on - off, avg | **+67,135 (+5.99% of a frame)** (was +91,746) | **+3,667 (+0.33%)** (was +13,356) |
+| game CPI off -> on | 2.491 -> 2.907 (+16.7%) | 3.868 -> 3.988 (+3.1%) |
+| lag intervals off / on | 177 / 175 | 0 / 0 |
+
+Same tooling as the baseline above; module `perf-next` (-O2 rcheevos, idle wake split, `--use-blx`,
+the SDK5 cache fix, text 0x400 / data 0), runner `dscheevos-perf-runner` (834d8bc0). MKDS moves
+by a few thousand cycles between builds with the same pinned layout (8.1k in the sweep, 5.9k and
+3.7k for the last two commits; its delta is small next to its 0.7M-cycle frames), so judge MKDS
+against the 1% target rather than the ratchet; Kirby repeats within ~0.2k. Lag A/B (`ab.sh`, 3000
+intervals, `emu-lock -x`): Kirby 884 off / 877 on, Pokemon Platinum 38 / 38. Platinum's game cost
+can't run until its set fits the session area (311 KB reply, 256 KB area: WORKLIST blocker).
+
 ### Proposed gate
 
 1. Lag intervals equal off vs on (the existing A/B rule).
@@ -123,7 +170,7 @@ HBlank (~1,200 cycles); the longest run (the VBlank handler) p99 31,189 -> 32,50
    merge updates); a change that lowers it updates the table. 0.25% is ~25x the run-to-run noise
    and catches regressions of the size real module changes make (-O2 rcheevos: -0.2%).
 3. **Target** (the zero-compromise goal; not met today): <= 1% of a frame on every game. Kirby's
-   8.2% is the debt.
+   6.0% is the debt (8.2% before the colour pin); MKDS meets it (0.3-0.7%).
 
 ## Results
 
