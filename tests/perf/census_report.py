@@ -58,7 +58,7 @@ def segment(rows, a, b):
     lines = [r["wait_line"] for r in sel] if "wait_line" in sel[0] else []
     # an interval runs from line 192 (VBlank) through 262 and on to 191: order lines from 192
     pos = lambda L: (L - 192) % 263
-    by = {L: sum(1 for x in lines if x >= 0 and pos(x) <= pos(L)) / n for L in (160, 176, 184, 191)} if lines else {}
+    by = {L: sum(1 for x in lines if x >= 0 and pos(x) <= pos(L)) / n for L in (156, 160, 176, 184, 191)} if lines else {}
     return dict(n=n, busy=busy, halted=halted, oshalt=osh, bios=bios, other=oth, oshalt_other=osx, with_oshalt=with_osh,
                 cls=classify(halted, osh, bios, oth, osx), per_interval=pc, waiting_by_line=by)
 
@@ -120,7 +120,7 @@ def main():
                   " ".join("%s:%d" % kv for kv in sorted(s["per_interval"].items()))))
     for name, s in out["segments"].items():
         if s and s["waiting_by_line"]:
-            print("%-8s OS_Halt from other callers %.1f%%; intervals already waiting at VBlank since line <=160/176/184/191: %s" % (
+            print("%-8s OS_Halt from other callers %.1f%%; intervals already waiting at VBlank since line <=156/160/176/184/191: %s" % (
                 name, 100 * s["oshalt_other"], " ".join("%.0f%%" % (100 * v) for v in s["waiting_by_line"].values())))
     print("halt sites (share of halted time):")
     for s in out["sites"]:
