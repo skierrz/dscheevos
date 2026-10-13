@@ -180,7 +180,7 @@ So no SD reads during play until the perf session designs that path. In-play bad
 | Scheduler state + scene + queue (ids only; strings read through rc_client) | ~0.5 KB | module bss |
 | Font: 256 glyphs, the session's language (ASCII + one upper half) | 2 KB + 0.3 KB width table | module bss, loaded at boot |
 | **Resident total, phase 1** | **~9-12 KB** (cap 16 KB) | |
-| Strip framebuffer | 16 KB (256x32 RGB555), shown only after a complete render, rendered with the strip down (the window holds one strip; re-rendering while shown would need 32 KB) | **window** from the memory plan, only while a notice is up. Written through the uncached mirror, so the FIFO NDMA reads current data |
+| Strip framebuffer | 16 KB (256x32 RGB555), shown only after a complete render, rendered with the strip down (the window holds one strip; re-rendering while shown would need 32 KB) | **window** from the memory plan, only while a notice is up. Written through the cache and cleaned (DC_FlushRange) before the FIFO NDMA reads it: the `0x0C000000` mirror is cached write-back on SDK5 games, so it can't be relied on |
 | Card framebuffer (P3, later) | 32 KB (256x64) | same window, never at the same time as the strip |
 | Phase 2: badge pack | ~50 KB per typical set, ~130 KB heavy | SD, `sd:/_nds/dscheevos/display/<gameid>.pak`, needs the SD read path |
 | Phase 2: badge staging + 1 decoded slot | ~1.1 KB | module bss |

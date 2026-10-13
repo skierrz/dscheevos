@@ -11,7 +11,7 @@ Goal: everything in `docs/compliance.md` "What's left" works end to end in the e
 | 0x04 version | 6 (nds-bootstrap's `DSCHEEVOS_VERSION` must match) |
 | 0x2C `list` | published `dscm_list_t*`, swapped whole after a rebuild in idle time; 0 until the set loads |
 | 0x30 `notices` | `dscm_notices_t*`: ring of one-shot notices + challenge indicators + leaderboard trackers |
-| 0x34 `journal` | `dscm_journal_t*` (cached-mirror address). The module only writes it through `DSCM_UNCACHED()`, so RAM is always current and the ARM7 can copy it with no cache work |
+| 0x34 `journal` | `dscm_journal_t*` (cached-mirror address). The module writes it through the cache and cleans the lines at every step (`journal_sync`), so RAM is always consistent and the ARM7 can copy it with no cache work |
 
 `dscm_boot_t.flags` (was `reserved[0]`, offset 0x1CE): `DSCM_BOOT_SPECTATOR`.
 

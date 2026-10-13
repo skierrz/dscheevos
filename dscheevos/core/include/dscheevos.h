@@ -84,7 +84,8 @@ typedef struct dsc_platform_t {
   void (*log)(const char* message);
   /* Console clock, for journal entries (may be NULL: time()). */
   uint32_t (*unix_time)(void);
-  /* Offline journal, written in place (on the DS through the uncached mirror). May be NULL. */
+  /* Offline journal, written in place; journal_sync (below) makes each step visible
+   * in RAM. May be NULL. */
   struct dscm_journal_t* journal;
   /* Notices for a display layer, written in place. May be NULL. */
   struct dscm_notices_t* notices;

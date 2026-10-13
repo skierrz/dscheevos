@@ -290,8 +290,10 @@ typedef struct dscm_notices_t {
 } dscm_notices_t;
 
 /* Offline journal: every unlock and leaderboard entry of the session, with
- * whether the server has answered it. The module writes it through the
- * uncached mirror (DSCM_UNCACHED), so it is always current in RAM; at safe
+ * whether the server has answered it. The module writes it through the data
+ * cache and cleans the lines at every step of an update (the core's
+ * journal_sync), so RAM always holds a consistent copy (the 0x0C000000
+ * mirror is cached write-back on SDK5 games, so it can't be used); at safe
  * points (in-game menu opening, reset, exit) nds-bootstrap's ARM7 copies
  * DSCM_JOURNAL_FILE_SIZE bytes from header->journal to
  * sd:/_nds/dscheevos/pending.bin, a file the launcher creates at that size.
@@ -300,6 +302,8 @@ typedef struct dscm_notices_t {
 #define DSCM_JOURNAL_MAGIC 0x4A435344u /* "DSCJ" */
 #define DSCM_JOURNAL_MAX 96
 #define DSCM_JOURNAL_FILE_SIZE 4096u
+/* The 0x0C000000 mirror of an address: uncached under most games' MPU, but
+ * cached write-back under SDK5's, so only for reads that tolerate either. */
 #define DSCM_UNCACHED(p) ((void*)((uint32_t)(p) - 0x02000000u + 0x0C000000u))
 enum { DSCM_JOURNAL_AWARD = 1, DSCM_JOURNAL_LEADERBOARD };
 

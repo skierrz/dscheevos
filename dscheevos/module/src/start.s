@@ -192,21 +192,28 @@ halt_entry:
 	strb	r0, [r5, #IRQ_IN_HALT]
 	@ r0 = 1 if the caller is NitroSDK's idle loop: the instruction after
 	@ its call is a branch back to the call (ARM "b .-4" or Thumb "b .-4").
-	@ Read through the uncached mirror when it is in main RAM: a data
+	@ Read through the 0x0C000000 mirror when it is in main RAM: a data
 	@ cache line fill here, every wake, would evict a line of the game's.
-	bic	r1, lr, #1
-	mov	r2, r1, lsr #24
+	@ SDK5 games map the mirror cached: then the read does fill a line, and
+	@ a line left there could go stale (an overlay loaded at that address
+	@ through 0x02xxxxxx), so clean and drop it after the read. Clean, not
+	@ just drop: nothing of the game's in that line is ever lost.
+	bic	r3, lr, #1
+	mov	r2, r3, lsr #24
 	cmp	r2, #2
-	addeq	r1, r1, #0x0A000000         @ 0x02xxxxxx -> 0x0Cxxxxxx
+	addeq	r3, r3, #0x0A000000         @ 0x02xxxxxx -> 0x0Cxxxxxx
+	mov	r12, r2                     @ 2: main RAM, read through the mirror
 	mov	r0, #0
 	tst	lr, #1
 	bne	4f
-	ldr	r1, [r1]
+	ldr	r1, [r3]
 	ldr	r2, =0xEAFFFFFD
 	b	5f
-4:	ldrh	r1, [r1]
+4:	ldrh	r1, [r3]
 	ldr	r2, =0xE7FC
-5:	cmp	r1, r2
+5:	cmp	r12, #2
+	mcreq	p15, 0, r3, c7, c14, 1      @ clean and invalidate the mirror's line
+	cmp	r1, r2
 	moveq	r0, #1
 	mov	r4, sp
 	ldr	sp, =__stack_top

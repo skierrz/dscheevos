@@ -44,9 +44,9 @@ WAKE_INLINE uint32_t wake_swap(volatile uint32_t* p, uint32_t v)
 dscm_status_t dscm_g_status;   /* referenced by the header in start.s */
 dscm_net_slot_t dscm_g_net[DSCM_NET_SLOTS];
 dscm_notices_t dscm_g_notices;
-/* Written only through the uncached mirror, so the ARM7 can copy it from
- * RAM. It has cache lines of its own: a cached write to a neighbour can
- * never write stale journal bytes back. */
+/* Written through the cache and cleaned at each step (journal_sync_clean),
+ * so the ARM7 can copy it from RAM. It has cache lines of its own: a cached
+ * write to a neighbour can never write stale journal bytes back. */
 union {
   dscm_journal_t j;
   uint8_t lines[(sizeof(dscm_journal_t) + 31) & ~31u];
