@@ -101,11 +101,9 @@ static void RC_CCONV server_call(const rc_api_request_t* request, rc_client_serv
 
 static uint32_t RC_CCONV read_memory(uint32_t address, uint8_t* buffer, uint32_t num_bytes, rc_client_t* client)
 {
+  int32_t n = bench_read(address, buffer, num_bytes);
   (void)client;
-  if (bench_active)
-    return bench_read(address, buffer, num_bytes);
-  (void)address; (void)buffer;
-  return 0;   /* no game memory here */
+  return n >= 0 ? (uint32_t)n : 0;   /* no game memory here, but the benchmark's */
 }
 
 static void RC_CCONV on_done(int result, const char* error_message, rc_client_t* client, void* userdata)
@@ -222,6 +220,8 @@ int session_prepare(const dsc_settings_t* settings, const char* hash, bench_resu
       ? SESSION_LOGIN_FAILED : SESSION_ERROR;
   }
   g_done = 0;
+  if (bench_begin() != 0)
+    log_line("bench: no memory");
   rc_client_begin_load_game(client, hash, on_done, NULL);
   result = wait_done();
   if (result == RC_OK && !(rc_client_get_game_info(client) && rc_client_get_game_info(client)->id))
@@ -230,10 +230,9 @@ int session_prepare(const dsc_settings_t* settings, const char* hash, bench_resu
     if (bench_run(client, 60, 1500, bench) == 0)
       log_line("bench: %u frames, median %u max %u cycles at 67 MHz, %u ms",
                (unsigned)bench->frames, (unsigned)bench->median, (unsigned)bench->max, (unsigned)bench->ms);
-    else
-      log_line("bench: no memory");
   }
   rc_client_destroy(client);
+  bench_end();
   if (result == RC_NO_GAME_LOADED) {
     clear_replies();
     return SESSION_NO_SET;

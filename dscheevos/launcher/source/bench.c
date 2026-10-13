@@ -24,8 +24,10 @@ static uint32_t rnd(void)
   return g_rng;
 }
 
-uint32_t bench_read(uint32_t address, uint8_t* buffer, uint32_t num_bytes)
+int32_t bench_read(uint32_t address, uint8_t* buffer, uint32_t num_bytes)
 {
+  if (!g_ram)
+    return -1;
   /* as the module: a read not entirely inside one region fails whole */
   if (address < MAIN_SIZE && num_bytes <= MAIN_SIZE - address) {
     memcpy(buffer, g_ram + address, num_bytes);
@@ -64,6 +66,23 @@ static int cmp_u32(const void* a, const void* b)
   return x < y ? -1 : x > y;
 }
 
+int bench_begin(void)
+{
+  if (!g_ram)
+    g_ram = (uint8_t*)malloc(MAIN_SIZE + DTCM_SIZE);
+  if (!g_ram)
+    return -1;
+  g_rng = 12345;
+  fill_memory();
+  return 0;
+}
+
+void bench_end(void)
+{
+  free(g_ram);
+  g_ram = NULL;
+}
+
 int bench_run(rc_client_t* client, int max_frames, uint32_t max_ms, bench_result_t* result)
 {
   uint32_t* cycles;
@@ -71,13 +90,9 @@ int bench_run(rc_client_t* client, int max_frames, uint32_t max_ms, bench_result
   int n, was_fast = 0, spectator;
 
   memset(result, 0, sizeof(*result));
-  g_ram = (uint8_t*)malloc(MAIN_SIZE + DTCM_SIZE);
-  cycles = (uint32_t*)malloc((size_t)max_frames * sizeof(uint32_t));
-  if (!g_ram || !cycles) {
-    free(g_ram); free(cycles); g_ram = NULL;
+  cycles = g_ram ? (uint32_t*)malloc((size_t)max_frames * sizeof(uint32_t)) : NULL;
+  if (!cycles)
     return -1;
-  }
-  fill_memory();
 
   /* session_prepare's client is a spectator already; never send what fake memory unlocks */
   spectator = rc_client_get_spectator_mode_enabled(client);
@@ -123,7 +138,5 @@ int bench_run(rc_client_t* client, int max_frames, uint32_t max_ms, bench_result
     result->median = cycles[n / 2];
   }
   free(cycles);
-  free(g_ram);
-  g_ram = NULL;
   return 0;
 }

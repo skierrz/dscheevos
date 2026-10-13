@@ -18,14 +18,19 @@ typedef struct bench_result_t {
   uint32_t ms;            /* wall time the benchmark took */
 } bench_result_t;
 
-/* 1 while bench_run() runs: session.c reads game memory through bench_read()
- * and answers every server request with an error. */
+/* 1 while bench_run() runs: session.c answers every server request with an error. */
 extern volatile int bench_active;
 
-uint32_t bench_read(uint32_t address, uint8_t* buffer, uint32_t num_bytes);
+/* Fake game RAM, from before the set loads (rc_client checks every address
+ * when it loads the game and disables achievements whose memory it can't
+ * read) until bench_end(). Returns 0, or -1 if there is no memory for it. */
+int bench_begin(void);
+void bench_end(void);
+/* session.c's read_memory while the fake RAM exists; returns -1 when it doesn't */
+int32_t bench_read(uint32_t address, uint8_t* buffer, uint32_t num_bytes);
 
 /* Evaluates up to max_frames frames, stopping early after max_ms. Returns 0
- * and fills result, or -1 (no memory for the fake RAM: result is zeroed). */
+ * and fills result, or -1 (no fake RAM: result is zeroed). */
 int bench_run(rc_client_t* client, int max_frames, uint32_t max_ms, bench_result_t* result);
 
 #endif
