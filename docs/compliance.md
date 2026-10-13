@@ -19,7 +19,7 @@ Status: **done**, **partial**, **missing**, or **n/a** (the feature doesn't exis
 | Achievement list reachable in the client | **done** | In-game menu > "Achievements..." (`nds-bootstrap: arm9_igm/dscheevosMenu.c`): a summary page (game, mode, totals, this session's unlocks, network), then every achievement of the set with its state, points and measured progress, and a detail page with the description. The module publishes the list (`dscm_list_t`, ABI v6). |
 | Triggers evaluate correctly | **done** | rcheevos `rc_client`, unmodified. `tests/games` checks unlock frames against rcheevos reading live memory every frame, with and without a 10 s backlog. |
 | Measured and Trigger (challenge) indicators shown in the list and during play | **partial** | In the list: measured progress and an active-challenge mark per achievement, plus the active challenges and leaderboard trackers on the summary page. During play (DSi): Wi-Fi LED cues from the module's notices: 3 blinks per unlock, 1 per measured-progress update, 2 per leaderboard start/fail/submit, held while a challenge is primed. Nothing is drawn over the game; whether RA accepts this is question 1 in `docs/overlay-research.md`. |
-| Rich presence works | **done** | rc_client pings every 2 minutes during play. A hardcore session always keeps the Wi-Fi connection for it; softcore does when "Send unlocks during play" is on. |
+| Rich presence works | **done** | rc_client pings every 2 minutes during play. A hardcore session always keeps the Wi-Fi connection for it; Casual does when "Send unlocks during play" is on. |
 | Leaderboards work | **partial** | Evaluated, submitted and queued offline like unlocks; trackers and results show in the in-game menu. No on-screen tracker or start/fail notice during play (see the indicators row). |
 | Offline queueing: unlocks made offline are cached and sent later | **done** | The module keeps every unlock and leaderboard entry of the session in a journal (`dscm_journal_t`); nds-bootstrap's ARM7 copies it to `_nds/dscheevos/pending.bin` at safe points only (in-game menu opening, Reset, Exit, the soft-reset and return combos, a reset the game asks for). The launcher sends what is unsent at the next start with the time since each unlock (`o=`), and sets a file aside in `unsent/` if it still can't. Turning the console off without one of those safe points loses what was unsent since the last one. Tested in melonDS (`tests/launcher/run.sh` with `--fail-awards`, then a normal run). |
 | Save state hit storage | n/a | nds-bootstrap has no save states. |
@@ -30,7 +30,8 @@ Status: **done**, **partial**, **missing**, or **n/a** (the feature doesn't exis
 
 | Requirement | Status | Where |
 |---|---|---|
-| Cheats off | **done** | Hardcore session: `cheatSize = 0` (`nds-bootstrap: arm9/source/dscheevos_session.c`), so TWiLight's cheat list never loads. |
+| Cheats off | **done** | Hardcore session: `cheatSize = 0` (`nds-bootstrap: arm9/source/dscheevos_session.c`), so TWiLight's cheat list never loads. `wideCheatSize = 0` too: `wideCheatData.bin` is run as cheat codes. |
+| No user ROM patches | **done** | Hardcore session: `loadApFix()` uses only nds-bootstrap's built-in `apfix.pck`, never user files in `_nds/nds-bootstrap/apFix/` (`.ips` or `.bin` cheat-format), which would patch the game after the launcher hashed the clean ROM. A game with a user file and no built-in fix isn't offered hardcore by the launcher (Casual or no achievements). |
 | No rewind | n/a | Not in nds-bootstrap. |
 | No slowdown or frame advance | **done** | The in-game menu's refresh-rate option (slow motion) is hidden in hardcore (`arm9_igm/inGameMenu.c`). No frame advance exists. |
 | Loading save states blocked | n/a | Not in nds-bootstrap. |
@@ -57,7 +58,7 @@ Status: **done**, **partial**, **missing**, or **n/a** (the feature doesn't exis
 | Requirement | Status | Where |
 |---|---|---|
 | Hardcore on by default (recommended) | **done** | `launcher/source/config.c` defaults to `HARDCORE = 1`. |
-| Hardcore state shown during play | **partial** | Before the game's first frame, a card on the top screen shows the title, HARDCORE or Softcore and the totals for 1.5 s (A, B or START skip it); the launcher and the in-game menu show the mode too. Nothing on screen while the game runs; RA question 2 in `docs/overlay-research.md`. |
+| Hardcore state shown during play | **partial** | Before the game's first frame, a card on the top screen shows the title, HARDCORE or Casual and the totals for 1.5 s (A, B or START skip it); the launcher and the in-game menu show the mode too. Nothing on screen while the game runs; RA question 2 in `docs/overlay-research.md`. |
 
 ## F. Transparency and legality
 
