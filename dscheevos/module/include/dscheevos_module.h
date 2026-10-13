@@ -170,9 +170,9 @@ typedef struct dscm_boot_t {
   char game_hash[33];
   uint8_t hardcore;
   uint8_t flags;                      /* DSCM_BOOT_* */
-  uint8_t reserved;
+  int8_t utc_offset_q;                /* DSCM_BOOT_UTC_KNOWN: console clock minus UTC, in quarter hours */
   uint32_t dtcm_base;                 /* 0: read the game's DTCM base from CP15 */
-  uint32_t unix_time;                 /* RTC time at boot, for unlock timestamps */
+  uint32_t unix_time;                 /* console clock (local time read as UTC) when the launcher wrote the file */
   uint32_t preload_offset[DSCM_PRELOAD_COUNT];  /* from the start of this struct; each reply is followed by DSCM_SESSION_PAD's NULs */
   uint32_t preload_length[DSCM_PRELOAD_COUNT];
   /* the launcher's Wi-Fi connection, which the game keeps using (no secrets) */
@@ -200,6 +200,16 @@ typedef struct dscm_boot_t {
 
 /* dscm_boot_t.flags */
 #define DSCM_BOOT_SPECTATOR 0x01      /* rc_client spectator mode: evaluate and show, send no unlocks or entries (bench runs on a real account) */
+#define DSCM_BOOT_UTC_KNOWN 0x02      /* utc_offset_q is valid: the launcher measured it against the server's clock */
+
+/* The DS clock keeps local time with no time zone; read as UTC it is off by
+ * the zone's offset. The launcher measures that offset against the server's
+ * Date header, rounded to a quarter hour (zones are whole quarter hours). */
+#define DSCM_UTC_QUARTER 900
+static inline uint32_t dscm_console_to_utc(uint32_t console_time, int8_t offset_q)
+{
+  return console_time - (uint32_t)((int32_t)offset_q * DSCM_UTC_QUARTER);
+}
 
 /* dswifi's numbering, which the launcher reads off its connection */
 enum { DSCM_AP_OPEN = 0, DSCM_AP_WEP, DSCM_AP_WPA, DSCM_AP_WPA2 };
@@ -314,8 +324,12 @@ typedef struct dscm_journal_entry_t {
   uint8_t reserved;
   uint32_t id;                        /* achievement or leaderboard */
   int32_t score;                      /* leaderboard entries */
-  uint32_t unix_time;                 /* when it happened (console clock) */
+  uint32_t unix_time;                 /* when it happened: see dscm_journal_t.time_base */
 } dscm_journal_entry_t;               /* 16 bytes */
+
+/* dscm_journal_t.time_base */
+#define DSCM_JOURNAL_TIME_CONSOLE 0   /* console clock, its offset from UTC unknown: only differences are meaningful */
+#define DSCM_JOURNAL_TIME_UTC     1   /* UTC */
 
 typedef struct dscm_journal_t {
   uint32_t magic;                     /* DSCM_JOURNAL_MAGIC; 0 in a cleared file */
@@ -324,7 +338,8 @@ typedef struct dscm_journal_t {
   uint32_t game_id;
   char username[32];                  /* entries belong to this account only */
   char game_hash[33];
-  uint8_t reserved[3];
+  uint8_t time_base;                  /* DSCM_JOURNAL_TIME_*: what the entries' unix_time is */
+  uint8_t reserved[2];
   dscm_journal_entry_t e[DSCM_JOURNAL_MAX];
 } dscm_journal_t;                     /* 1620 bytes, fits DSCM_JOURNAL_FILE_SIZE */
 

@@ -349,12 +349,13 @@ static void dbg_log(const char* m)
 }
 static uint32_t max_addresses = 1024;    /* config.max_addresses for start_with */
 static int spectator;
+static int clock_utc;                     /* platform.clock_is_utc for start_with */
 static uint32_t (*platform_frame)(void);
 static void (*platform_journal_sync)(const void*, uint32_t);
 static void start_with(int hardcore, uint32_t slots, uint32_t bytes)
 {
   dsc_platform_t p = { read_memory, millis, http_send, on_event, dbg_log, unix_time, &journal, &notices, publish_list, platform_frame,
-                       use_map ? memory_map : NULL, interrupt_pending, platform_journal_sync };
+                       use_map ? memory_map : NULL, interrupt_pending, platform_journal_sync, clock_utc };
   dsc_config_t c = { "http://mock", "tester", "tok", hardcore, max_addresses, slots, bytes, spectator, halt_mode, idle_budget };
   seen_valid = 0;
   table_full_logs = 0;
@@ -687,6 +688,19 @@ static void unlock_1001(void)
   frames(2);
 }
 
+/* The module runs the clock on UTC when the launcher measured the console
+ * clock's offset: the journal says so, and its times are the platform's. */
+static void test_journal_time_base_utc(void)
+{
+  clock_utc = 1;
+  start(1);
+  clock_utc = 0;
+  CHECK(journal.time_base == DSCM_JOURNAL_TIME_UTC);
+  fake_time = 1700000123;
+  unlock_1001();
+  CHECK(journal.count == 1 && journal.e[0].unix_time == 1700000123);
+}
+
 static void test_journal_unlock_marked_sent(void)
 {
   start(1);
@@ -694,6 +708,7 @@ static void test_journal_unlock_marked_sent(void)
   CHECK(journal.game_id == 77 && journal.count == 0);
   CHECK(!strcmp(journal.username, "tester"));
   CHECK(!strcmp(journal.game_hash, "0123456789abcdef0123456789abcdef"));
+  CHECK(journal.time_base == DSCM_JOURNAL_TIME_CONSOLE);   /* clock offset unknown */
   fake_time = 1700000123;
   unlock_1001();
   CHECK(award_count == 1);
@@ -1927,6 +1942,7 @@ static void run_all(void)
   RUN(test_reset_and_progress);
   RUN(test_unlock_retried_when_server_down);
   RUN(test_journal_unlock_marked_sent);
+  RUN(test_journal_time_base_utc);
   RUN(test_journal_unsent_until_server_answers);
   RUN(test_journal_sync_points);
   RUN(test_journal_answers_that_are_final);

@@ -82,7 +82,7 @@ typedef struct dsc_platform_t {
   void (*event)(const dsc_event_t* event);
   /* Diagnostics (may be NULL). */
   void (*log)(const char* message);
-  /* Console clock, for journal entries (may be NULL: time()). */
+  /* Clock for journal entries (may be NULL: time()). */
   uint32_t (*unix_time)(void);
   /* Offline journal, written in place; journal_sync (below) makes each step visible
    * in RAM. May be NULL. */
@@ -111,6 +111,8 @@ typedef struct dsc_platform_t {
    * data cache lines when the mirror is cached). Called at every ordering
    * point of a journal update. May be NULL (writes are already in RAM). */
   void (*journal_sync)(const void* addr, uint32_t len);
+  /* unix_time is UTC (else a console clock whose offset from UTC is unknown). */
+  int clock_is_utc;
 } dsc_platform_t;
 
 typedef struct dsc_config_t {

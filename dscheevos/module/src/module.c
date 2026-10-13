@@ -467,6 +467,10 @@ int module_init(const dscm_boot_t* boot)
     }
   }
   g_boot = *boot;
+  /* rc_client and the journal run on UTC, as the server does, when the
+   * launcher could measure the console clock's offset */
+  if (g_boot.flags & DSCM_BOOT_UTC_KNOWN)
+    g_boot.unix_time = dscm_console_to_utc(g_boot.unix_time, g_boot.utc_offset_q);
   g_session = (const char*)boot;
   heap_load_begin(boot->file_size);   /* before the first malloc */
   g_boot.host[sizeof(g_boot.host) - 1] = '\0';
@@ -486,6 +490,7 @@ int module_init(const dscm_boot_t* boot)
   platform.http_send = http_send;
   platform.event = on_event;
   platform.unix_time = dscm_unix_time;
+  platform.clock_is_utc = (g_boot.flags & DSCM_BOOT_UTC_KNOWN) != 0;
   /* Cached, cleaned at each ordering point: the 0x0C000000 mirror is cached
    * write-back on SDK5 games, so it can't be trusted to reach RAM. */
   platform.journal = &dscm_g_journal.j;

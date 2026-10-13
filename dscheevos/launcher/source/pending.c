@@ -175,11 +175,26 @@ static int send_entry(const dsc_settings_t* settings, const dscm_journal_t* j, c
   return done ? ENTRY_SENT : ENTRY_KEEP;
 }
 
+/* Now, on the journal's time base. A UTC journal needs the console clock's
+ * offset, measured on this start's server replies; without it the times are
+ * unknown and the entries go as "just now" (0) rather than hours off. */
+static uint32_t journal_now(const dscm_journal_t* j)
+{
+  uint32_t console = (uint32_t)time(NULL);
+  int8_t q;
+  if (j->time_base != DSCM_JOURNAL_TIME_UTC)
+    return console;
+  if (net_clock_offset_q(&q))
+    return dscm_console_to_utc(console, q);
+  log_line("pending: clock offset unknown, unlock times not sent");
+  return 0;
+}
+
 /* Sends g_file's unsent entries; returns how many are still unsent. */
 static unsigned send_journal(const dsc_settings_t* settings, const char* hash, pending_result_t* out)
 {
   dscm_journal_t* j = (dscm_journal_t*)g_file;
-  uint32_t now = (uint32_t)time(NULL);
+  uint32_t now = journal_now(j);
   unsigned i, left = 0;
   int r;
   if (!g_told && unsent_entries(j)) {

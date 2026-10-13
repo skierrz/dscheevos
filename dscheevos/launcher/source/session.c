@@ -338,6 +338,8 @@ int session_write(const dsc_settings_t* settings, const char* rom_path, const ch
   boot.hardcore = (uint8_t)(settings->hardcore != 0);
   boot.flags = settings->spectator ? DSCM_BOOT_SPECTATOR : 0;
   boot.unix_time = (uint32_t)time(NULL);
+  if (net_clock_offset_q(&boot.utc_offset_q))
+    boot.flags |= DSCM_BOOT_UTC_KNOWN;
   /* Each reply and the CA end in at least one NUL (DSCM_SESSION_PAD): the
    * module uses them in place. */
   for (i = 0; i < DSCM_PRELOAD_COUNT; i++) {
