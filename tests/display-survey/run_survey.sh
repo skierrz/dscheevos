@@ -2,7 +2,8 @@
 # M1 display survey driver: one title per emu-lock hold, plain DS mode, 15 min
 # of emulated time, generic input, screenshots at 5/10/15 min.
 # Usage: run_survey.sh OUTDIR "ROM name.nds"...   (skips titles already done)
-# Env: SURVEY_RUNNER (default ../melonDS-survey/build-survey/melonds-headless),
+# Env: SURVEY_RUNNER (default ../melonDS-survey/build-survey/melonds-headless), RUNNER_ARGS
+#      (extra runner options, e.g. --thumb-cycle),
 #      FRAMES (default 54000), ROMDIR (required: the .nds dumps; read-only).
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
@@ -20,7 +21,7 @@ for rom in "$@"; do
   echo "== $rom ($(date +%H:%M))"
   t1=$((frames / 3)); t2=$((2 * frames / 3))
   "$top/bin/emu-lock" -l display-survey "$runner" --rom "$romdir/$rom" --bios-dir "$DSI_FILES" \
-    --frames "$frames" --script "$out/input.txt" --survey "$out/$slug" \
+    --frames "$frames" --script "$out/input.txt" --survey "$out/$slug" ${RUNNER_ARGS:-} \
     --shot-at "$((t1 - 1)):$out/$slug.5min.ppm" --shot-at "$((t2 - 1)):$out/$slug.10min.ppm" \
     --screenshot "$out/$slug.15min.ppm" > "$out/$slug.log" 2>&1 || echo "runner exit $? for $slug"
   for p in "$out/$slug".*.ppm; do
