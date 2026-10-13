@@ -13,7 +13,7 @@ CORE     := ../core
 LWIP     ?= ../../external/lwip
 MBEDTLS  ?= ../../external/mbedtls
 TLSCONF  := ../launcher/tls
-BUILD    := build
+BUILD    ?= build
 
 ARCH     := -march=armv5te -mtune=arm946e-s -mthumb -mthumb-interwork
 CFLAGS   := $(ARCH) -Os -ffunction-sections -fdata-sections -fno-strict-aliasing -Wall \
@@ -22,15 +22,24 @@ CFLAGS   := $(ARCH) -Os -ffunction-sections -fdata-sections -fno-strict-aliasing
 VERSION  := $(shell cat ../../VERSION)
 CFLAGS   += '-DDSC_VERSION="$(VERSION)"'
 # header dependencies (build/*.d): a changed header rebuilds every object that includes it
-CFLAGS   += -MMD -MP
+CFLAGS   += -MMD -MP $(EXTRA_CFLAGS)
+# The module's data (statics, the snapshot arena, the session, small sets' heap) through the
+# 0x0C000000 mirror, which most games' MPUs leave uncached: our data never evicts the game's
+# cache lines (tests/perf/AB.md "Data through the mirror"). DATA_MIRROR=0: the cached layout.
+DATA_MIRROR ?= 1
+ifeq ($(DATA_MIRROR),1)
+CFLAGS   += -DDSCM_DATA_MIRROR
+endif
+# mbedTLS's calloc/free set at run time (src/net/https.c: through the cache)
+CFLAGS   += -DMBEDTLS_PLATFORM_MEMORY
 # heap.c places load-time memory (heap.h): it wraps malloc and rc_api's parse of the set
 # fast_strtoul.c: newlib's strtoul without its per-call divisions
 WRAPS    := malloc free calloc realloc rc_api_process_fetch_game_sets_server_response strtoul
 comma    := ,
 LDFLAGS  := $(if $(TEXT_COLOUR),-Wl$(comma)--defsym$(comma)DSCM_TEXT_COLOUR=$(TEXT_COLOUR)) \
             $(if $(DATA_COLOUR),-Wl$(comma)--defsym$(comma)DSCM_DATA_COLOUR=$(DATA_COLOUR)) \
-            $(ARCH) -nostartfiles -T module.ld -Wl,--use-blx -Wl,--gc-sections -Wl,-Map,$(BUILD)/dscheevos9.map \
-            $(foreach w,$(WRAPS),-Wl,--wrap=$(w))
+            $(ARCH) -nostartfiles -T $(or $(LDSCRIPT),$(if $(filter 1,$(DATA_MIRROR)),module.ld,module-cached.ld)) -Wl,--use-blx -Wl,--gc-sections -Wl,-Map,$(BUILD)/dscheevos9.map \
+            $(foreach w,$(WRAPS),-Wl,--wrap=$(w)) $(EXTRA_LDFLAGS)
 
 RC_SRC := $(addprefix $(RCHEEVOS)/src/, client/rc_client.c \
   runtime/rc_alloc.c runtime/rc_condition.c runtime/rc_condset.c runtime/rc_consoleinfo.c \

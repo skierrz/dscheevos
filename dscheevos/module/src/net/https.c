@@ -19,6 +19,9 @@
 #include "mbedtls/ssl.h"
 #include "mbedtls/x509_crt.h"
 
+#include "dscheevos_module.h"
+#include "mbedtls/platform.h"
+#include <malloc.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -526,10 +529,46 @@ static void request_step(void)
 
 static uint32_t g_paused_seen;
 
+/* mbedTLS's memory through the cache. The module's heap may be seen through
+ * the uncached 0x0C000000 mirror (small sets: dscheevos_module.h), and a
+ * TLS handshake's bignum work there took longer than a Wi-Fi drop test
+ * allows. Blocks are whole cache lines (32-byte aligned and rounded), used
+ * only through the cached view while allocated, and written back and dropped
+ * before newlib gets them back, so the two views never share a dirty line. */
+extern void dscm_dc_clean(const void* addr, uint32_t len);
+extern void dscm_dc_invalidate(const void* addr, uint32_t len);
+static void* tls_calloc(size_t n, size_t size)
+{
+  size_t bytes;
+  void* p;
+  if (size && n > (size_t)-1 / size)
+    return NULL;
+  bytes = (n * size + 31) & ~(size_t)31;
+  p = memalign(32, bytes ? bytes : 32);
+  if (!p)
+    return NULL;
+  p = (void*)DSCM_PHYS(p);
+  memset(p, 0, bytes ? bytes : 32);
+  return p;
+}
+static void tls_free(void* p)
+{
+  void* q;
+  uint32_t len;
+  if (!p)
+    return;
+  q = (void*)DSCM_DATA_ADDR(p);
+  len = (uint32_t)malloc_usable_size(q) & ~31u;
+  dscm_dc_clean(p, len);
+  dscm_dc_invalidate(p, len);
+  free(q);
+}
+
 void* net_init(const net_config_t* config)
 {
   ip_addr_t dns;
   void* ring;
+  mbedtls_platform_set_calloc_free(tls_calloc, tls_free);
   g_config = *config;
   memset(&C, 0, sizeof(C));
   memset(&R, 0, sizeof(R));

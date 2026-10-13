@@ -116,7 +116,7 @@ mp = open(args.map).read()
 addr = int(re.search(r'0x([0-9a-f]+)\s+dscm_g_status\b', mp).group(1), 16)
 m = re.search(r'\.bss\.dscm_g_status\s+0x[0-9a-f]+\s+0x([0-9a-f]+)', mp)
 status_size = int(m.group(1), 16) if m else 0
-o = addr - 0x02000000
+o = addr & 0x00FFFFFF   # the module may link its data at the 0x0C000000 mirror
 f = struct.unpack_from('<8I', ram, o)
 names = 'active hardcore snapshotted evaluated dropped missed eval_lines unlock_count'.split()
 print(dict(zip(names, f)))
@@ -170,7 +170,10 @@ if timing and status_size >= (p + 92 - o) + 4 * (len(TIMING) + len(HALT) + 2):
 mh = re.search(r'0x([0-9a-f]+)\s+dscm_g_heap\b', mp)
 if mh:
     HEAP = 'low_base low_top high_base high_top load_low_top load_high_top load_in_use arena lent parse_base parse_top parse_heap load_left'.split()
-    hp = dict(zip(HEAP, struct.unpack_from(f'<{len(HEAP)}I', ram, int(mh.group(1), 16) - 0x02000000)))
+    hp = dict(zip(HEAP, struct.unpack_from(f'<{len(HEAP)}I', ram, int(mh.group(1), 16) & 0x00FFFFFF)))
+    for k in 'low_base low_top high_base high_top load_low_top load_high_top arena parse_base parse_top'.split():
+        if hp[k] >> 24 == 0x0C:   # addresses in the mirror view
+            hp[k] = hp[k] & 0x00FFFFFF | 0x02000000
     zone_end = 0x02E00000 + 0x400 + 256 * 1024     # DSCM_SESSION + HEAP_SESSION_HEAD + HEAP_ARENA_BYTES
 
     def used(low_top, high_top):

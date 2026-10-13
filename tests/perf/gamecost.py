@@ -73,6 +73,10 @@ def main():
     out["delta"] = stats([gon[i] - goff[i] for i in range(n)])
     out["delta_avg_pct_frame"] = 100 * (out["on"]["game"]["avg"] - out["off"]["game"]["avg"]) / FRAME
     out["cpi_delta_pct"] = 100 * (out["on"]["cpi"] / out["off"]["cpi"] - 1) if out["off"]["cpi"] else 0
+    # the same cost at equal work: when the two runs' game does different amounts of work
+    # (MKDS: game instructions differ by +-1.5% between runs), the CPI change times the on
+    # run's instructions is the steadier number
+    out["cpi_normalized"] = (out["on"]["cpi"] - out["off"]["cpi"]) * out["on"]["instr"]["avg"]
     on = runs["on"]
     out["shadow"] = {"total": stats([(int(r["game_iextra"]) + int(r["game_dextra"])) / 2 for r in on]),
                      "icache": stats([int(r["game_iextra"]) / 2 for r in on]),
@@ -83,6 +87,11 @@ def main():
     if "resumes" in on[0]:
         out["shadow"]["irq_mode"] = stats([int(r["game_extra_irq"]) / 2 for r in on])
         out["shadow"]["resumes"] = sum(col("on", "resumes")) / max(len(on), 1)
+    if "masked" in on[0]:
+        # module code outside IRQ mode with IRQs masked (CPSR.I); "held" = an IRQ was waiting
+        out["masked"] = {"all": stats([int(r["masked"]) / 2 for r in on]),
+                         "held": stats([int(r["masked_pend"]) / 2 for r in on]),
+                         "held_longest": stats([int(r["masked_pend_max"]) / 2 for r in on])}
     out["shadow_avg_pct_frame"] = 100 * out["shadow"]["total"]["avg"] / FRAME
     if "arm7_busy" in runs["on"][0] and any(col("on", "arm7_busy")):
         out["arm7_busy"] = {m: stats(col(m, "arm7_busy")) for m in runs}
@@ -104,6 +113,8 @@ def main():
               out["off"]["irqs"], out["on"]["irqs"], out["off"]["game_irq_per_irq"], out["on"]["game_irq_per_irq"],
               out["off"]["irq_max"]["p99"], out["on"]["irq_max"]["p99"], out["off"]["irq_max"]["max"], out["on"]["irq_max"]["max"]))
     print("  game instructions/interval: off %.0f, on %.0f" % (out["off"]["instr"]["avg"], out["on"]["instr"]["avg"]))
+    print("  at equal work (CPI change x the on run's instructions): %+.0f cycles = %+.2f%% of a frame" % (
+        out["cpi_normalized"], 100 * out["cpi_normalized"] / FRAME))
     print("  game cache misses/interval: I %.0f -> %.0f, D read %.0f -> %.0f, write-backs %.0f -> %.0f" % (
         out["off"]["imiss"], out["on"]["imiss"], out["off"]["dmiss"], out["on"]["dmiss"], out["off"]["wb"], out["on"]["wb"]))
     s = out["shadow"]
@@ -116,6 +127,11 @@ def main():
         print("    of it in the game's IRQ mode              %s" % f(s["irq_mode"]))
         print("    the game resumed after module code %.1f times per interval (%.0f cycles lost per resume)" % (
             s["resumes"], s["total"]["avg"] / max(s["resumes"], 1e-9)))
+    if "masked" in out:
+        k = out["masked"]
+        print("  module with IRQs masked (CPSR.I), cycles/interval  %s" % f(k["all"]))
+        print("    of it with a game IRQ waiting (held off)        %s" % f(k["held"]))
+        print("    longest single hold-off per interval           %s" % f(k["held_longest"]))
     if "arm7_busy" in out:
         for m in ("off", "on"):
             print("  ARM7 busy cycles/interval (33 MHz), %-3s     %s" % (m, f(out["arm7_busy"][m])))

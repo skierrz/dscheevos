@@ -7,13 +7,13 @@
 	.align 2
 dscm_header:
 	.word 0x56435344            @ DSCM_MAGIC "DSCV"
-	.word 6                     @ DSCM_VERSION (the module test checks it matches)
+	.word 7                     @ DSCM_VERSION (the module test checks it matches)
 	.word __image_size
 	.word init_entry
 	.word vblank_entry
 	.word halt_entry
 	.word module_shutdown
-	.word dscm_g_status
+	.word dscm_g_status          @ 0x1C: the module's view (0x02 or 0x0C), for the ARM9 menu
 	.word dscm_g_net
 dscm_vblank_count:
 	.word 0                     @ 0x24: bumped by the ARM7 VBlank hook
@@ -22,7 +22,7 @@ dscm_vblank_count:
 dscm_list_ptr:
 	.word 0                     @ 0x2C: published achievement list (module.c swaps it)
 	.word dscm_g_notices        @ 0x30
-	.word dscm_g_journal        @ 0x34: written through the cache, cleaned at each step
+	.word dscm_g_journal_phys   @ 0x34: physical (the ARM7 reads it); cleaned at each step
 	.space 8
 	.global dscm_notify_count
 dscm_notify_count:
@@ -35,10 +35,9 @@ dscm_cues:
 	.word 0                     @ 0x48: LED cues for the ARM7 (same cache line)
 	.space 20
 
-@ 0x60: what the VBlank IRQ reads and writes (struct dscm_irq_t in module.c,
-@ which checks these offsets): every VBlank touches the first cache line
-@ only. The IRQ code follows, and the core's part of it (.text.irq) right
-@ after: an IRQ that finds everything cold touches few lines.
+@ dscm_irq (struct dscm_irq_t in module.c, which checks these offsets):
+@ frame counting and the wake's guard bytes, read and written by the idle
+@ thread only (nothing of ours runs in the game's interrupts).
 	.equ	IRQ_LAST, 0
 	.equ	IRQ_FRAMES, 4
 	.equ	IRQ_ON, 8
@@ -54,98 +53,25 @@ dscm_cues:
 	.equ	IRQ_IDLE_CUT_LINES, 32
 	.equ	IRQ_IDLE_CUT, 36
 	.equ	IRQ_MISSED, 40
+	@ (its own section: module.ld puts it with the uncached data,
+	@ module-cached.ld next to the code)
+	.section .data.wake, "aw"
 	.balign	32
 	.global dscm_irq
 dscm_irq:
 	.space	64
 
+	.section .header, "ax"
+
 	.arm
-@ VBlank: called from the ARM9 IPC sync IRQ handler, on the game's IRQ stack
-@ (DTCM): the three words pushed here are all it uses, unless the frame
-@ needs a copy (dsc_vblank_copy), which runs on the module's IRQ stack.
-@ Acts once per ARM7 VBlank.
+@ The VBlank entry is no longer called: the ARM7 bumps dscm_vblank_count and
+@ the idle thread reads it (module.c, vblank_poll), so DScheevos runs nothing
+@ in the game's interrupts and uses none of its stacks. Kept as a stub so the
+@ header layout (and old callers) stay valid.
 	.global vblank_entry
 	.type vblank_entry, %function
 vblank_entry:
-	push	{r4, r5, lr}
-	adr	r4, dscm_irq
-	ldmia	r4, {r0-r2}                 @ last_vblank, frames, flag bytes
-	tst	r2, #0x100                  @ in_vblank: the copy below is running
-	bne	9f
-	adr	r12, dscm_vblank_count
-	@ The ARM7 writes the count behind the data cache. Don't rely on the
-	@ 0x0C000000 mirror being uncached: SDK5 games map it cached write-back.
-	@ Drop the line and read through the cache; the ARM9 never leaves that
-	@ line dirty (dscm_publish_list cleans its one store at once).
-	mcr	p15, 0, r12, c7, c6, 1
-	ldr	r12, [r12]
-	subs	lr, r12, r0                 @ VBlanks since the last call
-	beq	9f                          @ another IPC message
-	mov	r0, r12
-	add	r1, r1, lr
-	stmia	r4, {r0, r1}                @ last_vblank, frames
-	tst	r2, #0xFF                   @ on
-	beq	9f
-	mov	r0, #0x04000000
-	ldrh	r5, [r0, #6]                @ REG_VCOUNT: start
-	subs	lr, lr, #1
-	ldrne	r0, [r4, #IRQ_MISSED]
-	addne	r0, r0, lr
-	strne	r0, [r4, #IRQ_MISSED]
-	bl	dsc_vblank_queue
-	cmp	r0, #0
-	bne	8f
-1:	ldr	r0, [r4, #IRQ_IDLE_OPEN]
-	cmp	r0, #0
-	bne	7f
-	@ this IRQ's own lines
-2:	mov	r0, #0x04000000
-	ldrh	r0, [r0, #6]
-	subs	r0, r0, r5
-	addmi	r0, r0, #256                @ + LINES_PER_FRAME (263)
-	addmi	r0, r0, #7
-	add	r12, r4, #IRQ_TIMED
-	ldmia	r12, {r1-r3}                @ timed_frames, irq_lines_total, irq_lines_last | max << 16
-	add	r1, r1, #1
-	add	r2, r2, r0
-	cmp	r0, r3, lsr #16
-	bichi	r3, r3, #0xFF000000
-	bichi	r3, r3, #0x00FF0000
-	orrhi	r3, r3, r0, lsl #16
-	mov	r3, r3, lsr #16
-	orr	r3, r0, r3, lsl #16
-	stmia	r12, {r1-r3}
-9:	pop	{r4, r5, lr}
 	bx	lr
-	@ An idle pass was running: this IRQ preempted it, the game runs next.
-	@ Its lines up to here count (module_idle adds them to its frame).
-7:	mov	r0, #0
-	str	r0, [r4, #IRQ_IDLE_OPEN]
-	ldr	r1, [r4, #IRQ_IDLE_START]
-	subs	r1, r5, r1
-	addmi	r1, r1, #256
-	addmi	r1, r1, #7
-	add	r12, r4, #IRQ_IDLE_CUT_LINES
-	ldmia	r12, {r2, r3}               @ idle_cut_lines, idle_cut
-	add	r2, r2, r1
-	add	r3, r3, #1
-	stmia	r12, {r2, r3}
-	b	2b
-	@ A copy in the IRQ (nothing captured yet), on the module's IRQ stack:
-	@ the game's is small.
-8:	mov	r0, #1
-	strb	r0, [r4, #IRQ_IN_VBLANK]
-	mov	r1, sp
-	ldr	sp, =__irq_stack_top
-	push	{r1, r2}
-	ldr	r0, =module_vblank_copy
-	blx	r0
-	pop	{r1, r2}
-	mov	sp, r1
-	mov	r0, #0
-	strb	r0, [r4, #IRQ_IN_VBLANK]
-	b	1b
-	.ltorg
 
 	.section .text.entries, "ax"
 	.arm
@@ -176,7 +102,9 @@ init_entry:
 	.global halt_entry
 	.type halt_entry, %function
 halt_entry:
-	push	{r4, r5, lr}
+	@ Nothing goes on the caller's (the game's) stack: until the switch to
+	@ the module stack only r0-r3 and r12 are used, which the caller's
+	@ OS_Halt call leaves free.
 	mrs	r0, cpsr
 	tst	r0, #0x80
 	bne	2f
@@ -184,12 +112,14 @@ halt_entry:
 	ldr	r0, [r0, #0x208]            @ REG_IME
 	tst	r0, #1
 	beq	2f
-	ldr	r5, =dscm_irq               @ in_halt: a byte in the line every wake uses
-	ldrb	r0, [r5, #IRQ_IN_HALT]
-	cmp	r0, #0
-	bne	2f
+	@ in_halt: a byte in the line every wake uses. Test and set in one step:
+	@ a thread that preempts us between a read and a write would otherwise
+	@ also take the module stack.
+	ldr	r12, =dscm_irq + IRQ_IN_HALT
 	mov	r0, #1
-	strb	r0, [r5, #IRQ_IN_HALT]
+	swpb	r1, r0, [r12]
+	cmp	r1, #0
+	bne	2f
 	@ r0 = 1 if the caller is NitroSDK's idle loop: the instruction after
 	@ its call is a branch back to the call (ARM "b .-4" or Thumb "b .-4").
 	@ Read through the 0x0C000000 mirror when it is in main RAM: a data
@@ -199,10 +129,9 @@ halt_entry:
 	@ through 0x02xxxxxx), so clean and drop it after the read. Clean, not
 	@ just drop: nothing of the game's in that line is ever lost.
 	bic	r3, lr, #1
-	mov	r2, r3, lsr #24
-	cmp	r2, #2
+	mov	r12, r3, lsr #24
+	cmp	r12, #2
 	addeq	r3, r3, #0x0A000000         @ 0x02xxxxxx -> 0x0Cxxxxxx
-	mov	r12, r2                     @ 2: main RAM, read through the mirror
 	mov	r0, #0
 	tst	lr, #1
 	bne	4f
@@ -215,20 +144,20 @@ halt_entry:
 	mcreq	p15, 0, r3, c7, c14, 1      @ clean and invalidate the mirror's line
 	cmp	r1, r2
 	moveq	r0, #1
-	mov	r4, sp
+	mov	r12, sp
 	ldr	sp, =__stack_top
-	push	{r4, r5}
+	push	{r12, lr}
 	ldr	r1, =module_idle
 	blx	r1
-	pop	{r4, r5}
-	mov	sp, r4
-	mov	r1, #0
-	strb	r1, [r5, #IRQ_IN_HALT]
+	pop	{r12, lr}
+	mov	sp, r12
+	ldr	r1, =dscm_irq
+	mov	r2, #0
+	strb	r2, [r1, #IRQ_IN_HALT]
 	cmp	r0, #0
-	bne	3f
+	bxne	lr
 2:	mov	r0, #0
 	mcr	p15, 0, r0, c7, c0, 4       @ wait for interrupt
-3:	pop	{r4, r5, lr}
 	bx	lr
 
 @ Reset: called from nds-bootstrap's reset path with IRQs off. The game's

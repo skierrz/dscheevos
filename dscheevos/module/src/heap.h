@@ -34,6 +34,11 @@
 #define HEAP_ARENA_BYTES  (256u * 1024u)                 /* config.snapshot_bytes */
 #define HEAP_ZONE_END     (HEAP_ARENA + HEAP_ARENA_BYTES)
 
+/* Before the first allocation: newlib's heap through the module's data view
+ * (uncached in a DSCM_DATA_MIRROR build, on most games) or through the
+ * cache (faster for big sets, but their streaming evicts the game's lines).
+ * The session, the replies and the snapshot arena stay in the data view. */
+void heap_view(int uncached);
 /* Load-time placement. file_size: the session file's (checked by the caller). */
 void heap_load_begin(uint32_t file_size);
 /* Around dsc_init: its malloc of HEAP_ARENA_BYTES is the arena. */

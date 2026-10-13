@@ -2,24 +2,24 @@
  * DScheevos ARM9 module ABI: the contract between the module binary
  * (dscheevos9.bin) and the nds-bootstrap hook points that load and call it.
  *
- * Memory (cached mirror of the DSi's extra RAM, reserved by shrinking
- * nds-bootstrap's ROM cache):
+ * Memory (the DSi's extra RAM, reserved by shrinking nds-bootstrap's ROM
+ * cache; code runs at DSCM_BASE, data through DSCM_DATA_ADDR's view):
  *
  *   DSCM_BASE           module image: header, code, data, bss
  *   DSCM_SESSION        session file: dscm_boot_t, then server responses
  *   DSCM_HEAP           heap (rcheevos game data, snapshots)
- *   DSCM_IRQ_STACK_TOP  stack for header->vblank (grows down)
+ *   DSCM_IRQ_STACK_TOP  spare (was the VBlank call's stack)
  *   DSCM_STACK_TOP      stack for header->halt (grows down)
  *
  * Before the game boots, nds-bootstrap's ARM7 copies dscheevos9.bin to
  * DSCM_BASE and the session file (written by the DScheevos launcher) to
  * DSCM_SESSION, then its ARM9 calls header->init(DSCM_SESSION). After that
  * only hooks call in:
- *   header->vblank()  from the ARM9 IPC sync IRQ, on the game's IRQ stack
- *                     (it pushes three words). The ARM7 VBlank handler
- *                     bumps header->vblank_count, then sends the IRQ. The
- *                     module counts a frame once per new count, so a sync
- *                     value overwritten by another IPC message loses nothing.
+ *   header->vblank()  no longer called (a stub, kept for the layout). The
+ *                     ARM7 VBlank handler bumps header->vblank_count; the
+ *                     module reads it in the game's idle time, before every
+ *                     snapshot, and counts a frame per new count. Nothing of
+ *                     DScheevos runs in the game's ARM9 interrupts.
  *   header->halt()    replaces the game's OS_Halt: runs evaluation work,
  *                     then waits for an interrupt as OS_Halt did.
  *   header->reset()   from nds-bootstrap's game reset (in-game menu, soft
@@ -33,7 +33,9 @@
 
 #include <stdint.h>
 
+#ifndef DSCM_BASE
 #define DSCM_BASE        0x02D80000u
+#endif
 #define DSCM_SIZE        0x00200000u
 #define DSCM_IMAGE_MAX   0x00080000u   /* code incl. TCP/IP and TLS, data, bss */
 #define DSCM_SESSION     (DSCM_BASE + DSCM_IMAGE_MAX)
@@ -45,12 +47,23 @@
 #define DSCM_IRQ_STACK_TOP  (DSCM_STACK_TOP - DSCM_STACK_SIZE)
 #define DSCM_HEAP_END    (DSCM_IRQ_STACK_TOP - DSCM_IRQ_STACK_SIZE)
 
-#define DSCM_MAGIC   0x56435344u  /* "DSCV" */
-#define DSCM_VERSION 6u
-#define DSCM_SESSION_MAGIC 0x53435344u  /* "DSCS" */
+/* Where the module's code sees its own data, heap, arena and session:
+ * the cached view (DSCM_BASE, 0x02xxxxxx) or, with DSCM_DATA_MIRROR, the
+ * 0x0C000000 mirror of the same RAM, which most games' MPUs leave uncached
+ * (SDK5 games cache it: then nothing changes). Code always runs at
+ * DSCM_BASE. Pointers handed to the ARM7 or the in-game menu are physical
+ * (DSCM_PHYS). */
+#ifdef DSCM_DATA_MIRROR
+#define DSCM_DATA_HI 0x0C000000u
+#else
+#define DSCM_DATA_HI 0x02000000u
+#endif
+#define DSCM_DATA_ADDR(a) ((((uint32_t)(a)) & 0x00FFFFFFu) | DSCM_DATA_HI)
+#define DSCM_PHYS(a)      ((((uint32_t)(a)) & 0x00FFFFFFu) | 0x02000000u)
 
-/* IPC sync value the ARM7 VBlank handler sends to request a snapshot. */
-#define DSCM_IPC_SYNC_VBLANK 0xA
+#define DSCM_MAGIC   0x56435344u  /* "DSCV" */
+#define DSCM_VERSION 7u
+#define DSCM_SESSION_MAGIC 0x53435344u  /* "DSCS" */
 
 /* Server responses fetched by the launcher at session start. */
 enum {
@@ -319,7 +332,7 @@ typedef struct dscm_notices_t {
 #define DSCM_JOURNAL_FILE_SIZE 4096u
 /* The 0x0C000000 mirror of an address: uncached under most games' MPU, but
  * cached write-back under SDK5's, so only for reads that tolerate either. */
-#define DSCM_UNCACHED(p) ((void*)((uint32_t)(p) - 0x02000000u + 0x0C000000u))
+#define DSCM_UNCACHED(p) ((void*)(((uint32_t)(p) & 0x00FFFFFFu) | 0x0C000000u))
 enum { DSCM_JOURNAL_AWARD = 1, DSCM_JOURNAL_LEADERBOARD };
 
 typedef struct dscm_journal_entry_t {

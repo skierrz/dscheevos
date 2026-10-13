@@ -18,25 +18,37 @@ dscm_heap_t dscm_g_heap;
 extern char dscm_host_session[];
 #define SESSION   dscm_host_session
 #else
-#define SESSION   ((char*)DSCM_SESSION)
+#define SESSION   ((char*)DSCM_DATA_ADDR(DSCM_SESSION))
 #endif
 #define ARENA     (SESSION + HEAP_SESSION_HEAD)
 #define ZONE_END  (ARENA + HEAP_ARENA_BYTES)
 #define ADDR(p)   ((uint32_t)(uintptr_t)(p))
+#define IS_ARENA(p) (((ADDR(p) ^ ADDR(ARENA)) & 0x00FFFFFFu) == 0)   /* in either view */
 
 /* ---- sbrk: the low piece, then the high piece for good ---- */
 #ifndef DSCM_HEAP_HOST_TEST   /* the host test (tests/heap) runs on the host's malloc */
 #include <malloc.h>
 #include <reent.h>
-extern char __bss_end[];
-#define LOW_BASE  ((char*)(((uint32_t)__bss_end + 7u) & ~7u))
-#define LOW_END   ((char*)DSCM_SESSION)
-#define HIGH_BASE ((char*)HEAP_ZONE_END)
-#define HIGH_END  ((char*)DSCM_HEAP_END)
+extern char __heap_start[];
+/* newlib's heap (rcheevos' game data, the core's tables) in the view
+ * heap_view() picked: the same RAM through the cache or the mirror */
+static uint32_t g_heap_hi = DSCM_DATA_HI;
+#define HV(a)     ((char*)((((uint32_t)(a)) & 0x00FFFFFFu) | g_heap_hi))
+#define LOW_BASE  HV((((uint32_t)__heap_start + 7u) & ~7u))
+#define LOW_END   HV(DSCM_SESSION)
+#define HIGH_BASE HV(HEAP_ZONE_END)
+#define HIGH_END  HV(DSCM_HEAP_END)
+
 
 static char* g_brk;
 static int g_high;
 static uint32_t g_gap;          /* newlib counts the gap as allocated */
+
+void heap_view(int uncached)
+{
+  if (!g_brk)   /* before the first allocation only */
+    g_heap_hi = uncached ? DSCM_DATA_HI : 0x02000000u;
+}
 
 void* _sbrk_r(struct _reent* r, ptrdiff_t incr)
 {
@@ -71,6 +83,9 @@ void* _sbrk_r(struct _reent* r, ptrdiff_t incr)
   return prev;
 }
 void* _sbrk(ptrdiff_t incr) { return _sbrk_r(_REENT, incr); }
+#define ARENA_VIEW HV(ARENA)
+#else
+#define ARENA_VIEW ARENA
 #endif
 
 /* ---- load-time placement ---- */
@@ -149,8 +164,10 @@ void* __wrap_malloc(size_t n)
   if (Z.loading) {
     if (Z.arena_open && n == HEAP_ARENA_BYTES) {
       Z.arena_open = 0;
-      dscm_g_heap.arena = ADDR(ARENA);
-      return ARENA;
+      /* the snapshot arena: in the heap's view (heap_view), so a set whose
+       * evaluation runs cached also reads its snapshots cached */
+      dscm_g_heap.arena = ADDR(ARENA_VIEW);
+      return ARENA_VIEW;
     }
     if (Z.lend && n == Z.lend_len + 1) {
       int i = lent_slot(NULL);
@@ -175,12 +192,12 @@ void* __wrap_malloc(size_t n)
 
 void __wrap_free(void* p)
 {
+  if (IS_ARENA(p))
+    return;                      /* the arena (either view), at dsc_shutdown */
   if (!in_zone(p)) {
     __real_free(p);
     return;
   }
-  if (p == (void*)ARENA)
-    return;                      /* the arena, at dsc_shutdown */
   {
     int i = lent_slot(p);
     if (i >= 0)
@@ -211,10 +228,10 @@ void* __wrap_realloc(void* p, size_t n)
   int i;
   if (!p)
     return __wrap_malloc(n);
+  if (IS_ARENA(p))
+    return NULL;
   if (!in_zone(p))
     return __real_realloc(p, n);
-  if (p == (void*)ARENA)
-    return NULL;
   i = lent_slot(p);
   old = i >= 0 ? Z.lent[i].size : *((uint32_t*)p - 2);
   q = __wrap_malloc(n);
