@@ -393,7 +393,7 @@ The tables above score the **top-edge** window (lines 261-35). The owner's zero-
 | DMA writes to other display registers in the band | Harmless: the strip replaces whole lines |
 | FIFO capture / DMA mode 4 | Fail. None of the 45 titles uses them |
 
-Produced by  from the same logs; no new emulator runs.
+Produced by `tests/display-survey/bottom_band.py gameplay_final.tsv runs3 runs3t` from the same logs; no new emulator runs.
 
 **Accuracy:** "raster IRQs in band on N% of frames" uses the run's count of frames with any H-Blank/VCOUNT IRQ, gated on there being any in the band. It is an upper bound for titles whose raster IRQs sit mostly outside the band.
 
@@ -449,6 +449,6 @@ Bottom-edge strip: 20 of 27 titles that reached play are compatible (74%); 45 ti
 
 
 **Still needed before any title is on the allow list:**
-- **The game must be waiting for VBlank by line 156 on most frames.** That comes from idle-coverage's census ( per frame).
+- **The game must be waiting for VBlank by line 156 on most frames.** That comes from idle-coverage's census (`wait_line` per frame).
 - **Titles without the SDK idle-thread wait get nothing today:** Golden Sun DD, the Sonic games and RE:DS (perf session), whatever their row says here.
 - **Kirby Super Star Ultra,** our main test game, has raster IRQs in the band on every frame, so the bottom strip would never show there. Its test value for the strip is nil.
