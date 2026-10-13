@@ -42,7 +42,7 @@ Playing
   achievements. Hardcore needs an online start.
 - When you unlock an achievement, the Wi-Fi light blinks three times.
 - In-game menu (L + DOWN + SELECT) > "Achievements..." shows the game,
-  hardcore or softcore, your progress and this session's unlocks.
+  hardcore or casual, your progress and this session's unlocks.
 - Settings: press A on the game in TWiLight Menu++, then hold SELECT.
   You can turn achievements off, switch hardcore on or off, or log out.
 
@@ -50,7 +50,10 @@ Hardcore (on by default) follows RetroAchievements' rules. RetroAchievements
 hasn't approved DScheevos yet, so it counts your hardcore unlocks as softcore.
 The launcher and the in-game menu say so ("Rules on, RA counts as softcore"). While a
 hardcore session runs, nds-bootstrap's cheats, RAM viewer, RAM dump and
-the slow-motion refresh rates are off. RAM dump is off in softcore too,
+the slow-motion refresh rates are off, and only nds-bootstrap's built-in
+AP fixes apply (files in _nds/nds-bootstrap/apFix/ are ignored; a game
+that has only such a file can be played in Casual). Casual is
+RetroAchievements' name for softcore. RAM dump is off in Casual too,
 since the dump would hold your login token.
 
 
