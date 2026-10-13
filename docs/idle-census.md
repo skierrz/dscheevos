@@ -12,7 +12,7 @@ sometimes the first scene); "gameplay" = the idle-budget input scripts (tests/pe
 |---|---:|---|
 | `oshalt`: the SDK idle thread's `OS_Halt` (the module's hook) | 53 | idle time (as designed) |
 | `bios`: SWI 5 `SVC_WaitVBlankIntr` on the game's main thread | 9 | **nothing** |
-| `busy`: never halts (own scheduler / poll loop) | 2 | **nothing** |
+| `busy`: never halts (own scheduler / poll loop) | 2 (+ Diddy Kong Racing in its 3D engine) | **nothing** |
 
 - BIOS waits occur **only in NitroSDK 2.x games** (9 of the 14 SDK 2.x ROMs: Sonic Rush, RE: Deadly Silence,
   Children of Mana, Kirby Canvas Curse, M&L Partners in Time, Metroid Prime Pinball, Pac'n Roll, Pokemon Ranger,
@@ -25,8 +25,13 @@ sometimes the first scene); "gameplay" = the idle-budget input scripts (tests/pe
   (Metroid Prime Pinball reaches it through a register branch), so the hook must sit on the wrapper.
 - The module's idle-loop check (call followed by `b` back to it) accepts every OS_Halt game measured (incl. NSMB and
   Animal Crossing, whose idle loop runs from ITCM). Legendary Starfy has 2% of halted time in OS_Halt from another caller.
-- Half-busy in the menu run (need gameplay runs): Diddy Kong Racing (35% halted), LEGO Star Wars (33%),
-  M&L Bowser's Inside Story (38%), 999 (42%), Animal Crossing (46%).
+- Longer runs (8,000 intervals, generic script): **Diddy Kong Racing never halts in its 3D engine** (intervals
+  3000-7000: 0% halted): a game thread spins `for(;;) consume(obj)` on a ring buffer's read/write indices
+  (0x0201A344 / 0x0201A294), so the SDK idle thread never runs. It is a third busy engine (SDK 3.x), invisible in the
+  menu run, so menu-only classifications can miss gameplay-only busy loops and the busy estimate is a floor.
+  LEGO Star Wars (44% halted), M&L Bowser's Inside Story (18% halted but OS_Halt in 95% of intervals), 999 (67%),
+  Trauma Center (61%), WarioWare Touched (71%): OS_Halt, no BIOS waits in their later scenes. Code Lyoko: busy
+  throughout (`flag=0; while(!flag) poll(obj);` at 0x020571CC).
 - SDK 2.x games that idle in OS_Halt in menus but have direct SWI 5 callers (gameplay may differ):
   Trauma Center, WarioWare Touched, Mario Kart DS / Animal Crossing (SDK 3.0 RC; MKDS race: OS_Halt).
 - RetroAchievements: 681 DS games with sets (580 not hacks/demos); 538 matched to No-Intro serials: A 178,
