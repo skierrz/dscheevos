@@ -1,5 +1,7 @@
 # DScheevos
 
+> **Work in progress.** DScheevos is under active development and isn't ready to use yet: no release, not approved by RetroAchievements (until it is, the server records every unlock as softcore), and its methods and measurements are still changing.
+
 RetroAchievements for DS games on a DSi (and 3DS in DSi mode), on the console itself, without emulation. Games start from TWiLight Menu++ through a DScheevos build of nds-bootstrap; achievements are checked every frame in the game's idle time.
 
 > **Status: test builds, not yet tried on a real DSi.** In the emulator test bench, the whole flow works: session start over HTTPS, per-frame evaluation, unlocks sent during play, the in-game achievements page and the hardcore lockouts. Dropped Wi-Fi rejoins by itself, with the module's own WPA2 handshake. The open item is testing on real hardware (see `docs/architecture.md`). See `release/README.txt` for what a build can do.
