@@ -18,7 +18,8 @@
 # Optional: LAUNCHER (default: the repo's), MODE=hc|casual (default hc).
 # Usage: lockdown.sh CASE...   cases: ips bin widecheat srl cache stale wipe
 #                                     launcher-ips launcher-builtin launcher-donor
-# Wrap it in emu-lock: it runs one emulator at a time.
+# Wrap it in emu-lock: it runs one emulator at a time. (Variables set for one
+# call go in a subshell: sh keeps assignments made before a function call.)
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$here/../..
@@ -82,30 +83,30 @@ for c in "$@"; do
   w=$(mktemp -d)
   case "$c" in
   ips|bin|widecheat)
-    boot "$w" 1500 "setup-$c"
+    boot "$w" 1800 "setup-$c"
     echo "$c ($mode): $(marker "$w/ram.bin"); $(used "$w")" ;;
   srl)
     : "${SRL:?srl needs SRL=file.nds}"
     rom=$w/rom.nds; cp "$ROM" "$rom"
     size=$(wc -c < "$rom"); SRL_OFFSET=$(( (size + 0x1FF) / 0x200 * 0x200 )); export SRL_OFFSET
     dd if=/dev/zero bs=1 count=$((SRL_OFFSET - size)) >> "$rom" 2>/dev/null; cat "$SRL" >> "$rom"
-    ROM=$rom boot "$w" 1500 setup-srl
+    (ROM=$rom; boot "$w" 1800 setup-srl)
     tid=$(python3 -c 'import sys; d=open(sys.argv[1],"rb").read(); print(d[0x7FFE0C:0x7FFE10])' "$w/ram.bin" 2>/dev/null)
     echo "srl ($mode): booted header TID $tid (the ROM's is YKWE); $(used "$w")" ;;
   cache)
-    boot "$w" 1200                                   # makes the cache for this game
+    boot "$w" 1800                                   # makes the cache for this game
     rm -f "$w/sd/_nds/dscheevos/session.used" "$w/ram.bin"
-    boot "$w" 1500 setup-cache
+    boot "$w" 1800 setup-cache
     echo "cache ($mode): $(grep '^cache:' "$w/out.txt"); card read patch at the marker: $(python3 -c 'import sys; d=open(sys.argv[1],"rb").read(8); print("yes, game code overwritten" if d[4:8]!=bytes.fromhex("ffdeffe7") else "no")' "$w/ram.bin")" ;;
   stale)  # a session written an hour ago, as a saved copy would be
-    EXTRA_SESSION_ARGS="--unix-time $(python3 -c 'import calendar,time; print(calendar.timegm(time.localtime()) - 3600)')" boot "$w" 1200
+    (EXTRA_SESSION_ARGS="--unix-time $(python3 -c 'import calendar,time; print(calendar.timegm(time.localtime()) - 3600)')"; boot "$w" 1800)
     echo "stale ($mode): $(used "$w")" ;;
   wipe)
-    boot "$w" 1200
+    boot "$w" 1800
     echo "wipe ($mode): $(used "$w"), session.used starts $(head -c 8 "$w/sd/_nds/dscheevos/session.used" 2>/dev/null | xxd -p)" ;;
   launcher-ips)
     : "${ROM_USERONLY:?launcher-ips needs ROM_USERONLY}"
-    ROM=$ROM_USERONLY lboot "$w" 2400 setup-ips
+    (ROM=$ROM_USERONLY; lboot "$w" 2400 setup-ips)
     echo "launcher-ips (asked $mode): $(marker "$w/ram.bin"); server session $(server_mode "$w"); launcher: $(grep -h 'apfix' "$w/sd/_nds/dscheevos/launcher.log" 2>/dev/null | head -1)" ;;
   launcher-builtin)
     lboot "$w" 2400 setup-ips
@@ -113,7 +114,7 @@ for c in "$@"; do
   launcher-donor)  # the ROM's header made to look like the Yoshi's Island DS build that uses a donor
     rom=$w/ayi.nds; cp "$ROM" "$rom"
     python3 -c 'import struct,sys; f=open(sys.argv[1],"r+b"); f.seek(0xC); f.write(b"AYIE"); f.seek(0x3C); f.write(struct.pack("<I",0x25F70))' "$rom"
-    ROM=$rom lboot "$w" 1200 setup-donor
+    (ROM=$rom; lboot "$w" 1800 setup-donor)
     echo "launcher-donor (asked $mode): server session $(server_mode "$w"); launcher: $(grep -h 'donor' "$w/sd/_nds/dscheevos/launcher.log" 2>/dev/null | head -1)" ;;
   *) echo "unknown case $c" ;;
   esac
