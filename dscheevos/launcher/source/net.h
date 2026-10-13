@@ -3,6 +3,7 @@
 #define DSC_NET_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 /* Connects with the access points saved in the console's settings. Uses the
  * DSi's own Wi-Fi (WPA2) when available. Returns 0 when online. */
@@ -27,6 +28,10 @@ typedef struct http_response_t {
 } http_response_t;
 
 void http_set_user_agent(const char* user_agent);
+/* The console clock minus UTC in quarter hours, from the last server reply's
+ * Date header. Returns 0 if no reply had one (or the clock is off by more
+ * than any time zone). */
+int net_clock_offset_q(int8_t* offset_q);
 /* POST (or GET when post is NULL). http:// and https:// URLs. */
 void http_request(const char* url, const char* post, const char* content_type, http_response_t* out);
 void http_free(http_response_t* r);
