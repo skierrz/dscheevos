@@ -87,12 +87,13 @@ Bench runs on the test account, per `tests/real/README.md` (melonDS, Tetris DS (
 
 | Date | Build | Run | Result |
 |---|---|---|---|
-| 2026-10-12 | `ra-compliance` before merge (same tests/real) | 1. `--check` | pass: `login2` answered HTTP 401 over TLS (run by ra-compliance) |
+| 2026-10-12 | perf | 1. `--check` | **pass**: `login2` answered HTTP 401 over TLS (also passed in ra-compliance's own run before the merge) |
 | 2026-10-12 | perf `390202f` | 2. spectator | **pass**: `login2`, `achievementsets` HTTP 200, no `startsession`; 230051 unlocked locally at game frame 972, 0 sent; hardcore state 2 (the server's warning entry seen); 0 frames dropped; nothing new on the website |
 | 2026-10-12 | perf `390202f` | 3. live | **pass**: `login2`, `achievementsets`, `startsession` HTTP 200; 230051 unlocked at game frame 852 and sent (1 sent); the website shows exactly that one unlock, **as casual**, as expected for an unrecognised client, and Tetris DS as last played; 0 frames dropped; no token in any log |
 | | | 4. clean-up | owner's step; not reported |
+| 2026-10-12 | perf `c08df65` | 6. rich presence (`FRAMES=12000`) | **pass**: `login2`, `achievementsets`, `startsession` HTTP 200; pings carried the set's own line and the profile showed "Standard \| Marathon \| Score: 60 \| Lines Cleared: 0" for Tetris DS; 9,544 frames evaluated, 0 dropped. 230051 unlocked again locally (game frame 1272) and the server answered "User already has this achievement unlocked": no second unlock, no hardcore credit (progress hadn't been reset after step 3) |
 
-Not covered yet: rich presence (the live run's game part was about 35 s, under the first 2-minute ping): see step 6 of the README. Offline-queue timing: see "Open" below.
+Not covered yet: offline-queue timing (see "Open" below).
 
 ## Open
 
