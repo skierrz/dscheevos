@@ -7,7 +7,7 @@ Drafted 2026-10-11 (questions 1-13, first draft in `docs/overlay-research.md`), 
 **On hold (owner, 2026-10-12):** don't send these until DScheevos is ready to show RA in full. Keep them current in the meantime.
 
 **Before sending**, check that these statements are true of the build (fixes assigned 2026-10-12, see `docs/compliance.md`):
-- Q10: the hardcore fixes from the 2026-10-12 audit have landed (`docs/compliance.md`, "Audit 2026-10-12": user patch files, widescreen code file, soft-reset boot file, patch offset cache, donor ARM7, session replay), and the 133 MHz / VRAM boost options are forced off in DScheevos sessions.
+- Q10: the hardcore fixes from the 2026-10-12 audit have landed (`docs/compliance.md`, "Audit 2026-10-12": user patch files, widescreen code file, soft-reset boot file, patch offset cache, donor ARM7, session replay), and the owner has ruled on the player-chosen 133 MHz / VRAM speed options in hardcore (Q10 says what applies).
 - Q2: the UI says "Casual" (RA's current word), not "Softcore".
 - The owner has ruled on the decisions behind Q8, Q11 and Q14 (or wants RA's view first: then send as is).
 
@@ -124,7 +124,7 @@ DScheevos gets its spare time from the NitroSDK idle thread's `OS_Halt`. Some ga
 
 ### 10. nds-bootstrap options
 
-In a hardcore session DScheevos blocks: cheats (TWiLight's cheat list and nds-bootstrap's widescreen code file), the in-game RAM viewer (it can edit memory), the RAM dump, refresh rates below 60 Hz (slow motion), user-supplied patch files for the game, and booting anything but the hashed game. The console always runs at the DS's own speed: nds-bootstrap's options to run the DSi's ARM9 at 133 MHz or speed up VRAM are forced off in DScheevos sessions, since they shorten a game's own slowdown. It keeps nds-bootstrap's built-in compatibility patches (anti-piracy fixes, save fixes) that games need to run, button remapping (no turbo) and screen swap. nds-bootstrap has no save states, rewind, fast-forward, frame advance or input playback.
+In a hardcore session DScheevos blocks: cheats (TWiLight's cheat list and nds-bootstrap's widescreen code file), the in-game RAM viewer (it can edit memory), the RAM dump, refresh rates below 60 Hz (slow motion), user-supplied patch files for the game, and booting anything but the hashed game. nds-bootstrap's options to run the DSi's ARM9 at 133 MHz or speed up VRAM (they shorten a game's own slowdown) are pending an owner ruling; this paragraph must state that ruling before sending. It keeps nds-bootstrap's built-in compatibility patches (anti-piracy fixes, save fixes) that games need to run, button remapping (no turbo) and screen swap. nds-bootstrap has no save states, rewind, fast-forward, frame advance or input playback.
 
 **Ask:** anything else to block in hardcore?
 
