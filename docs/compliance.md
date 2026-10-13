@@ -113,6 +113,25 @@ Owner principle (2026-10-12): casual is first-class, "essentially RAproxy with o
 | Casual to hardcore mid-session | not possible | the mode is chosen before launch; hardcore to casual (allowed) happens only on a dropped frame, if ruled |
 | Starting a game offline | **not supported**: the launcher needs the internet at every start | "offline achievements" in the owner's sense needs this. Compliant shape, if built: casual only; the set from the last online start of that exact ROM hash, kept on SD; unlocks journalled with their real times and sent at the next online start (rc_client's `seconds_since_unlock`); the in-game menu says "offline". Hardcore stays online-only. Needs a design (owner) |
 
+## Notice settings (display's per-notice switches)
+
+Question (2026-10-12, from `docs/display-settings.md`): may the player switch off the Measured (progress) and Trigger (challenge) indicators in hardcore, given section A says they "must be ... displayed during gameplay when appropriate conditions are met"?
+
+**What RetroArch does** (RA-validated for hardcore; source on `master`, `cheevos/cheevos.c` at `d3b50802c2`, 2026-10-09):
+- `cheevos_challenge_indicators` and `cheevos_visibility_progress_tracker` are plain on/off settings; the progress tracker defaults to on (`config.def.h`: `DEFAULT_CHEEVOS_VISIBILITY_PROGRESS_TRACKER true`).
+- The menu lists both in the achievements visibility page with no hardcore condition (`menu/menu_displaylist.c`, `DISPLAYLIST_CHEEVOS_VISIBILITY_SETTINGS_LIST`).
+- The handlers draw the indicator only if the setting is on, with no hardcore check (`rcheevos_challenge_started`, `rcheevos_progress_updated`). The same holds for unlock, mastery and leaderboard visibility.
+
+So RA's own validation accepts that the client shows the indicators by default and lets the player hide them, in hardcore too. Our reading: the requirement is on the client (it must be able to show them, correctly, when the conditions are met), not a ban on the player hiding them.
+
+**Behaviour to build:**
+- Every notice and indicator can be switched individually, as RetroArch does. Measured and Trigger indicators are **on by default**, and a reset to defaults turns them back on.
+- Switching them off is allowed in hardcore and casual alike. In hardcore the settings page says what is hidden ("Challenge indicators: off").
+- The in-game menu's achievement pages always show active challenges and measured progress, whatever the settings: the list part of the requirement ("visible in the achievement list") can't be switched off.
+- If RA ever objects (the questions are on hold), the fallback is one line: force these two on in hardcore.
+
+**LED cues and the requirement.** On the strict reading, "displayed during gameplay" means shown on screen with what it refers to. An LED (the Wi-Fi LED blink or hold, or a power-LED colour via BPTWL 63h, such as purple while a challenge is active) says that something is happening, not which achievement. So an LED **does not count** toward the requirement on its own. It is a welcome extra, alongside the on-screen indicator or when the player has hidden it. For the power LED: restore its normal state when the game exits or resets, and never cover the low-battery red: low battery always wins, so a player isn't misled about power. Both are display's to implement.
+
 ## Request options
 
 | Option | What it sends | Strict reading | Result |
