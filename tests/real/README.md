@@ -16,7 +16,7 @@ The work directory holds the token in its `dscheevos.ini` and a 450-650 MB SD im
 
 ## Bench run on the test account (owner)
 
-Two runs on the test account with Tetris DS: a spectator run that sends nothing, then a live run that earns one 1-point achievement for real. `tetris-marathon.txt` starts Standard > Marathon and taps rotate on every piece, which earns "Yep, It Ain't Moving" (achievement 230051, "[Standard - Marathon] Attempt to rotate a Square Block") within the first pieces. It was checked against the mock server with the real set.
+Two runs on the test account with Tetris DS: a spectator run that sends nothing, then a live run that earns one 1-point achievement for real. `tetris-marathon.txt` starts Standard > Marathon and taps rotate on every piece, which earns "Yep, It Ain't Moving" (achievement 230051, "[Standard - Marathon] Attempt to rotate a Square Block") within the first pieces. **Not ready yet:** `tetris-marathon.txt` is still being written and checked against the mock server with the real set; don't run steps 2-3 until it is in the repo.
 
 Expected results are fixed here, before the runs. Until RetroAchievements validates DScheevos, the server adds its "Warning: Unknown Emulator" entry to the set and files hardcore unlocks as casual: that is the expected result, not a failure.
 
