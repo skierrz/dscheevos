@@ -1,4 +1,5 @@
 #include "net.h"
+#include "clock.h"
 #include "tls.h"
 #include "inflate.h"
 
@@ -12,6 +13,7 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/socket.h>
+#include <time.h>
 #include <unistd.h>
 
 #define MAX_BODY (1024 * 1024)
@@ -20,6 +22,28 @@ static char g_user_agent[128] = "DScheevos";
 static const char* g_error = "";
 
 const char* net_error(void) { return g_error; }
+
+/* The console clock's offset from UTC, from the last server reply's Date. */
+static int8_t g_offset_q;
+static int g_offset_valid;
+
+int net_clock_offset_q(int8_t* offset_q)
+{
+  if (g_offset_valid)
+    *offset_q = g_offset_q;
+  return g_offset_valid;
+}
+
+static void note_date(const char* headers)
+{
+  const char* d = strstr(headers, "\r\ndate:");
+  uint32_t utc;
+  int8_t q;
+  if (d && clock_parse_http_date(d + 7, &utc) && clock_offset_q((uint32_t)time(NULL), utc, &q)) {
+    g_offset_q = q;
+    g_offset_valid = 1;
+  }
+}
 
 static net_ap_t g_ap;
 static int g_ap_valid;
@@ -279,6 +303,7 @@ void http_request(const char* url, const char* post, const char* content_type, h
     /* headers are case-insensitive */
     char* h;
     for (h = raw; *h; h++) *h = (char)tolower((unsigned char)*h);
+    note_date(raw);
     if (strstr(raw, "\r\ntransfer-encoding: chunked"))
       out->length = dechunk(body, out->length);
     /* asked for: an achievement set compresses about tenfold */
