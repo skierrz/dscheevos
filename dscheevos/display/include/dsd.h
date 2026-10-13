@@ -48,6 +48,7 @@ enum {                                /* scene item kinds */
 };
 
 enum { DSD_PHASE_IN = 0, DSD_PHASE_HOLD, DSD_PHASE_OUT };
+enum { DSD_SIDE_LEFT = 0, DSD_SIDE_RIGHT };  /* the strip is full-width; this mirrors its layout */
 
 typedef struct dsd_item_t {
   uint8_t kind;                       /* DSD_ITEM_* */
@@ -81,6 +82,7 @@ typedef struct dsd_config_t {
   dsd_text_fn text;
   void* text_ctx;
   dsd_badge_fn badge;                 /* 0 = icons only (phase 1) */
+  uint8_t side;                       /* DSD_SIDE_*: which side the badge and text sit on */
   void* badge_ctx;
   uint8_t hardcore;                   /* accent colour */
 } dsd_config_t;
