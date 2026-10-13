@@ -13,7 +13,9 @@
 #   PORT (mock server, default 8453), PCS=file (the VBlank call by PC and its cache misses,
 #   achievements on, see the runner's --profile-pcs).
 #   MODES="on" (skip the stock run; the comparison table needs both),
-#   EXTRA_ARGS (more runner arguments, both runs).
+#   EXTRA_ARGS (more runner arguments, both runs), GAMEPCS=prefix (the game's extra cycles from
+#   sharing the caches, by PC: prefix.on.csv/.off.csv), ARM7=prefix (ARM7 cycles by PC block),
+#   SKIP=N (game-cost table: leave out the first N intervals), PROFDIR=dir (keep each run's profile log as dir/prof.off.csv and prof.on.csv).
 # Needs what tests/launcher/run.sh needs (DSI_FILES, BOOTSTRAP, RUNNER). Runs the
 # emulator twice, one after the other; don't run other emulator tests meanwhile.
 set -eu
@@ -46,11 +48,14 @@ for mode in ${MODES:-off on}; do
   mkdir -p "$work"
   enabled=0; [ $mode = on ] && enabled=1
   extra=${EXTRA_ARGS:-}
-  [ $mode = on ] && [ -n "${PCS:-}" ] && extra="--profile-pcs $PCS"
+  [ $mode = on ] && [ -n "${PCS:-}" ] && extra="$extra --profile-pcs $PCS"
+  [ -n "${GAMEPCS:-}" ] && extra="$extra --profile-game-pcs $GAMEPCS.$mode.csv"
+  [ -n "${ARM7:-}" ] && extra="$extra --profile-arm7 $ARM7.$mode.csv"
   echo "== $(basename "$rom"): achievements $mode"
   PORT=${PORT:-8453} ENABLED=$enabled ROM=$rom WORK=$work SCRIPT=$script RUNNER_ARGS="$args --profile-log $work/prof.csv $extra" \
     "$repo/tests/launcher/run.sh" "$set" $((frames + ${BOOT_FRAMES:-6000})) > "$work/run.out" 2>&1 || true
-  grep "^\[prof\]\|^\[runner\]" "$work/runner.log" || { echo "no profile; see $work/run.out"; exit 1; }
+  grep "^\[prof\]\|^\[runner\]\|^\[game\]\|^\[arm7\]\|^\[cache\]" "$work/runner.log" || { echo "no profile; see $work/run.out"; exit 1; }
+  [ -z "${PROFDIR:-}" ] || cp "$work/prof.csv" "$PROFDIR/prof.$mode.csv"
   if [ $mode = on ]; then
     [ -f "$work/sd/_nds/dscheevos/session.used" ] || { echo "FAIL: nds-bootstrap didn't use the session"; exit 1; }
     grep -q "OS_Halt ->" "$work/runner.log" || { echo "FAIL: no module in RAM"; exit 1; }
@@ -89,4 +94,9 @@ print("\n%-31s %-34s %s" % ("", "achievements off", "achievements on"))
 for i, name in enumerate(names):
     print("%-31s %-34s %s" % (name, cols["off"][i], cols["on"][i]))
 print("(cycles at 67 MHz per VBlank interval; percentages of a frame)")
+
 EOF
+if [ -f "$top/off/prof.csv" ] && [ -f "$top/on/prof.csv" ] && head -1 "$top/on/prof.csv" | grep -q ",game,"; then
+  echo
+  python3 "$here/gamecost.py" ${SKIP:+--skip $SKIP} "$top/off/prof.csv" "$top/on/prof.csv"
+fi
