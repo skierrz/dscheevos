@@ -5,6 +5,7 @@
  * writes the session file, then boots the DScheevos nds-bootstrap, which
  * reads the same ini and loads the module with the session.
  */
+#include "apfix.h"
 #include "chainload.h"
 #include "config.h"
 #include "log.h"
@@ -24,6 +25,16 @@
 static dsc_settings_t settings;
 static char rom_path[256];
 static int wifi_started;   /* net_connect ran: DSWiFi is up and must be stopped */
+static int saved_hardcore = -1;   /* hardcore turned off for this game only (AP-fix) */
+
+/* Saves the settings, but not a hardcore setting changed for this game only. */
+static void save_settings(void)
+{
+  dsc_settings_t s = settings;
+  if (saved_hardcore >= 0)
+    s.hardcore = saved_hardcore;
+  settings_save(&s);
+}
 
 static const char* basename_of(const char* path)
 {
@@ -97,7 +108,7 @@ static int log_in(void)
     r = session_login(&settings, password, &error);
     memset(password, 0, sizeof(password));
     if (r == SESSION_OK) {
-      settings_save(&settings);
+      save_settings();
       ui_status("Logged in.");
       return 1;
     }
@@ -122,6 +133,31 @@ static unsigned send_pending(const char* hash)
   return p.this_game;
 }
 
+/* Hardcore uses only nds-bootstrap's built-in AP-fix patches: nds-bootstrap
+ * ignores user files in _nds/nds-bootstrap/apFix/ then. If only a user file
+ * would get this game past its anti-piracy checks, hardcore would boot it
+ * unpatched, so it isn't offered: Casual (with the user file) or no
+ * achievements. */
+static void check_apfix(void)
+{
+  char name[64];
+  int r = apfix_check(rom_path, BOOTSTRAP_PATH, name, sizeof(name));
+  if (r == APFIX_NONE)
+    return;
+  if (r == APFIX_BUILTIN) {
+    log_line("apfix: hardcore, built-in fix used, apFix/%s ignored", name);
+    ui_status("Hardcore uses the built-in AP\n fix, not apFix/%.15s", name);
+    return;
+  }
+  log_line("apfix: apFix/%s and no built-in fix: no hardcore", name);
+  ui_status("\x1b[33;1mAP fix: apFix/%.16s\x1b[39;0m", name);
+  if (ui_choose("This game has its own AP-fix\n file in nds-bootstrap/apFix/\n and no built-in fix. Hardcore\n can't use it: remove it to play\n in Hardcore.",
+                "Play in Casual", "Play without achievements") == 'B')
+    boot_game(0);
+  saved_hardcore = settings.hardcore;
+  settings.hardcore = 0;
+}
+
 static void settings_menu(void)
 {
   for (;;) {
@@ -129,7 +165,7 @@ static void settings_menu(void)
     ui_clear_bottom();
     ui_bottom("\n Settings\n\n");
     ui_bottom(" \x1b[32;1mA\x1b[39;0m  Achievements: %s\n", settings.enabled ? "on" : "off");
-    ui_bottom(" \x1b[32;1mX\x1b[39;0m  Hardcore: %s\n", settings.hardcore ? "on" : "off");
+    ui_bottom(" \x1b[32;1mX\x1b[39;0m  Hardcore: %s\n", settings.hardcore ? "on" : "off (Casual)");
     ui_bottom(" \x1b[32;1mR\x1b[39;0m  Send unlocks during play: %s\n",
               settings.hardcore ? "on (hardcore)" : settings.live ? "on" : "off");
     ui_bottom(" \x1b[32;1mY\x1b[39;0m  Log out%s%s\n", settings.username[0] ? " " : "", settings.username);
@@ -185,6 +221,8 @@ int main(int argc, char** argv)
     ui_wait("Couldn't read the game file.", 120);
     boot_game(0);
   }
+  if (settings.hardcore)
+    check_apfix();
 
   for (;;) {
     session_info_t info;
@@ -220,9 +258,9 @@ int main(int argc, char** argv)
       snprintf(line, sizeof(line), "%u/%u achievements, %u/%u pts", info.unlocked, info.achievements,
                info.points_unlocked, info.points_total);
       ui_header(info.game_title, line);
-      ui_status("%s%s (%u pts)%s", settings.hardcore ? "\x1b[31;1mHARDCORE\x1b[39;0m  " : "Softcore  ",
+      ui_status("%s%s (%u pts)%s", settings.hardcore ? "\x1b[31;1mHARDCORE\x1b[39;0m  " : "Casual  ",
                 info.display_name, info.score,
-                !settings.hardcore ? "" : info.hardcore_refused ? "\n Rules on, RA counts as softcore" : "\n Not yet confirmed by RA");
+                !settings.hardcore ? "" : info.hardcore_refused ? "\n Rules on, RA counts as Casual" : "\n Not yet confirmed by RA");
       if (settings.spectator)
         ui_status("\x1b[33;1mSpectator: nothing is sent\x1b[39;0m");
       log_line("session: started%s", settings.spectator ? ", spectator" : "");
@@ -245,7 +283,7 @@ int main(int argc, char** argv)
     if (r == SESSION_LOGIN_FAILED) {
       ui_status("\x1b[31;1m%s\x1b[39;0m", error);
       settings.token[0] = '\0';
-      settings_save(&settings);
+      save_settings();
       continue;
     }
     ui_status("\x1b[31;1m%s\x1b[39;0m", error);
