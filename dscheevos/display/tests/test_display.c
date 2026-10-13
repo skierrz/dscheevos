@@ -359,11 +359,14 @@ static void sheet_add(const uint16_t* px, int h) {
   sheet_y += h + 4;
 }
 
+static int case_side;                 /* DSD_SIDE_* for render_case */
+
 static void render_case(const char* name, uint8_t notice, uint32_t id, int32_t value, uint16_t more,
                         int h, int hardcore) {
   dsd_t d;
   reset_notices();
   init(&d, hardcore);
+  d.cfg.side = (uint8_t)case_side;
   raise_notice(notice, id, value);
   dsd_ingest(&d, &notices);
   if (more) d.queue[0].more = more;
@@ -378,6 +381,7 @@ static void render_case(const char* name, uint8_t notice, uint32_t id, int32_t v
   dsd_t d2;
   reset_notices();
   init(&d2, hardcore);
+  d2.cfg.side = (uint8_t)case_side;
   raise_notice(notice, id, value);
   dsd_ingest(&d2, &notices);
   if (more) d2.queue[0].more = more;
@@ -411,6 +415,11 @@ static void test_goldens(void) {
   render_case("compact_unlock", DSCM_NOTICE_UNLOCK, 101, 10, 0, 16, 1);
   render_case("compact_progress", DSCM_NOTICE_PROGRESS, 105, 0, 0, 16, 1);
   render_case("compact_long", DSCM_NOTICE_UNLOCK, 103, 100, 0, 16, 1);
+  case_side = DSD_SIDE_RIGHT;
+  render_case("right_unlock", DSCM_NOTICE_UNLOCK, 101, 10, 0, 32, 1);
+  render_case("right_progress", DSCM_NOTICE_PROGRESS, 105, 0, 0, 32, 1);
+  render_case("right_compact", DSCM_NOTICE_UNLOCK, 101, 10, 0, 16, 1);
+  case_side = DSD_SIDE_LEFT;
 
   char path[512];
   snprintf(path, sizeof(path), "%s/sheet.png", out_dir);
