@@ -3043,6 +3043,11 @@ void dsc_http_done(void* handle, int http_status, const char* body, size_t body_
   S.http_ready++;
 }
 
+int dsc_work_pending(void)
+{
+  return S.initialized && (Q.frames != Q.taken || S.slot_tail != S.slot_head || S.http_ready);
+}
+
 void dsc_get_stats(dsc_stats_t* stats)
 {
   if (S.initialized)
