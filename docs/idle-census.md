@@ -45,7 +45,37 @@ sometimes the first scene); "gameplay" = the idle-budget input scripts (tests/pe
   in the boot frames (the census counts from the game header's appearance, which can precede the game's start by a
   few hundred frames), not a gameplay cost (eval-speed). Hot-PC/busy sums over whole runs include those frames.
 
-## Per ROM
+## The owner's 19 new dumps (2026-10-13; --thumb-cycle runner, 8,000 intervals of the generic script)
+
+The SDK 2.x prediction holds: 8 of the 9 new SDK 2.x titles wait in the BIOS (Brain Training is the exception, OS_Halt),
+none of the SDK 3.x+ titles do. Lost in Blue has no static caller of the wrapper (reached indirectly) but waits
+there 100%, so the hook must sit on the wrapper, not the callers. Mega Man ZX (SDK 3.0) never halts: a fourth busy
+engine. Totals over 83 ROMs: 62 OS_Halt, 17 BIOS (all SDK 2.x), 4 busy (Golden Sun DD, Code Lyoko, Diddy Kong
+Racing's 3D engine, Mega Man ZX). Worst windows below are over whole runs incl. boot and menus.
+
+| Game | code | SDK | class | busy | halted OS_Halt / BIOS | static SWI5 callers | main halt site | worst 1024-window: ARM9 halted / ARM7 halted |
+|---|---|---|---|---|---|---|---|---|
+| Castlevania - Dawn of Sorrow (USA) | ACVE | 02007532 | bios | 12% | 0 / 87 % | 37 | SWI5 VBlankIntrWait pc 020001fa lr 02000c10 | 68% / 75% |
+| Lost in Blue (Europe) (En,Fr,De,Es,It) | ASKP | 02005015 | bios | 29% | 0 / 70 % | 0 | SWI5 VBlankIntrWait pc 020005f2 lr 02001284 | 46% / 71% |
+| Lunar - Genesis (Europe) | ALUP | 02007533 | bios | 7% | 0 / 93 % | 9 | SWI5 VBlankIntrWait pc 0200078e lr 02001044 | 74% / 76% |
+| Meteos (Europe) (En,Fr,De,Es,It) | AMTP | 02007533 | bios | 23% | 0 / 76 % | 8 | SWI5 VBlankIntrWait pc 02000710 lr 02004df4 | 53% / 82% |
+| Pokemon Dash (Europe) (En,Fr,De,Es,It) | APDP | 02004f4c | bios | 32% | 0 / 61 % | 4 | SWI5 VBlankIntrWait pc 0200050e lr 02076960 | 55% / 69% |
+| Polarium (USA, Australia) | ASNE | 02004f4c | bios | 11% | 0 / 87 % | 45 | SWI5 VBlankIntrWait pc 0200052e lr 020043d8 | 70% / 72% |
+| Ridge Racer DS (USA, Europe) | ARRE | 02004e89 | bios | 26% | 0 / 72 % | 5 | SWI5 VBlankIntrWait pc 020041c4 lr 02042aec | 55% / 78% |
+| Zoo Keeper (Europe) (En,Fr,De,Es,It) | AZKP | 02004fb1 | bios | 3% | 0 / 96 % | 1 | SWI5 VBlankIntrWait pc 02000722 lr 02003090 | 80% / 80% |
+| Mega Man ZX (Europe) (En,Ja,Fr,De,Es,It) | ARZP | 03007532 | busy | 95% | 0 / 0 % | 0 | OS_Halt pc 020aab54 lr 020a8bac | 0% / 62% |
+| 42 All-Time Classics (Europe) (En,Fr,De,Es,It) | ATDP | 03017532 | oshalt | 27% | 73 / 0 % | 0 | OS_Halt pc 02060c5c lr 0205ec29 | 43% / 47% |
+| Animal Crossing - Wild World (Europe) (En,Fr,De,Es,It) (Wii U Virtual Console) | ADMP | 030028a0 | oshalt | 34% | 66 / 0 % | 1 | OS_Halt pc 01ffa3c4 lr 01ffa4fc | 18% / 50% |
+| Castlevania - Order of Ecclesia (Europe) (En,Fr,De,Es,It) | YR9P | 04017533 | oshalt | 44% | 53 / 0 % | 0 | OS_Halt pc 02008220 lr 020068d8 | 50% / 82% |
+| Dr Kawashima's Brain Training - How Old Is Your Brain (Europe) (En,Fr,De,Es,It,Nl) | ANDP | 02017532 | oshalt | 9% | 91 / 0 % | 0 | OS_Halt pc 02006f04 lr 02005314 | 75% / 77% |
+| Final Fantasy III (Europe) (En,Fr,De,Es,It) | AFFP | 03017531 | oshalt | 52% | 45 / 0 % | 0 | OS_Halt pc 0204b178 lr 02048ac4 | 42% / 63% |
+| Final Fantasy IV (Europe) (En,Fr,De,Es,It) | YF4P | 03027532 | oshalt | 43% | 55 / 0 % | 0 | OS_Halt pc 02008900 lr 020065c4 | 19% / 72% |
+| Metroid Prime - Hunters (Europe) (En,Fr,De,Es,It) (Rev 1) | AMHP | 03004e86 | oshalt | 30% | 68 / 0 % | 1 | OS_Halt pc 02088c48 lr 020868bc | 35% / 53% |
+| New Super Mario Bros. (Europe) (En,Fr,De,Es,It) | A2DP | 03007532 | oshalt | 53% | 41 / 0 % | 0 | OS_Halt pc 01ffa6b0 lr 01ffa7e8 | 35% / 42% |
+| Phoenix Wright - Ace Attorney - Justice for All (USA) | A2GE | 03017532 | oshalt | 8% | 91 / 0 % | 0 | OS_Halt pc 02006b84 lr 0200499c | 80% / 80% |
+| Pokemon - Pearl Version (USA) (Rev 5) | APAE | 03027531 | oshalt | 7% | 93 / 0 % | 0 | OS_Halt pc 020cd848 lr 020caf68 | 59% / 57% |
+
+## Per ROM (first 64)
 
 | Game | code | SDK | RA set | run | class | busy | halted: OS_Halt / BIOS / other / OS_Halt-rejected | waiting by line 156 | main halt site | static SWI4/5/6 callers |
 |---|---|---|---|---|---|---|---|---|---|---|
