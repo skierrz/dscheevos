@@ -43,6 +43,7 @@ dscm_cues:
 	.equ	IRQ_FRAMES, 4
 	.equ	IRQ_ON, 8
 	.equ	IRQ_IN_VBLANK, 9
+	.equ	IRQ_IN_HALT, 10
 	.equ	IRQ_IDLE_OPEN, 12
 	.equ	IRQ_IDLE_START, 16
 	.equ	IRQ_TIMED, 20
@@ -178,22 +179,27 @@ halt_entry:
 	ldr	r0, [r0, #0x208]            @ REG_IME
 	tst	r0, #1
 	beq	2f
-	ldr	r5, =in_halt
-	ldr	r0, [r5]
+	ldr	r5, =dscm_irq               @ in_halt: a byte in the line every wake uses
+	ldrb	r0, [r5, #IRQ_IN_HALT]
 	cmp	r0, #0
 	bne	2f
 	mov	r0, #1
-	str	r0, [r5]
+	strb	r0, [r5, #IRQ_IN_HALT]
 	@ r0 = 1 if the caller is NitroSDK's idle loop: the instruction after
-	@ its call is a branch back to the call (ARM "b .-4" or Thumb "b .-4")
+	@ its call is a branch back to the call (ARM "b .-4" or Thumb "b .-4").
+	@ Read through the uncached mirror when it is in main RAM: a data
+	@ cache line fill here, every wake, would evict a line of the game's.
+	bic	r1, lr, #1
+	mov	r2, r1, lsr #24
+	cmp	r2, #2
+	addeq	r1, r1, #0x0A000000         @ 0x02xxxxxx -> 0x0Cxxxxxx
 	mov	r0, #0
 	tst	lr, #1
 	bne	4f
-	ldr	r1, [lr]
+	ldr	r1, [r1]
 	ldr	r2, =0xEAFFFFFD
 	b	5f
-4:	bic	r1, lr, #1
-	ldrh	r1, [r1]
+4:	ldrh	r1, [r1]
 	ldr	r2, =0xE7FC
 5:	cmp	r1, r2
 	moveq	r0, #1
@@ -205,7 +211,7 @@ halt_entry:
 	pop	{r4, r5}
 	mov	sp, r4
 	mov	r1, #0
-	str	r1, [r5]
+	strb	r1, [r5, #IRQ_IN_HALT]
 	cmp	r0, #0
 	bne	3f
 2:	mov	r0, #0
@@ -222,8 +228,7 @@ reset_entry:
 	ldr	r0, =dscm_irq
 	mov	r1, #0
 	strb	r1, [r0, #IRQ_IN_VBLANK]
-	ldr	r0, =in_halt
-	str	r1, [r0]
+	strb	r1, [r0, #IRQ_IN_HALT]
 	ldr	r0, =module_reset
 	bx	r0
 
@@ -359,6 +364,3 @@ dscm_dtcm_base:
 
 	.pool
 
-	.bss
-	.align 2
-in_halt:	.word 0

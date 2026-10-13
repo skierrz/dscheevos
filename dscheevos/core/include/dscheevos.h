@@ -181,6 +181,13 @@ void dsc_http_done(void* handle, int http_status, const char* body, size_t body_
 /* Idle context (it queues the frames dsc_vblank() counted first). */
 void dsc_get_stats(dsc_stats_t* stats);
 
+/* Nonzero if dsc_idle() has work besides the once-a-frame kind: frames queued
+ * (VBlanks not committed yet, or snapshots not evaluated) or answers waiting.
+ * Cheap (a few words, no copy): for a caller that wakes many times a frame
+ * and wants to know whether this wake needs dsc_idle() at all; a new frame
+ * (rcheevos' timers) always does. */
+int dsc_work_pending(void);
+
 /* The game was reset: drop queued frames and reset achievement state, as
  * an emulator does on reset. Call from idle context, not from an IRQ. */
 void dsc_reset(void);
