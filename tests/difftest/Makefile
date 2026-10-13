@@ -10,6 +10,8 @@ STOCK_REF ?= 683197d
 PATCHED  ?= ../../external/rcheevos
 # the change-driven patch, if the patched tree has it
 CD_DEF   := $(shell grep -q rc_client_set_change_driven_enabled $(PATCHED)/include/rc_client.h 2>/dev/null && echo -DDIFFTEST_CHANGE_DRIVEN)
+# the changed-memory patch, if the patched tree has it
+CHG_DEF  := $(shell grep -q rc_client_set_changed_memory $(PATCHED)/include/rc_client.h 2>/dev/null && echo -DDIFFTEST_CHANGES)
 # the partition patch, if the patched tree has it
 PART_DEF := $(shell grep -q rc_client_set_trigger_evaluator $(PATCHED)/include/rc_client.h 2>/dev/null && echo -DDIFFTEST_PARTITION)
 BUILD    := build
@@ -35,13 +37,13 @@ $(BUILD)/difftest-run-stock: run.c sha256.h $(BUILD)/stock/.ok
 
 $(BUILD)/difftest-run-patched: run.c sha256.h $(addprefix $(PATCHED)/src/,$(RC_FILES)) $(PATCHED)/include/rc_client.h
 	@mkdir -p $(BUILD)
-	$(CC) $(CFLAGS) $(RC_DEFS) $(CD_DEF) $(PART_DEF) -DDIFFTEST_THREADS -I$(PATCHED)/include -I$(PATCHED)/src run.c \
+	$(CC) $(CFLAGS) $(RC_DEFS) $(CD_DEF) $(CHG_DEF) $(PART_DEF) -DDIFFTEST_THREADS -I$(PATCHED)/include -I$(PATCHED)/src run.c \
 	  $(addprefix $(PATCHED)/src/,$(RC_FILES)) -lm -lpthread -o $@
 
 # the threaded partition run under ThreadSanitizer
 $(BUILD)/difftest-run-patched-tsan: run.c sha256.h $(addprefix $(PATCHED)/src/,$(RC_FILES)) $(PATCHED)/include/rc_client.h
 	@mkdir -p $(BUILD)
-	$(CC) -O1 -g -fsanitize=thread $(RC_DEFS) $(CD_DEF) $(PART_DEF) -DDIFFTEST_THREADS -I$(PATCHED)/include -I$(PATCHED)/src run.c \
+	$(CC) -O1 -g -fsanitize=thread $(RC_DEFS) $(CD_DEF) $(CHG_DEF) $(PART_DEF) -DDIFFTEST_THREADS -I$(PATCHED)/include -I$(PATCHED)/src run.c \
 	  $(addprefix $(PATCHED)/src/,$(RC_FILES)) -lm -lpthread -o $@
 
 # measurement builds: copies of both trees with condition counters (stats.sh), --stats FILE
@@ -53,7 +55,7 @@ $(BUILD)/difftest-stats-stock: run.c sha256.h $(BUILD)/stock/.ok
 .PHONY: $(BUILD)/difftest-stats-patched
 $(BUILD)/difftest-stats-patched: run.c sha256.h
 	./mkstats.sh $(PATCHED) $(BUILD)/stats-patched
-	$(CC) $(CFLAGS) $(RC_DEFS) $(CD_DEF) -DDIFFTEST_STATS -I$(BUILD)/stats-patched/include -I$(BUILD)/stats-patched/src run.c \
+	$(CC) $(CFLAGS) $(RC_DEFS) $(CD_DEF) $(CHG_DEF) -DDIFFTEST_STATS -I$(BUILD)/stats-patched/include -I$(BUILD)/stats-patched/src run.c \
 	  $(addprefix $(BUILD)/stats-patched/src/,$(RC_FILES)) -lm -o $@
 
 clean:

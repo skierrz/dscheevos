@@ -6,7 +6,7 @@
  *
  *   difftest-run --set FILE --session FILE --trace FILE [--script FILE]
  *                [--mode single|partition] [--split SPEC] [--features LIST]
- *                (LIST: partition, changedriven; joined with +)
+ *                (LIST: partition, changedriven, changes; joined with +)
  *                [--hardcore 0|1] [--thread] [--full FROM] [--frames N] --out LOG
  *
  * The log: a header (inputs and their hashes), then per frame f:
@@ -23,6 +23,11 @@
  * by --split, evaluates the frame's work list in frame_begin in REVERSE order
  * (or, with --thread, in a second thread, concurrently with rc_client) and
  * hands the results back in result(): the ARM7 protocol, on the host.
+ *
+ * changes (patched build with rc_client_set_changed_memory): before each
+ * rc_client_do_frame, the exact memory that changed since the previous one (the
+ * trace's ranges, short reads starting and ending), except on about one frame in
+ * 13, which passes "unknown" (not with exact: measurement).
  */
 #include "rc_client.h"
 #include "rc_api_request.h"
@@ -109,6 +114,30 @@ static FILE* g_log;
 
 /* ------------------------------------------------------------------ memory (trace) */
 
+/* --features changes: what changed since the last rc_client_do_frame */
+static int g_changes, g_changes_exact;
+#ifdef DIFFTEST_CHANGES
+static rc_client_memory_range_t* g_chg;
+static uint32_t g_chg_count, g_chg_size;
+static rc_client_memory_range_t g_chg_none;
+#endif
+static void changed(uint32_t address, uint32_t num_bytes)
+{
+#ifdef DIFFTEST_CHANGES
+  if (!g_changes) return;
+  if (g_chg_count == g_chg_size) {
+    g_chg_size = g_chg_size ? g_chg_size * 2 : 256;
+    g_chg = (rc_client_memory_range_t*)realloc(g_chg, g_chg_size * sizeof(*g_chg));
+    if (!g_chg) { fprintf(stderr, "out of memory\n"); exit(2); }
+  }
+  g_chg[g_chg_count].address = address;
+  g_chg[g_chg_count].num_bytes = num_bytes;
+  g_chg_count++;
+#else
+  (void)address; (void)num_bytes;
+#endif
+}
+
 #define MAIN_BASE 0x00000000u
 #define DTCM_BASE 0x01000000u
 static uint8_t* g_main;
@@ -188,6 +217,7 @@ static int trace_next(uint32_t* frame)
     uint32_t a = rd32();
     uint16_t len = rd16();
     if (g_trace_pos + len > g_trace_size) die("trace truncated");
+    changed(a, len);
     if (a >= DTCM_BASE && a - DTCM_BASE + len <= g_dtcm_size) memcpy(g_dtcm + (a - DTCM_BASE), g_trace + g_trace_pos, len);
     else if (a + len <= g_main_size) memcpy(g_main + a, g_trace + g_trace_pos, len);
     else die("trace range %08x+%u outside memory", a, len);
@@ -724,6 +754,12 @@ static rc_client_t* new_client(int hardcore, const char* features)
   if (strstr(features, "partition"))
     die("this build: no partition patch");
 #endif
+#ifndef DIFFTEST_CHANGES
+  if (strstr(features, "changes"))
+    die("this build: no changed-memory patch");
+#endif
+  g_changes = strstr(features, "changes") != NULL;
+  g_changes_exact = strstr(features, "exact") != NULL;
   rc_client_begin_login_with_token(client, "User", "ApiToken", login_done, NULL);
   return client;
 }
@@ -841,6 +877,7 @@ int main(int argc, char** argv)
         g_short[g_short_count].len = c->b;
         g_short[g_short_count].frames = c->c;
         g_short_count++;
+        if (c->c) changed(g_short[g_short_count - 1].addr, c->b);
       }
       else if (!strcmp(c->cmd, "FAIL") && g_fail_count < 8) {
         snprintf(g_fail[g_fail_count].kind, sizeof(g_fail[0].kind), "%s", c->a);
@@ -853,10 +890,23 @@ int main(int argc, char** argv)
       if (paused > 0) paused--;
       rc_client_idle(client);
     }
-    else
+    else {
+#ifdef DIFFTEST_CHANGES
+      if (g_changes) {
+        /* about one frame in 13: unknown */
+        if (!g_changes_exact && ((frame * 2654435761u) >> 12) % 13 == 5)
+          rc_client_set_changed_memory(client, NULL, 0);
+        else
+          rc_client_set_changed_memory(client, g_chg ? g_chg : &g_chg_none, g_chg_count);
+      }
+#endif
       rc_client_do_frame(client);
+#ifdef DIFFTEST_CHANGES
+      g_chg_count = 0;
+#endif
+    }
     for (i = 0; i < g_short_count; i++)
-      if (g_short[i].frames) g_short[i].frames--;
+      if (g_short[i].frames && !--g_short[i].frames) changed(g_short[i].addr, g_short[i].len);
 #ifdef DIFFTEST_STATS
     if (g_stats) {
       /* measurement: no state block (it serializes, which would settle owed tallies every frame) */

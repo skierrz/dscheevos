@@ -4,11 +4,14 @@
   gen.py session SET.json none|half SEED > session.json
       a startsession reply: no unlocks, or about half the achievements unlocked
       (some hardcore, some casual only).
-  gen.py fuzz SET.json BASE.bin SEED FRAMES > trace.dtrc
+  gen.py fuzz SET.json BASE.bin SEED FRAMES [stress] > trace.dtrc
       a fuzzed trace from a base image (4 MB main RAM + 16 KB DTCM, e.g. a RAM
       dump): mutations on the set's watched addresses (random bytes and words,
       sweeps through each condition's constants, freezes of 1-600 frames,
-      toggles, pointer moves, short reads at the end of main RAM).
+      toggles, pointer moves, short reads at the end of main RAM). stress adds,
+      for indirect reads: a pointer's targets change while it is held, a pointer
+      moves while its old and new targets stay, writes at the end of main RAM
+      and DTCM, pointers there.
   gen.py scripts SET.json SEED FRAMES OUTDIR
       the eight lifecycle scripts (clean, resets, hardcore off, pauses, short
       read, award failures, unload/reload, hit counts near 2^32).
@@ -136,8 +139,9 @@ class Trace:
         ranges.append((a, b))
 
 
-def cmd_fuzz(setpath, basepath, seed, frames):
+def cmd_fuzz(setpath, basepath, seed, frames, stress=None):
     s = load_set(setpath)
+    srnd = random.Random(int(seed) + 1)   # stress only: the other mutations stay as without it
     seed, frames = int(seed), int(frames)
     rnd = random.Random(seed)
     with open(basepath, 'rb') as f:
@@ -218,6 +222,25 @@ def cmd_fuzz(setpath, basepath, seed, frames):
                 if f < until:
                     keep.append((a, n, va, vb, until))
             toggles = keep
+        if stress and chains and not freeze:
+            r = srnd.random()
+            base, bn, offs = srnd.choice(chains)
+            p = t.read(base, bn)
+            if p is None:
+                pass
+            elif r < 0.10 and offs:              # targets change, the pointer is held
+                for o in srnd.sample(offs, min(len(offs), 3)):
+                    ta = ((p & 0x3FFFFF) + o) & 0xFFFFFFFF
+                    if in_region(ta, 4):
+                        t.write(ranges, ta, srnd.choice([1, 2, 4]), srnd.getrandbits(32))
+            elif r < 0.18:                       # the pointer moves, no target is written
+                t.write(ranges, base, bn, (p + srnd.choice([-8, -1, 1, 2, 8, 0x10, 0x1000])) & 0xFFFFFFFF)
+            elif r < 0.22:                       # the pointer goes back and forth near the end of RAM
+                t.write(ranges, base, bn, (0x023FFFF8 if srnd.random() < 0.5 else 0x02000000 | (p & 0x3FFFFF)) + srnd.randint(0, 7))
+            if srnd.random() < 0.05:             # the last bytes of main RAM and DTCM
+                t.write(ranges, MAIN - srnd.randint(1, 4), 1, srnd.getrandbits(8))
+            if srnd.random() < 0.02:
+                t.write(ranges, DTCM_BASE + DTCM - srnd.randint(1, 4), 1, srnd.getrandbits(8))
         # coalesce writes per address (last wins), little records
         out += struct.pack('<IBBH', f, flags, 0, len(ranges))
         for a, b in ranges:
