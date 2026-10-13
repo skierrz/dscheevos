@@ -136,6 +136,7 @@ typedef struct dscm_status_t {
   /* Appended: 1 if the game's MPU caches the 0x0C000000 mirror (SDK5), so
    * shared words use explicit cache maintenance instead of the mirror. */
   volatile uint32_t alias_cached;
+  volatile uint32_t clock;            /* DSCM_CLOCK_*: the session's speed-ups (appended) */
 } dscm_status_t;
 
 enum {
@@ -178,7 +179,7 @@ typedef struct dscm_boot_t {
   /* the launcher's Wi-Fi connection, which the game keeps using (no secrets) */
   uint8_t mac[6];
   uint8_t net_valid;                  /* 0: no network during play */
-  uint8_t reserved2;
+  uint8_t clock;                      /* DSCM_CLOCK_*: 0 in the file, nds-bootstrap sets it in RAM */
   uint32_t ip, netmask, gateway, dns; /* network byte order */
   uint32_t ca_offset, ca_length;      /* extra trusted CAs (DER, one after the other), from the start of this struct */
   /* the access point, so the module can rejoin it (no secrets in the file) */
@@ -200,6 +201,10 @@ typedef struct dscm_boot_t {
 
 /* dscm_boot_t.flags */
 #define DSCM_BOOT_SPECTATOR 0x01      /* rc_client spectator mode: evaluate and show, send no unlocks or entries (bench runs on a real account) */
+/* dscm_boot_t.clock, dscm_status_t.clock, dscm_journal_t.clock: the speed-ups
+ * the player chose in nds-bootstrap before launch (kept for the session) */
+#define DSCM_CLOCK_CPU_133  0x01      /* ARM9 at 133 MHz (BOOST_CPU, or DSI_MODE = 2 on a DS game) */
+#define DSCM_CLOCK_VRAM     0x02      /* BOOST_VRAM */
 #define DSCM_BOOT_UTC_KNOWN 0x02      /* utc_offset_q is valid: the launcher measured it against the server's clock */
 
 /* The DS clock keeps local time with no time zone; read as UTC it is off by
@@ -339,7 +344,8 @@ typedef struct dscm_journal_t {
   char username[32];                  /* entries belong to this account only */
   char game_hash[33];
   uint8_t time_base;                  /* DSCM_JOURNAL_TIME_*: what the entries' unix_time is */
-  uint8_t reserved[2];
+  uint8_t clock;                      /* DSCM_CLOCK_*: the session's speed-ups */
+  uint8_t reserved;
   dscm_journal_entry_t e[DSCM_JOURNAL_MAX];
 } dscm_journal_t;                     /* 1620 bytes, fits DSCM_JOURNAL_FILE_SIZE */
 

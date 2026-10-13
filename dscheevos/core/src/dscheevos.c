@@ -1793,6 +1793,7 @@ static void journal_start(uint32_t game_id)
   j->size = sizeof(dscm_journal_t);
   j->game_id = game_id;
   j->time_base = S.platform.clock_is_utc ? DSCM_JOURNAL_TIME_UTC : DSCM_JOURNAL_TIME_CONSOLE;
+  j->clock = (uint8_t)S.platform.clock;
   copy_text(j->username, S.config.username, sizeof(j->username));
   copy_text(j->game_hash, S.game_hash, sizeof(j->game_hash));
   journal_sync(j);

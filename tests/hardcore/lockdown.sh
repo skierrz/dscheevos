@@ -18,6 +18,8 @@
 # Optional: LAUNCHER (default: the repo's), MODE=hc|casual (default hc).
 # Usage: lockdown.sh CASE...   cases: ips bin widecheat srl cache stale wipe
 #                                     launcher-ips launcher-builtin launcher-donor
+#                                     boost dsimode2 boost-excluded (speed-ups: ROM_EXCLUDED is a
+#                                     game on nds-bootstrap's twlClockExcludeList, e.g. Sonic Rush)
 # Wrap it in emu-lock: it runs one emulator at a time. (Variables set for one
 # call go in a subshell: sh keeps assignments made before a function call.)
 set -u
@@ -46,6 +48,10 @@ setup-srl)  # softResetParams.bin asks for the SRL appended to the ROM file at $
 setup-donor)  # DONOR20_NDS_PATH set to a copy of the ROM
   cp "$ROM" "$2/games/donor.nds"
   echo "DONOR20_NDS_PATH = sd:/games/donor.nds" >> "$2/_nds/nds-bootstrap.ini"; exit 0 ;;
+setup-boost)  # the player's speed-ups, set before launch
+  printf 'BOOST_CPU = 1\nBOOST_VRAM = 1\n' >> "$2/_nds/nds-bootstrap.ini"; exit 0 ;;
+setup-dsimode2)  # DSi mode forced on a DS game: its TWL clock
+  echo 'DSI_MODE = 2' >> "$2/_nds/nds-bootstrap.ini"; exit 0 ;;
 setup-cache)  # point the cached card-read patch offset at the marker
   python3 - "$2" <<'EOF'
 import glob, struct, sys
@@ -116,6 +122,11 @@ for c in "$@"; do
     python3 -c 'import struct,sys; f=open(sys.argv[1],"r+b"); f.seek(0xC); f.write(b"AYIE"); f.seek(0x3C); f.write(struct.pack("<I",0x25F70))' "$rom"
     (ROM=$rom; lboot "$w" 1800 setup-donor)
     echo "launcher-donor (asked $mode): server session $(server_mode "$w"); launcher: $(grep -h 'donor' "$w/sd/_nds/dscheevos/launcher.log" 2>/dev/null | head -1)" ;;
+  boost|dsimode2|boost-excluded)
+    step=setup-$c; [ "$c" = boost-excluded ] && step=setup-boost
+    if [ "$c" = boost-excluded ]; then (ROM=${ROM_EXCLUDED:?}; boot "$w" 1800 $step); else boot "$w" 1800 $step; fi
+    log=$(tr -cd '[:print:]\n' < "$w/sd/NDSBTSRP.LOG" 2>/dev/null)
+    echo "$c ($mode): front end $(echo "$log" | grep -m1 '^boostCpu' | tr -d '"') $(echo "$log" | grep -m1 '^dsiMode' | tr -d '"'); module $(grep -m1 -E '^speed-ups|module not loaded' "$w/out.txt" || echo 'no status'); $(grep -m1 -o 'speed-ups 0x[0-9a-f]*' "$w/out.txt" | sed 's/^/journal /')" ;;
   *) echo "unknown case $c" ;;
   esac
   [ -n "${KEEP:-}" ] && echo "  kept $w" || rm -rf "$w"

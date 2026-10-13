@@ -491,6 +491,8 @@ int module_init(const dscm_boot_t* boot)
   platform.event = on_event;
   platform.unix_time = dscm_unix_time;
   platform.clock_is_utc = (g_boot.flags & DSCM_BOOT_UTC_KNOWN) != 0;
+  platform.clock = g_boot.clock;
+  dscm_g_status.clock = g_boot.clock;
   /* Cached, cleaned at each ordering point: the 0x0C000000 mirror is cached
    * write-back on SDK5 games, so it can't be trusted to reach RAM. */
   platform.journal = &dscm_g_journal.j;
