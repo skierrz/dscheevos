@@ -570,8 +570,12 @@ static void test_snapshot_arena_wraps(void)
   dsc_stats_t s;
   uint32_t per_frame;
   int i;
+#ifdef DSC_CHANGED_RANGES
+  start_with(1, 1024, 160);    /* the last snapshot is always kept (changes_before) */
+#else
   start_with(1, 1024, halt_mode ? 160 : 128);  /* a few frames' worth: the ring wraps many times
                                                   (at halt the last snapshot is kept too) */
+#endif
   frames(3);
   dsc_get_stats(&s);
   per_frame = 4 * 4 + 12;    /* 4 words (0x10, 0x20, the pointer, DTCM 0x10), then the pointer target */
