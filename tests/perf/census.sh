@@ -10,9 +10,9 @@
 #   report.txt  census_report.py's summary; f<FRAME>.png screenshots the script asks for
 # Usage: census.sh ROM FRAMES OUT [SCRIPT]
 #   SCRIPT  runner input script, frames counted from the game's header (idle_script.py)
-# Optional: LAUNCHER_RUN (run.sh of a checkout with the launcher and module built), CACHE_MODEL=1, BOOT_FRAMES (frames before the game, 6000), PORT, DSI_MODE,
+# Optional: LAUNCHER_RUN (run.sh of a checkout with the launcher and module built), CACHE_MODEL=1, THUMB_CYCLE=0, BOOT_FRAMES (frames before the game, 6000), PORT, DSI_MODE,
 #   SEGMENTS="name:from-to ..." (passed to census_report.py), EXTRA_ARGS.
-# Needs the runner from tools/melonDS branch dscheevos-wait-census. Wrap it in emu-lock.
+# Needs the runner from tools/melonDS branch dscheevos-wait-census (on dscheevos-perf 622711ba or later). Wrap it in emu-lock.
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$here/../..
@@ -27,7 +27,10 @@ code=$(dd if="$rom" bs=1 skip=12 count=4 2>/dev/null)
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 args="--wait-census $work/census --census-code $code --census-frames $frames --script-from-game"
-[ "${CACHE_MODEL:-0}" = 0 ] || args="$args --cache-model"
+# the cache model from boot hangs nds-bootstrap: switch it on at the game's first OS_Halt (needs --profile,
+# which also makes script time count from there)
+[ "${CACHE_MODEL:-0}" = 0 ] || args="$args --profile --cache-model-from-game"
+[ "${THUMB_CYCLE:-1}" = 0 ] || args="$args --thumb-cycle"
 PORT=${PORT:-8453} ENABLED=0 ROM=$rom WORK=$work SCRIPT=$script RUNNER_ARGS="$args ${EXTRA_ARGS:-}" \
   "${LAUNCHER_RUN:-$repo/tests/launcher/run.sh}" "$repo/tests/bootstrap/sets/live.json" $((frames + ${BOOT_FRAMES:-6000})) > "$work/run.out" 2>&1 || true
 cp "$work/run.out" "$out/run.out"
