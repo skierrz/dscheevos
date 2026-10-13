@@ -106,6 +106,12 @@ typedef struct dsc_platform_t {
    * then) and returns nonzero if the copy must start over: game code may
    * have run meanwhile. May be NULL. */
   int (*interrupt_pending)(void);
+#ifdef DSC_TRIGGER_EVALUATOR
+  /* DSC_EVAL_CPU=split builds only (rcheevos fork with the trigger-evaluator
+   * patch): an rc_client_trigger_evaluator_t* installed before the game loads,
+   * so some triggers are evaluated by another CPU. NULL: all on this CPU. */
+  const void* trigger_evaluator;
+#endif
 } dsc_platform_t;
 
 typedef struct dsc_config_t {
@@ -180,6 +186,12 @@ void dsc_http_done(void* handle, int http_status, const char* body, size_t body_
 
 /* Idle context (it queues the frames dsc_vblank() counted first). */
 void dsc_get_stats(dsc_stats_t* stats);
+
+#ifdef DSC_TRIGGER_EVALUATOR
+/* Reports where rcheevos keeps the loaded game's memrefs (what the other CPU
+ * reads; see rc_client_enum_memref_storage). */
+void dsc_enum_memref_storage(void (*callback)(const void* address, size_t size, void* userdata), void* userdata);
+#endif
 
 /* The game was reset: drop queued frames and reset achievement state, as
  * an emulator does on reset. Call from idle context, not from an IRQ. */

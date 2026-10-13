@@ -126,6 +126,8 @@ static void change_memory(int n)
     dtcm_fake[rnd() & 0x3FFF] = (uint8_t)rnd();
 }
 
+static void bench7_run(lab7_params_t* p);
+
 static int cmp_u32(const void* a, const void* b)
 {
   uint32_t x = *(const uint32_t*)a, y = *(const uint32_t*)b;
@@ -145,7 +147,41 @@ static void report(const char* label, const uint32_t* src, int n)
 extern char __heap_start[];
 extern uint32_t heap_high;
 
+/* split mode: evaluate each frame's claimed triggers, in list order, publishing
+ * each result as soon as it is known (the ARM9 consumes them in that order) */
+extern int rc_client_evaluate_claimed_trigger(void* trigger);
+static void split7(lab7_split_t* m)
+{
+  uint32_t last = m->seq;
+  while (!m->quit) {
+    uint32_t seq = m->seq, i, n, t0;
+    if (seq == last)
+      continue;
+    last = seq;
+    t0 = now();
+    n = m->count;
+    for (i = 0; i < n; i++) {
+      m->result[i].state = rc_client_evaluate_claimed_trigger(m->work[i].trigger);
+      m->result[i].seq = seq;
+    }
+    m->arm7_cycles = now() - t0;
+    m->arm7_done = seq;
+  }
+}
+
 void bench7_main(lab7_params_t* p)
+{
+  if (p->split) {
+    P = p;
+    timer_start();
+    split7(p->split);
+    p->status = 1;
+    return;
+  }
+  bench7_run(p);
+}
+
+static void bench7_run(lab7_params_t* p)
 {
   dsc_platform_t platform;
   dsc_config_t config;

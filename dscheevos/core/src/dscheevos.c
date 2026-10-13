@@ -2399,6 +2399,10 @@ int dsc_init(const dsc_platform_t* platform, const dsc_config_t* config)
   if (S.config.host)
     rc_client_set_host(S.client, S.config.host);
   rc_client_set_hardcore_enabled(S.client, S.config.hardcore ? 1 : 0);
+#ifdef DSC_TRIGGER_EVALUATOR
+  if (S.platform.trigger_evaluator)
+    rc_client_set_trigger_evaluator(S.client, (const rc_client_trigger_evaluator_t*)S.platform.trigger_evaluator);
+#endif
   /* before login: rc_client can't turn it on once a game is loaded */
   if (S.config.spectator)
     rc_client_set_spectator_mode_enabled(S.client, 1);
@@ -3042,6 +3046,14 @@ void dsc_http_done(void* handle, int http_status, const char* body, size_t body_
   p->done = 1;
   S.http_ready++;
 }
+
+#ifdef DSC_TRIGGER_EVALUATOR
+void dsc_enum_memref_storage(void (*callback)(const void* address, size_t size, void* userdata), void* userdata)
+{
+  if (S.client)
+    rc_client_enum_memref_storage(S.client, (rc_client_memref_storage_callback_t)callback, userdata);
+}
+#endif
 
 void dsc_get_stats(dsc_stats_t* stats)
 {

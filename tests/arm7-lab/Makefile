@@ -90,3 +90,28 @@ $(BUILD)/arm9.elf: $(BUILD)/arm9.o $(BUILD)/payload_bin.o
 $(BUILD)/arm7-lab.nds: $(BUILD)/arm9.elf $(BUILD)/arm7.elf
 	$(DEVKITPRO)/tools/bin/ndstool -c $@ -9 $(BUILD)/arm9.elf -7 $(BUILD)/arm7.elf > /dev/null
 	@echo built $@
+
+# ---- split mode (arm7-split.nds): the ARM9 runs the core + rc_client with the
+# trigger evaluator (DSC_TRIGGER_EVALUATOR), built with the module's flags
+# (dscheevos/module/Makefile as of 1c0ee73: Thumb -Os, rcheevos runtime and
+# client ARM -O2); the ARM7 payload above evaluates the claimed triggers.
+ARCH9    := -march=armv5te -mtune=arm946e-s -mthumb -mthumb-interwork
+CFLAGS9  := $(ARCH9) -Os -ffunction-sections -fdata-sections -fno-strict-aliasing -Wall \
+            -DRC_NO_THREADS -DNDEBUG -DDSC_TRIGGER_EVALUATOR -DARM9 -Idscheevos/module/include -I$(CORE)/include \
+            -I$(RCHEEVOS)/include -I$(RCHEEVOS)/src -I$(LAB) -I$(LIBNDS)/include
+S9OBJ    := $(BUILD)/s9/split9.o $(BUILD)/s9/dscheevos.o $(patsubst $(RCHEEVOS)/src/%.c,$(BUILD)/s9/rc/%.o,$(RC_SRC))
+
+$(BUILD)/s9/rc/%.o: $(RCHEEVOS)/src/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS9) $(if $(filter $(RC_HOT),$*),-marm -O2) -w -c $< -o $@
+$(BUILD)/s9/dscheevos.o: $(CORE)/src/dscheevos.c $(CORE)/include/dscheevos.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS9) -c $< -o $@
+$(BUILD)/s9/split9.o: $(LAB)/split9.c $(LAB)/lab7.h $(CORE)/include/dscheevos.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS9) -c $< -o $@
+$(BUILD)/split9.elf: $(S9OBJ) $(BUILD)/payload_bin.o
+	$(CC) $(ARCH9) -specs=ds_arm9.specs -Wl,--gc-sections $^ -L$(LIBNDS)/lib -lfat -lnds9 -lm -o $@
+$(BUILD)/arm7-split.nds: $(BUILD)/split9.elf $(BUILD)/arm7.elf
+	$(DEVKITPRO)/tools/bin/ndstool -c $@ -9 $(BUILD)/split9.elf -7 $(BUILD)/arm7.elf > /dev/null
+	@echo built $@
