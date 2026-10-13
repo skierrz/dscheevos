@@ -157,7 +157,7 @@ static void setup_game(void) {
 
 /* ---------------------------------------------------------------- raw IRQ phase */
 
-enum { T_NONE, T_H1, T_H2A, T_H2B, T_NEW, T_STRESS_NDMA, T_STRESS_DMA3, T_BOTTOM };
+enum { T_NONE, T_H1, T_H2A, T_H2B, T_NEW, T_STRESS_NDMA, T_STRESS_DMA3, T_BOTTOM, T_T1, T_COUNTER };
 static volatile int test;
 static volatile u32 frame;
 
@@ -180,6 +180,15 @@ static volatile int use_vblank_start;       /* H2b worked: NDMA2 re-fires by its
 static volatile int bottom_arm_at_vblank;   /* 1: FIFO armed at VBlank, 0: at entry */
 static volatile int bottom_phase;
 static volatile u32 bottom_entries, bottom_exits, bottom_entry_hist[4], bottom_exit_hist[4];
+static volatile int bottom_every_other;     /* H11a: strip on even frames only */
+
+/* T1: the slack probe. Strip lines S..S+N-1 end K lines before VBlank. */
+#define T1_K 2
+#define T1_S (192 - N - T1_K)
+static volatile int t1_strip;               /* strip allowed this run */
+static volatile int t1_in_wait;             /* the stand-in game is waiting for VBlank */
+static volatile int t1_phase;
+static volatile u32 t1_shown, t1_skipped, t1_skip_wait, t1_skip_line, t1_skip_pending, t1_last_vc, t1_last_pending;
 
 static void timer_start(void) {
 	TIMER0_CR = 0; TIMER1_CR = 0;
@@ -209,9 +218,10 @@ static void ndma2_vblank(u32 ticks) {       /* H2b: V-Blank startup, repeat fore
 	NDMA_CNT(2) = NDMA_ON | NDMA_IRQ | NDMA_FOREVER | NDMA_START(0x06) | NDMA_FILL | NDMA_DFIX | NDMA_PHYS(0);
 }
 
+static volatile int ndma3_to_io;            /* H11b/T1: fill writes go to an I/O register, not RAM */
 static void ndma3_hblanks(u32 count) {      /* IRQ at the H-Blank ending the count-th visible line */
 	NDMA_CNT(3) = 0;
-	NDMA_DAD(3) = (u32)&dummy;
+	NDMA_DAD(3) = ndma3_to_io ? (u32)&NDMA_FDATA(3) : (u32)&dummy;
 	NDMA_FDATA(3) = 0;
 	NDMA_WCNT(3) = 1;
 	NDMA_TCNT(3) = count;
@@ -269,7 +279,28 @@ __attribute__((target("arm"), noinline)) static void raw_isr(void) {
 	}
 	if (f & IRQ_NDMA(3)) {
 		REG_IF = IRQ_NDMA(3);
-		if (test == T_NEW) strip_exit_or_guard();
+		if (test == T_T1) {
+			if (t1_phase == 1) {
+				const u32 vc = REG_VCOUNT;
+				/* Show only if the game is waiting and nothing else is pending. */
+				if (t1_in_wait && (vc == T1_S - 1 || vc == T1_S) && !(REG_IE & REG_IF & ~RAW_BITS)) {
+					arm_fifo();
+					mode_set(3);
+					t1_phase = 2;
+					ndma3_hblanks(N);
+					t1_shown++;
+				} else {
+					t1_phase = 0;
+					t1_skipped++;
+					if (!t1_in_wait) t1_skip_wait++;
+					else if (vc != T1_S - 1 && vc != T1_S) { t1_skip_line++; t1_last_vc = vc; }
+					else { t1_skip_pending++; t1_last_pending = REG_IE & REG_IF & ~RAW_BITS; }
+				}
+			} else if (t1_phase == 2) {
+				if (mode_get() == 3) mode_set(1);
+				t1_phase = 0;
+			}
+		} else if (test == T_NEW) strip_exit_or_guard();
 		else if (test == T_BOTTOM) {
 			const u32 vc = REG_VCOUNT;
 			if (bottom_phase == 1) {                 /* end of line 191-N: switch in */
@@ -312,9 +343,17 @@ __attribute__((target("arm"), noinline)) static void raw_isr(void) {
 			if (!use_vblank_start) ndma2_oneshot(h2_ticks);
 			break;
 		case T_BOTTOM:
+			if (bottom_every_other && (frame & 1)) { bottom_phase = 0; break; }
 			if (bottom_arm_at_vblank) arm_fifo();
 			bottom_phase = 1;
 			ndma3_hblanks(192 - N);                  /* H-Blanks from line 0 */
+			break;
+		case T_T1:
+			timer_start();                          /* the game's frame clock: ticks since VBlank */
+			t1_phase = 0;
+			break;
+		case T_COUNTER:
+			ndma3_hblanks(150);                      /* runs over lines 0..149, IRQ ignored */
 			break;
 		}
 	}
@@ -557,6 +596,137 @@ static void test_h10(void) {
 	}
 }
 
+/* ---- T1: the slack probe (docs/display-library.md 11.4) ----
+ * A stand-in game alternates a light frame (done early, so the strip may
+ * show at the bottom while it waits) and a heavy frame whose fixed amount of
+ * work is sized to end k ticks (33.5 MHz) before VBlank. Any strip cost that
+ * leaks into working time (cache pollution from the strip's IRQs, the
+ * dispatcher, the bus) makes heavy frames overrun. X = the smallest k with
+ * no more overruns with the strip than without. */
+#define FRAME_TICKS 560190u                 /* 263 lines x 2130 */
+static volatile u32 workbuf[4096] __attribute__((aligned(32)));   /* 16 KB: more than the 4 KB D-cache */
+
+static u32 work(u32 iters) {
+	u32 acc = 0, i = 0;
+	while (iters--) {
+		acc += workbuf[i] ^ (acc >> 3);
+		i = (i + 8) & 4095;                     /* a new cache line every iteration */
+	}
+	return acc;
+}
+
+static volatile u32 sink;
+
+__attribute__((target("arm"), noinline)) static void t1_wait_vblank(void) {
+	const u32 f0 = frame;
+	t1_in_wait = 1;
+	const u32 vc = REG_VCOUNT;
+	if (t1_strip && vc < T1_S - 2) {            /* arm at wait entry, from idle */
+		t1_phase = 1;
+		ndma3_hblanks(T1_S - vc);
+	}
+	while (frame == f0) asm volatile("mcr p15, 0, %0, c7, c0, 4" :: "r"(0));   /* halt, like OS_Halt */
+	t1_in_wait = 0;
+}
+
+static void test_t1(void) {
+	title("T1 slack probe (about 6 min)");
+	ndma3_to_io = 1;
+	raw_begin(T_T1);
+	for (int i = 0; i < 4096; i++) workbuf[i] = (u32)i * 2654435761u;
+	/* Calibrate: iterations per tick, strip off, in the same light/heavy rhythm. */
+	t1_strip = 0;
+	u32 rate_x1000 = 0;
+	for (int i = 0; i < 60; i++) {
+		t1_wait_vblank();
+		const u32 t0 = timer_read();
+		sink = work(20000);
+		const u32 dt = timer_read() - t0;
+		if (i >= 30) rate_x1000 += 20000u * 1000u / (dt ? dt : 1) / 30;
+		t1_wait_vblank();
+	}
+	say("T1 rate %lu.%03lu iterations/tick", rate_x1000 / 1000, rate_x1000 % 1000);
+	static const u32 ks[] = { 20000, 8000, 3000, 1500, 800, 400, 200, 100 };
+	for (unsigned ki = 0; ki < sizeof ks / sizeof ks[0]; ki++) {
+		u32 lag[2] = { 0, 0 }, shown = 0;
+		for (int on = 0; on < 2; on++) {
+			t1_strip = on;
+			t1_shown = t1_skipped = 0;
+			for (int i = 0; i < 600; i++) {
+				t1_wait_vblank();                     /* light frame: a little work, then wait */
+				sink = work(2000);
+				t1_wait_vblank();                     /* heavy frame starts here */
+				const u32 f0 = frame;
+				const u32 start = timer_read();
+				const u32 budget = FRAME_TICKS > start + ks[ki] ? FRAME_TICKS - start - ks[ki] : 0;
+				sink = work((u32)((u64)budget * rate_x1000 / 1000));
+				if (frame != f0) lag[on]++;           /* VBlank came before the work was done */
+			}
+			if (on) {
+				shown = t1_shown;
+				if (ki == 0) say("T1 skips: not waiting=%lu line=%lu (last vc %lu) pending=%lu (last %08lx)",
+				                 t1_skip_wait, t1_skip_line, t1_last_vc, t1_skip_pending, t1_last_pending);
+			}
+		}
+		say("T1 k=%lu ticks (%lu cycles): overruns off=%lu on=%lu strip shown=%lu/600",
+		    ks[ki], ks[ki] * 2, lag[0], lag[1], shown);
+	}
+	raw_end();
+	ndma3_to_io = 0;
+	say("T1 X = smallest k where on == off (owner decides if it counts as zero)");
+}
+
+/* ---- H11 ---- */
+static void test_h11(void) {
+	static u32 buf[4096] __attribute__((aligned(32)));
+	vu32* unc = (vu32*)memUncached(buf);
+
+	/* (a) Stop the FIFO mid-strip: is the bus back at once? Bottom strip on even
+	 * frames, stopped at line 168; reads counted on lines 169-180, strip frames
+	 * vs plain frames. */
+	title("H11a stop the FIFO mid-strip (10 s)");
+	bottom_arm_at_vblank = 0;
+	bottom_every_other = 1;
+	bottom_phase = 0;
+	raw_begin(T_BOTTOM);
+	u64 sum[2] = { 0, 0 };
+	u32 n[2] = { 0, 0 };
+	for (int i = 0; i < 600; i++) {
+		while (REG_VCOUNT != 192 - N + 8) {}
+		const int strip = mode_get() == 3;
+		if (strip) { NDMA_CNT(0) = 0; mode_set(1); }
+		u32 count = 0, k = 0;
+		while (REG_VCOUNT < 180) { (void)unc[k]; k = (k + 9) & 4095; count++; }
+		sum[strip] += count;
+		n[strip]++;
+		while (REG_VCOUNT >= 180 || REG_VCOUNT < 100) {}
+	}
+	raw_end();
+	bottom_every_other = 0;
+	say("H11a reads/frame after stop: stopped-strip=%lu plain=%lu (frames %lu/%lu; pass: within 1 pct)",
+	    n[1] ? (u32)(sum[1] / n[1]) : 0, n[0] ? (u32)(sum[0] / n[0]) : 0, n[1], n[0]);
+
+	/* (b) The H-Blank counter's fill writes: RAM vs I/O vs no counter. */
+	title("H11b counter writes: RAM vs I/O (15 s)");
+	u32 rate[3];
+	for (int v = 0; v < 3; v++) {
+		ndma3_to_io = v == 2;
+		raw_begin(v ? T_COUNTER : T_NONE);
+		u64 total = 0;
+		for (int i = 0; i < 300; i++) {
+			while (REG_VCOUNT != 1) {}
+			u32 count = 0, k = 0;
+			while (REG_VCOUNT < 140) { (void)unc[k]; k = (k + 9) & 4095; count++; }
+			total += count;
+			while (REG_VCOUNT < 150) {}
+		}
+		raw_end();
+		rate[v] = (u32)(total / 300);
+	}
+	ndma3_to_io = 0;
+	say("H11b reads lines 1-139: no counter=%lu RAM dest=%lu I/O dest=%lu (pass: I/O == none)", rate[0], rate[1], rate[2]);
+}
+
 /* H5: bus cost, main-RAM reads during the strip lines, strip off vs on. */
 static u32 bus_loop_frames(u32 frames, bool strip) {
 	static u32 buf[4096] __attribute__((aligned(32)));
@@ -662,6 +832,16 @@ int main(void) {
 	test_h6();      flush_log();
 	test_h6b();     flush_log();
 	test_h9();      flush_log();
+	test_h11();     flush_log();
+
+	consoleClear();
+	say("Main tests done. A: run T1 slack probe (about 6 min), B: finish");
+	for (;;) {
+		swiWaitForVBlank();
+		scanKeys();
+		if (keysDown() & KEY_A) { test_t1(); flush_log(); break; }
+		if (keysDown() & KEY_B) break;
+	}
 
 	consoleClear();
 	say("DONE, log %s", sd_ok ? "written to sd:/dscheevos-lab/log.txt" : "NOT written (no SD)");
