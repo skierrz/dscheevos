@@ -41,8 +41,9 @@ sometimes the first scene); "gameplay" = the idle-budget input scripts (tests/pe
   < 4000 133-MHz cycles of non-IRQ code between them) began by line 156, lines counted from VBlank.
   0% for KSSU, MKDS, Pokemon Black, Mario Hoops, Mario Party, Nintendogs: a thread runs late in every frame
   (KSSU's last wait starts at lines 188-191).
-- Side finding: every game shows ~185 VCOUNT reads per interval from 0x023BF3AE (nds-bootstrap's ARM9 card
-  engine area in DS mode), i.e. nds-bootstrap itself polls; worth a look by whoever owns nds-bootstrap perf.
+- The ~185 VCOUNT reads per interval from 0x023BF3AE seen in every run are nds-bootstrap's bootloader ARM9 stub
+  in the boot frames (the census counts from the game header's appearance, which can precede the game's start by a
+  few hundred frames), not a gameplay cost (eval-speed). Hot-PC/busy sums over whole runs include those frames.
 
 ## Per ROM
 
