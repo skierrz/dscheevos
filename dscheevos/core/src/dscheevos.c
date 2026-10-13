@@ -2414,6 +2414,11 @@ int dsc_init(const dsc_platform_t* platform, const dsc_config_t* config)
   if (S.config.host)
     rc_client_set_host(S.client, S.config.host);
   rc_client_set_hardcore_enabled(S.client, S.config.hardcore ? 1 : 0);
+#ifdef DSC_CHANGE_DRIVEN
+  /* skip achievements and leaderboards whose inputs didn't change (rcheevos patch on our
+   * fork, results identical to stock: docs/rcheevos-pin.md); off unless built with it */
+  rc_client_set_change_driven_enabled(S.client, 1);
+#endif
   /* before login: rc_client can't turn it on once a game is loaded */
   if (S.config.spectator)
     rc_client_set_spectator_mode_enabled(S.client, 1);
