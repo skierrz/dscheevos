@@ -9,7 +9,7 @@ How DScheevos runs RetroAchievements inside DS games on a DSi (and 3DS in DSi mo
 | `skierrz/dscheevos` (this repo) | All DScheevos code, docs, tests and tools |
 | `skierrz/nds-bootstrap` | nds-bootstrap with hook points only: small calls into DScheevos, no DScheevos logic |
 | `skierrz/melonDS` (`dscheevos` branch) | Test bench only: headless runner, cache timing model, Wi-Fi through libslirp |
-| `RetroAchievements/rcheevos` | Used unmodified, trimmed through build settings |
+| `RetroAchievements/rcheevos` | Stock upstream today, trimmed through build settings. Patches only where results are proven identical to stock, kept minimal and offered upstream (`docs/rcheevos-pin.md`) |
 
 Users install one release: a DScheevos build of nds-bootstrap plus a `_nds/dscheevos/` folder on the SD card. TWiLight Menu++ launches games through nds-bootstrap as usual.
 

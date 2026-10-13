@@ -30,7 +30,7 @@ Design: `docs/architecture.md`. Measurements: `docs/rcheevos-arm9-footprint.md`.
 - `tests/module`: the module in DSi mode in melonDS
 - `tests/bootstrap`, `tests/launcher`: retail games through nds-bootstrap, and the full launcher chain. These need your own firmware and game dumps, so they run locally.
 
-rcheevos is used unmodified as a submodule.
+rcheevos is a submodule, stock upstream today. A patch to it is allowed only where its evaluation results are proven identical to stock rcheevos on every real set, kept minimal and offered upstream; how patches are carried is in `docs/rcheevos-pin.md`.
 
 ## Licence
 
