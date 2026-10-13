@@ -2,6 +2,7 @@
 #include "bench.h"
 #include "log.h"
 #include "net.h"
+#include "request.h"
 #include "dscheevos_module.h"
 
 #include "mbedtls/x509_crt.h"
@@ -43,6 +44,8 @@ void session_log_request(const char* post, int status)
     log_line("%s: network error: %s", n ? api : "request", net_error());
 }
 
+static int g_skip_unofficial;   /* the setting, for server_call */
+
 static int request_kind(const char* post)
 {
   if (!post) return -1;
@@ -59,6 +62,7 @@ static void RC_CCONV server_call(const rc_api_request_t* request, rc_client_serv
   http_response_t r;
   rc_api_server_response_t response;
   int kind = request_kind(request->post_data);
+  char post[512];
   (void)client;
 
   if (g_replay && (kind == DSCM_PRELOAD_LOGIN || kind == DSCM_PRELOAD_SET) && g_reply[kind]) {
@@ -78,7 +82,8 @@ static void RC_CCONV server_call(const rc_api_request_t* request, rc_client_serv
     return;
   }
 
-  http_request(request->url, request->post_data, request->content_type, &r);
+  http_request(request->url, request_post(request->post_data, g_skip_unofficial, post, sizeof(post)),
+               request->content_type, &r);
   session_log_request(request->post_data, r.status);
   memset(&response, 0, sizeof(response));
   response.http_status_code = r.status > 0 ? r.status : RC_API_SERVER_RESPONSE_RETRYABLE_CLIENT_ERROR;
@@ -119,6 +124,7 @@ static rc_client_t* make_client(const dsc_settings_t* settings)
 {
   char ua[128], clause[64];
   rc_client_t* client = rc_client_create(read_memory, server_call);
+  g_skip_unofficial = settings->skip_unofficial;
   if (!client)
     return NULL;
   if (strcmp(settings->host, "https://retroachievements.org") != 0)

@@ -188,16 +188,18 @@ static void settings_menu(void)
     ui_bottom(" \x1b[32;1mX\x1b[39;0m  Hardcore: %s\n", settings.hardcore ? "on" : "off (Casual)");
     ui_bottom(" \x1b[32;1mR\x1b[39;0m  Send unlocks during play: %s\n",
               settings.hardcore ? "on (hardcore)" : settings.live ? "on" : "off");
+    ui_bottom(" \x1b[32;1mL\x1b[39;0m  Skip unofficial achievements:\n     %s\n", settings.skip_unofficial ? "on" : "off");
     ui_bottom(" \x1b[32;1mY\x1b[39;0m  Log out%s%s\n", settings.username[0] ? " " : "", settings.username);
     ui_bottom("\n \x1b[31;1mB\x1b[39;0m  Done\n");
     do {
       swiWaitForVBlank();
       scanKeys();
       k = keysDown();
-    } while (!(k & (KEY_A | KEY_B | KEY_X | KEY_Y | KEY_R)));
+    } while (!(k & (KEY_A | KEY_B | KEY_X | KEY_Y | KEY_R | KEY_L)));
     if (k & KEY_A) settings.enabled = !settings.enabled;
     if (k & KEY_X) settings.hardcore = !settings.hardcore;
     if ((k & KEY_R) && !settings.hardcore) settings.live = !settings.live;
+    if (k & KEY_L) settings.skip_unofficial = !settings.skip_unofficial;
     if (k & KEY_Y) { settings.token[0] = '\0'; settings.username[0] = '\0'; }
     if (k & KEY_B) { settings_save(&settings); return; }
   }
