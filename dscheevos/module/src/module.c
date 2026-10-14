@@ -243,10 +243,10 @@ _Static_assert(offsetof(dscm_irq_t, idle_cut_lines) == 32 && offsetof(dscm_irq_t
 #define BW_EST (dscm_irq.frames_missed)
 #define BW_UNITS (dscm_irq.reserved2[0])
 #define BW_BLOCKED (dscm_irq.reserved2[1])   /* start.s bw_blocked: [guard - 80] */
-#define BW_CANARY_SET (dscm_irq.reserved2[2])
-#define BW_STACK_BAD (dscm_irq.reserved2[3])
+#define BW_STACK_BAD (dscm_irq.reserved2[3])   /* bit 0: overflowed; bit 1: canary set */
 #define BW_FIRST_LINES (dscm_irq.in_halt)   /* LAB: the unused byte (clamped to 255) */
 #define BW_FIRST_OVER (dscm_irq.reserved2[4])
+#define BW_FLAG_SET (dscm_irq.reserved2[2])   /* LAB: waits handed to the BIOS with the VBlank flag already set */
 _Static_assert(offsetof(wake_page_t, irq) + offsetof(dscm_irq_t, reserved2) + 4 == offsetof(wake_page_t, guard) - 80, "start.s bw_blocked");
 
 /* The ARM7's VBlank count, written behind the data cache. Through the
@@ -1094,7 +1094,7 @@ __attribute__((section(".text_cold"), noinline, target("arm"))) int module_wait(
   int over = 0;
   wake_page_t* const wp = wake_page_arm();
   uint32_t v0, c0, left, left0, cpsr;
-  if (!dscm_irq.on || BW_STACK_BAD)
+  if (!dscm_irq.on || (BW_STACK_BAD & 1))
     return 0;
   if (REG_IE & REG_IF & 1)
     return 0;          /* a VBlank is already requested: the stock wait returns at once */
@@ -1175,7 +1175,13 @@ __attribute__((section(".text_cold"), noinline, target("arm"))) int module_wait(
     BW_LINES += lines;
     idle_frames(WP, lines);
   }
-  if (vblank_count(WP) != c0 || lines_between(v0, REG_VCOUNT) >= left0) {
+  /* LAB: the BIOS's own view: the game's VBlank check flag (DTCM+3FF8 bit 0,
+   * read only) already set when the stock wait starts means its discard
+   * eats this VBlank */
+  if (*(volatile uint32_t*)(dscm_dtcm_base() + 0x3FF8) & 1)
+    BW_FLAG_SET++;
+  if (vblank_count(WP) != c0 || lines_between(v0, REG_VCOUNT) >= left0
+      || (*(volatile uint32_t*)(dscm_dtcm_base() + 0x3FF8) & 1)) {
     over = 1;
     if (!(BW_UNITS == 1 && BW_FIRST_OVER))
       BW_OVERRUNS++;
@@ -1184,11 +1190,11 @@ __attribute__((section(".text_cold"), noinline, target("arm"))) int module_wait(
    * first entry; overwritten = the stack overflowed: stop using the gate */
   {
     volatile uint32_t* canary = (volatile uint32_t*)DSCM_DATA_ADDR(DSCM_HEAP_END);
-    if (!BW_CANARY_SET) {
-      canary[0] = 0xB1057ACCu; canary[1] = 0xB1057ACCu; BW_CANARY_SET = 1;
+    if (!(BW_STACK_BAD & 2)) {
+      canary[0] = 0xB1057ACCu; canary[1] = 0xB1057ACCu; BW_STACK_BAD = 2;
     }
     else if (canary[0] != 0xB1057ACCu || canary[1] != 0xB1057ACCu)
-      BW_STACK_BAD = 1;
+      BW_STACK_BAD |= 1;
   }
   H.busy = 0;
   return over;
