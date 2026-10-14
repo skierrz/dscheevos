@@ -242,6 +242,8 @@ _Static_assert(offsetof(dscm_irq_t, idle_cut_lines) == 32 && offsetof(dscm_irq_t
 #define BW_LINES (dscm_irq.irq_lines_total)
 #define BW_EST (dscm_irq.frames_missed)
 #define BW_UNITS (dscm_irq.reserved2[0])
+#define BW_BLOCKED (dscm_irq.reserved2[1])   /* start.s bw_blocked: [guard - 80] */
+_Static_assert(offsetof(wake_page_t, irq) + offsetof(dscm_irq_t, reserved2) + 4 == offsetof(wake_page_t, guard) - 80, "start.s bw_blocked");
 
 /* The ARM7's VBlank count, written behind the data cache. Through the
  * 0x0C000000 mirror when the game's MPU leaves it uncached (no line filled),
@@ -977,7 +979,14 @@ WAKE_CODE int module_idle(int idle_loop)
    * pass would do on such a wake is skipped: dsc_idle() would find nothing
    * (dsc_work_pending), and the network gets a pass only when busy or once
    * a frame. */
+#ifdef BW_HALT_CAPTURE
+  /* LAB coverage build: the idle path only captures; all work runs in the
+   * BIOS-wait gate (which a parked idle-path pass would block forever in a
+   * game whose idle thread stops running) */
+  if (0) {
+#else
   if (work_wanted(WP)) {
+#endif
     /* Evaluation may take the rest of the frame: copy the memory the game
      * halted with first, so the next VBlank has it even if the copy before
      * the halt below comes too late. */

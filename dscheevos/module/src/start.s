@@ -441,7 +441,7 @@ bw_entry:
 	mov	r0, #1
 	swpb	r1, r0, [r12]
 	cmp	r1, #0
-	bne	bw_stock
+	bne	bw_blocked
 	mov	r12, sp
 	mov	sp, #STACK_TOP_HI
 	sub	sp, sp, #STACK_GAP
@@ -454,6 +454,11 @@ bw_entry:
 	orr	r1, r1, #REGION_END
 	mov	r2, #0
 	strb	r2, [r1, #-GUARD_BACK]
+	b	bw_stock
+bw_blocked:                         @ the guard is held: idle work parked in the idle thread (counted, dscm_irq.reserved2[1])
+	ldr	r0, [r12, #-80]
+	add	r0, r0, #1
+	str	r0, [r12, #-80]
 bw_stock:
 	adr	r2, bw_wrapper + 1
 	bx	r2
