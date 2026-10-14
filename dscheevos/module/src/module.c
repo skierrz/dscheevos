@@ -1077,6 +1077,30 @@ void dscm_yield_point(void);
 uint32_t bw_kind;
 uint32_t sg_regs[13];         /* start.s: the game's r2-r12, sp, lr at the spin gate */
 extern const uint32_t sg_line;
+extern const uint32_t sg_pred[10];   /* start.s: count, then { address, offset, size | 0x100 pointer } x 3 */
+/* the loop's own exit or work condition, read only: every predicate reads 0
+ * (e.g. Code Lyoko: its VBlank flag, its loader's two busy fields) */
+static __attribute__((section(".text_cold"), noinline, target("arm"))) int sg_pred_ok(void)
+{
+  uint32_t n = sg_pred[0], i;
+  for (i = 0; i < n && i < 3; i++) {
+    uint32_t a = sg_pred[1 + 3 * i], f = sg_pred[3 + 3 * i], v;
+    if (f & 0x100) {
+      a = *(volatile uint32_t*)a;
+      if (a - 0x02000000u >= 0x00400000u)
+        return 0;
+    }
+    a += sg_pred[2 + 3 * i];
+    switch (f & 0xFF) {
+    case 1: v = *(volatile uint8_t*)a; break;
+    case 2: v = *(volatile uint16_t*)(a & ~1u); break;
+    default: v = *(volatile uint32_t*)(a & ~3u); break;
+    }
+    if (v)
+      return 0;
+  }
+  return 1;
+}
 #endif
 static __attribute__((section(".text_cold"), noinline, target("arm"))) uint32_t bw_left(void)
 {
@@ -1140,6 +1164,8 @@ __attribute__((section(".text_cold"), noinline, target("arm"))) int module_wait(
     return 0;
   if (REG_IE & REG_IF & 1)
     return 0;          /* a VBlank is already requested: the stock wait returns at once */
+  if (bw_kind && !sg_pred_ok())
+    return 0;          /* LAB busyloop: the loop is about to exit, or its own work is due: stock */
   if (bw_left() < BW_MARGIN + 2)
     return 0;
   if (wake_swap(&H.busy, 1))
@@ -1263,6 +1289,14 @@ __attribute__((section(".text_cold"), noinline, target("arm"))) int module_wait(
 #ifndef BW_YIELD_MARGIN
 #define BW_YIELD_MARGIN 6     /* lines: the longest gap between yield points + the way out (measured: BW_GAP_MAX) */
 #endif
+/* LAB busyloop: the spin gate's margin. Its windows are long (Mega Man ZX:
+ * ~166 lines a frame against ~34 needed), so it keeps more than the longest
+ * gap between yield points measured there (46 lines, rc_client_do_frame;
+ * 10-13 lines dozens of times): a gap that crosses the deadline costs a frame. */
+#ifndef SG_YIELD_MARGIN
+#define SG_YIELD_MARGIN 50
+#endif
+#define YIELD_MARGIN (bw_kind ? SG_YIELD_MARGIN : BW_YIELD_MARGIN)
 extern void bw_yield(int late);   /* start.s: late (BW_SKIP_LATE builds): the VBlank already came */
 uint32_t bw_ctx[11];          /* start.s: game r4-r11, sp, lr; the fiber's sp (0: not started) */
 static struct { uint32_t v0, left0, c0, f0, in, gap_v, site, budget, frames0, last_el; } BWF;
@@ -1311,11 +1345,13 @@ static __attribute__((section(".text_cold"), noinline, target("arm"))) int bwf_b
     return 0;
   if (REG_IE & REG_IF & 1)
     return 0;          /* a VBlank is already requested: the stock wait returns at once */
+  if (bw_kind && !sg_pred_ok())
+    return 0;          /* LAB busyloop: the loop is about to exit, or its own work is due: stock */
   /* the capture's estimate: the longest of the recent ones (it decays a line
    * a wait, so one big copy after a load doesn't block waits for good) */
   if (bw_cap_est)
     bw_cap_est--;
-  if (bw_left() < BW_YIELD_MARGIN + 2 + bw_cap_est) {
+  if (bw_left() < YIELD_MARGIN + 2 + bw_cap_est) {
     bw_diag[5]++;      /* too little time for the capture and a unit: the stock wait */
     return 0;
   }
@@ -1333,7 +1369,7 @@ static __attribute__((section(".text_cold"), noinline, target("arm"))) int bwf_b
   BWF.gap_v = REG_VCOUNT;
   BWF.site = 1;
   /* the yield points' fast test: lines since v0 against this, and the VBlank count */
-  BWF.budget = BWF.left0 > BW_YIELD_MARGIN ? BWF.left0 - BW_YIELD_MARGIN : 0;
+  BWF.budget = BWF.left0 > YIELD_MARGIN ? BWF.left0 - YIELD_MARGIN : 0;
   BWF.frames0 = g_frames;
   BWF.last_el = lines_between(BWF.v0, BWF.gap_v);
   {
@@ -1407,7 +1443,7 @@ __attribute__((section(".text_cold"), noinline, target("arm"))) void dscm_yield_
     bw_gap_note(BWF.site, (uint32_t)__builtin_return_address(0), gap);
   }
   BWF.site = (uint32_t)__builtin_return_address(0);
-  if ((uint32_t)el < BWF.budget)
+  if ((uint32_t)el < BWF.budget && !(bw_kind && sg_pred[0] && !sg_pred_ok()))
     return;
   bwf_end();
   BW_MIDYIELDS++;
@@ -1452,7 +1488,7 @@ __attribute__((section(".text_cold"), noinline, noreturn, target("arm"))) void b
       if (!wake_swap(&H.busy, 1)) {
         for (;;) {
           uint32_t left = bwf_left();
-          if (left < BW_YIELD_MARGIN + 1 || !work_wanted(WP))
+          if (left < YIELD_MARGIN + 1 || !work_wanted(WP))
             break;
           BW_UNITS_ALL++;
           if (!bw_step(left) && !H.more)

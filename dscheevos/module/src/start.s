@@ -606,6 +606,7 @@ bw_recover:
 	.global sg_entry
 	.type sg_entry, %function
 sg_entry:
+	str	r1, sg_r1                   @ r0 is the loop's scratch register; r1 kept here until it is in sg_regs' place
 	.ifdef BW_FIBER
 	mov	r1, #MIRROR_HI
 	orr	r1, r1, #REGION_END
@@ -647,6 +648,7 @@ sg_entry:
 	str	r0, [r1]
 	ldr	r1, =sg_regs                @ r4-r11 are the game's again (the checks used r0-r3, r12)
 	ldmia	r1, {r2-r12}
+	ldr	r1, sg_r1
 	b	bw_resume
 sg_yield:                           @ from bw_yield (sp, lr, r4-r11 restored): the rest, then free the guard
 	ldr	r1, =sg_regs
@@ -665,30 +667,27 @@ sg_stock:                           @ a check failed: the game's registers back,
 	strb	r0, [r1, #-GUARD_BACK + 4]
 	.endif
 sg_fast:
-	adr	r0, sg_code + 1
-	bx	r0
+	ldr	r1, sg_r1
+	ldr	r0, sg_stock_pc
+	bx	r0                          @ the game's own instructions (sg_code), as stock
 	.pool
+sg_r1:
+	.word 0
 	.align 2
 	.global sg_param
 sg_param:                           @ filled by nds-bootstrap at boot (dscheevos_hooks.c patchSpin)
-sg_code:                            @ +0: the game's loop, its own bytes (Thumb), padded with nops (mov r8, r8)
-	.rept 8
-	.hword 0x46C0
-	.endr
-	.thumb
-	bx	pc                          @ +16: the loop fell through (it exited): to ARM, no register or flag touched
-	nop
-	.arm
-	ldr	pc, sg_ret                  @ +20: interworking load: the game's next instruction (Thumb)
-	.global sg_ret
-sg_ret:
-	.word 0                         @ +24: the address after the loop, | 1
+sg_code:                            @ +0: the stock instructions nds-bootstrap built from the game's own (32 bytes)
+	.space 32
+sg_stock_pc:
+	.word 0                         @ +32: sg_code, | 1 if Thumb
 	.global sg_line
 sg_line:
-	.word 0                         @ +28: the line at which the loop exits (the gate's deadline)
-	.global sg_addr
-sg_addr:
-	.word 0                         @ +32: the patched address (status)
+	.word 0                         @ +36: the line at which the loop can exit (the gate's deadline)
+	.word 0                         @ +40: the patched address (status)
+	.global sg_pred
+sg_pred:
+	.word 0                         @ +44: predicates (the gate works only while each reads 0)
+	.space 36                       @ +48: 3 x { address, offset, size | 0x100 if the address holds a pointer }
 
 @ Init: called once by nds-bootstrap's ARM9 before the game starts, with
 @ the session file in r0. Its stack is tiny, so run on the module stack.

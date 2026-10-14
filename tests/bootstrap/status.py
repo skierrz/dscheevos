@@ -203,8 +203,8 @@ if md:   # LAB coverage fiber build
 ms = re.search(r'0x([0-9a-f]+)\s+sg_diag\b', mp)
 if ms and hdr[20]:   # LAB busyloop: the spin gate (header word 0x50: its parameters)
     sd = struct.unpack_from('<4I', ram, int(ms.group(1), 16) & 0x00FFFFFF)
-    sp = struct.unpack_from('<9I', ram, hdr[20] & 0x00FFFFFF)
-    print(f"sg gate: {'patched at %08x' % sp[8] if sp[8] else 'not patched'}, deadline line {sp[7]}, return {sp[6]:08x};"
+    sp = struct.unpack_from('<12I', ram, hdr[20] & 0x00FFFFFF)
+    print(f"sg gate: {'patched at %08x' % sp[10] if sp[10] else 'not patched'}, deadline line {sp[9]}, stock code {sp[8]:08x}, predicates {sp[11]};"
           f" fiber entries {sd[0]}, worked {sd[1]} (BIOS-wait gate: {sd[2]}, {sd[3]})")
 print('header magic %08x version %d vblank_count %d' % (hdr[15], hdr[1], hdr[9]))
 
