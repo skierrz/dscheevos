@@ -6,9 +6,7 @@
 02d80048 dscm_cues
 02d80060 vblank_entry
 02d80068 dsc_vblank_queue
-02d800d0 init_entry
-02d800f8 halt_entry
-02d801a4 reset_entry
+02d800d0 halt_entry
 02d801bc dscm_publish_notify
 02d801d4 dscm_publish_cues
 02d801ec dscm_publish_net_ring
@@ -157,9 +155,9 @@
 02d8c3ec dsc_idle
 02d8c8fc dsc_work_pending
 02d8c944 dsc_get_stats
-02dc587c rc_memref_masks
-02dc58e0 rc_memref_size_bytes
-02dc5944 rc_bits_set
-02dc59b8 memp_pools
-02dc59d4 memp_SYS_TIMEOUT
-02dc59dc lwip_cyclic_timers
+02dc5c7c rc_memref_masks
+02dc5ce0 rc_memref_size_bytes
+02dc5d44 rc_bits_set
+02dc5db8 memp_pools
+02dc5dd4 memp_SYS_TIMEOUT
+02dc5ddc lwip_cyclic_timers

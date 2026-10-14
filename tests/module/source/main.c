@@ -30,13 +30,36 @@ static volatile u8 laps;
 
 static const dscm_header_t* hdr;
 static volatile u32 frame;
+static volatile int data_ro;   /* the module's data region is read-only now (see main, CTRDG) */
 
 static void vblank_irq(void)
 {
 	frame++;
-	/* as the ARM7 VBlank hook does: straight to RAM; the module reads it past the cache */
-	((volatile dscm_header_t*)DSCM_UNCACHED(hdr))->vblank_count++;
+	/* as the ARM7 VBlank hook does: straight to RAM; the module reads it past the cache
+	 * (while the mirror is read-only here, through the cache and cleaned: the ARM7 has no MPU) */
+	if (data_ro) {
+		((volatile dscm_header_t*)hdr)->vblank_count++;
+		DC_FlushRange((const void*)&hdr->vblank_count, 4);
+	} else
+		((volatile dscm_header_t*)DSCM_UNCACHED(hdr))->vblank_count++;
 	/* no call: the module reads the count when the game idles */
+}
+
+extern void mpu_regions(u32 out[8]);
+extern u32 mpu_dperm(void);
+extern void mpu_set_dperm(u32 perm);
+
+/* The protection region holding addr (the highest enabled one), or -1. */
+static int mpu_region_of(u32 addr)
+{
+	u32 r[8];
+	mpu_regions(r);
+	for (int i = 7; i >= 0; i--) {
+		if (!(r[i] & 1)) continue;
+		u32 n = (r[i] >> 1) & 31, base = r[i] & ~0xFFFu;
+		if (n == 31 || addr - base < (2u << n)) return i;
+	}
+	return -1;
 }
 
 static u32 ra(volatile const void* p) { return (u32)p - 0x02000000; }
@@ -237,9 +260,36 @@ int main(void)
 	/* 4. run frames: VBlank snapshots from the real IRQ, evaluation in idle time */
 	irqSet(IRQ_VBLANK, vblank_irq);
 	u32 unlock_frame[6] = {0};
-	int reset_done = 0;
+	int reset_done = 0, ro_reset_done = 0;
+	/* Frames 260-279 play NitroSDK's CTRDG_Init window (Professor Layton,
+	 * Peggle): the region holding the module's data (the 0x0C000000 mirror)
+	 * is read-only for data, the game idles and resets in it. The module must
+	 * do nothing then (a write would data-abort); the reset at 270 is taken
+	 * when the region is writable again, so 5's 200 frames restart then. */
+	const int ro_region = mpu_region_of((u32)DSCM_UNCACHED(DSCM_BASE));
+	u32 dperm_rw = 0;
+	out("module data region %d, data permissions %08lx", ro_region, (unsigned long)mpu_dperm());
 	while (frame < 600) {
 		u32 f = frame;
+		if (ro_region >= 0 && f >= 260 && f < 280 && !data_ro) {
+			int ime = enterCriticalSection();
+			dperm_rw = mpu_dperm();
+			data_ro = 1;
+			mpu_set_dperm((dperm_rw & ~(15u << (4 * ro_region))) | (5u << (4 * ro_region)));   /* privileged read-only */
+			leaveCriticalSection(ime);
+		}
+		if (data_ro && f >= 270 && !ro_reset_done) {
+			int ime = enterCriticalSection();
+			((void (*)(void))hdr->reset)();
+			leaveCriticalSection(ime);
+			ro_reset_done = 1;
+		}
+		if (data_ro && f >= 280) {
+			int ime = enterCriticalSection();
+			mpu_set_dperm(dperm_rw);
+			data_ro = 0;
+			leaveCriticalSection(ime);
+		}
 		if (f >= 100 && level != 3) level = 3;
 		if (f >= 200 && coins != 150) coins = 150;
 		if (f >= 300 && object[5] != 42) object[5] = 42;   /* also starts leaderboard 7 */
@@ -251,7 +301,8 @@ int main(void)
 			reset_done = 1;
 		}
 		halt_as_idle((void (*)(void))hdr->halt);   /* the game's idle thread calling its patched OS_Halt */
-		network_layer();
+		if (!data_ro)
+			network_layer();   /* the access point's side writes the module's net slots */
 		for (u32 i = 0; i < hdr->status->unlock_count && i < DSCM_RECENT_MAX; i++) {
 			u32 id = hdr->status->recent[i].id;
 			if (id < 6 && !unlock_frame[id]) unlock_frame[id] = hdr->status->recent[i].frame;
@@ -265,7 +316,9 @@ int main(void)
 		(unsigned long)st->frames_missed,
 		(unsigned long)(st->eval_lines / 16));
 	int fails = 0;
-	struct { int id; u32 from, to; } expect[] = {{1, 100, 104}, {2, 200, 204}, {3, 300, 304}, {5, 448, 458}};
+	/* 5: the reset at 250 restarts its 200 frames, and the one at 270 (read-only
+	 * window) again once the window ends at 280 */
+	struct { int id; u32 from, to; } expect[] = {{1, 100, 104}, {2, 200, 204}, {3, 300, 304}, {5, 478, 490}};
 	for (int i = 0; i < 4; i++) {
 		u32 f = unlock_frame[expect[i].id];
 		int ok = f >= expect[i].from && f <= expect[i].to;
@@ -287,6 +340,11 @@ int main(void)
 		fails += !ok;
 	}
 	if (st->frames_dropped || st->frames_missed) { out("FAIL: frames dropped or missed"); fails++; }
+	{
+		int ok = ro_region >= 0 && ro_reset_done;
+		out("%s: read-only window: region %d, a reset in it", ok ? "ok" : "FAIL", ro_region);
+		fails += !ok;
+	}
 	fails += check_v6();
 	fails += check_strtoul();
 	out(fails ? "RESULT FAIL" : "RESULT PASS");

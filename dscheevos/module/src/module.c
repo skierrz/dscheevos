@@ -71,7 +71,7 @@ static int g_initialized;
  * thread wakes 20-40 times a frame, and each line we touch there is a line
  * of the game's own evicted from the data cache. Most wakes need only the
  * snapshot and the halt (see module_idle). */
-static struct {
+struct {
   uint32_t pass_frame;           /* g_frames at the last full pass */
   uint32_t halts_idle, halts_other;  /* copied to the status once a frame */
   uint16_t requests;             /* requests queued or in flight (http_send .. poll_network) */
@@ -84,8 +84,9 @@ static struct {
   uint32_t dtcm;                 /* the game's DTCM base, once known */
   uint32_t capture_cpsr;         /* CPSR with IRQs on, from the caller of capture() */
   volatile uint32_t busy;        /* idle work running (maybe parked): dscm_lock */
-} H __attribute__((aligned(32)));
+} H __asm__("dscm_h") __attribute__((aligned(32)));   /* start.s (reset_entry) writes two fields */
 _Static_assert(sizeof(H) == 32, "H: one cache line");
+_Static_assert(__builtin_offsetof(__typeof__(H), reset_pending) == 14 && __builtin_offsetof(__typeof__(H), busy) == 28, "H: start.s H_RESET_PENDING, H_BUSY");
 #define g_dtcm (H.dtcm)
 
 extern uint32_t dscm_vblank_count_read(void);  /* start.s */
@@ -151,7 +152,7 @@ typedef struct dscm_irq_t {
   uint32_t last_vblank;          /* the ARM7's count at the last call */
   volatile uint32_t frames;      /* VBlanks since init */
   uint8_t on;                    /* initialized and active */
-  volatile uint8_t in_vblank;    /* unused (was: a copy in the VBlank IRQ is running) */
+  uint8_t data_region;           /* the game's MPU region holding the module's data, 0xFF until known (start.s, data_region_scan) */
   volatile uint8_t in_halt;      /* halt_entry's idle work is running (start.s) */
   uint8_t alias_cached;          /* diagnostics: the game's MPU caches the 0x0C000000 mirror (SDK5) */
   volatile uint32_t idle_open;
@@ -169,7 +170,7 @@ typedef struct dscm_irq_t {
 extern dscm_irq_t dscm_irq;
 /* the offsets start.s uses */
 _Static_assert(sizeof(dscm_irq_t) == 64, "dscm_irq: two cache lines");
-_Static_assert(offsetof(dscm_irq_t, on) == 8 && offsetof(dscm_irq_t, in_vblank) == 9 && offsetof(dscm_irq_t, in_halt) == 10 && offsetof(dscm_irq_t, alias_cached) == 11 && offsetof(dscm_irq_t, idle_open) == 12, "dscm_irq");
+_Static_assert(offsetof(dscm_irq_t, on) == 8 && offsetof(dscm_irq_t, data_region) == 9 && offsetof(dscm_irq_t, in_halt) == 10 && offsetof(dscm_irq_t, alias_cached) == 11 && offsetof(dscm_irq_t, idle_open) == 12, "dscm_irq");
 _Static_assert(offsetof(dscm_irq_t, idle_start) == 16 && offsetof(dscm_irq_t, timed_frames) == 20 && offsetof(dscm_irq_t, irq_lines_total) == 24, "dscm_irq");
 _Static_assert(offsetof(dscm_irq_t, irq_lines_last) == 28 && offsetof(dscm_irq_t, irq_lines_max) == 30, "dscm_irq");
 _Static_assert(offsetof(dscm_irq_t, idle_cut_lines) == 32 && offsetof(dscm_irq_t, idle_cut) == 36 && offsetof(dscm_irq_t, frames_missed) == 40, "dscm_irq");
@@ -563,6 +564,7 @@ int module_init(const dscm_boot_t* boot)
   H.dtcm_fixed = g_dtcm != 0;   /* fixed: refresh_dtcm leaves it */
   dscm_irq.last_vblank = dscm_vblank_count_read();
   dscm_irq.alias_cached = 0xFF;   /* known once the game idles (module_idle) */
+  dscm_irq.data_region = 0xFF;    /* the game's MPU region for it too (start.s) */
   dscm_g_status.hardcore = g_boot.hardcore;
 
   memset(&platform, 0, sizeof(platform));
@@ -745,12 +747,10 @@ __attribute__((section(".text_cold"), noinline)) void module_flush(void)
   H.busy = 0;          /* notices, cues and stats: the next idle pass */
 }
 
-/* From reset_entry (start.s); IRQs are off. */
-void module_reset(void)
-{
-  H.reset_pending = 1;
-  H.busy = 0;   /* a pass the game's threads were running never resumes */
-}
+/* A reset (nds-bootstrap's reset path, IRQs off) sets H.reset_pending and
+ * clears H.busy, a pass the game's threads were running never resumes:
+ * start.s, reset_entry, writes them itself (the data view may be read-only
+ * under the game's MPU then). */
 
 /* Work only once a frame or when something is waiting (see module_idle):
  * all of it read from H, one cache line. */

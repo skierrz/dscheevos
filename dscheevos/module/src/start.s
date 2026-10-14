@@ -42,7 +42,7 @@ dscm_cues:
 	.equ	IRQ_LAST, 0
 	.equ	IRQ_FRAMES, 4
 	.equ	IRQ_ON, 8
-	.equ	IRQ_IN_VBLANK, 9
+	.equ	IRQ_DATA_REGION, 9
 	.equ	IRQ_IN_HALT, 10
 	.equ	IRQ_ALIAS_CACHED, 11
 	.equ	IRQ_IDLE_OPEN, 12
@@ -54,13 +54,18 @@ dscm_cues:
 	.equ	IRQ_IDLE_CUT_LINES, 32
 	.equ	IRQ_IDLE_CUT, 36
 	.equ	IRQ_MISSED, 40
+	@ module.c's H (dscm_h): what reset_entry writes when the data view is read-only
+	.equ	H_RESET_PENDING, 14
+	.equ	H_BUSY, 28
 	@ (its own section: module.ld puts it with the uncached data,
 	@ module-cached.ld next to the code)
 	.section .data.wake, "aw"
 	.balign	32
 	.global dscm_irq
 dscm_irq:
-	.space	64
+	.space	9
+	.byte	0xFF                @ data_region: not known yet (data_region_scan)
+	.space	54
 
 	.section .header, "ax"
 
@@ -76,22 +81,6 @@ vblank_entry:
 
 	.section .text.entries, "ax"
 	.arm
-
-@ Init: called once by nds-bootstrap's ARM9 before the game starts, with
-@ the session file in r0. Its stack is tiny, so run on the module stack.
-	.global init_entry
-	.type init_entry, %function
-init_entry:
-	push	{r4, lr}
-	mov	r4, sp
-	ldr	sp, =__stack_top
-	push	{r4, r5}
-	ldr	r1, =module_init
-	blx	r1
-	pop	{r4, r5}
-	mov	sp, r4
-	pop	{r4, lr}
-	bx	lr
 
 @ Halt: the game's OS_Halt jumps here. Run idle work on the module stack,
 @ then wait for an interrupt as OS_Halt does. A game thread woken by an IRQ
@@ -113,10 +102,30 @@ halt_entry:
 	ldr	r0, [r0, #0x208]            @ REG_IME
 	tst	r0, #1
 	beq	2f
+	@ The module's data must be writable under the game's MPU right now:
+	@ NitroSDK's CTRDG_Init makes the GBA-slot region (0x08000000-
+	@ 0x0FFFFFFF, which holds the 0x0C000000 mirror our data goes through)
+	@ read-only for data until the ARM7 answers, and CTRDG_Enable(FALSE)
+	@ can do it at any time. A write there data-aborts into the game's
+	@ exception handler (Professor Layton and Peggle idle inside that
+	@ window and froze). Then this wake is the stock halt: nothing of ours
+	@ runs. CP15 is only read: the data access permissions (c5) of the
+	@ region holding dscm_irq (found once from c6, data_region_scan).
+	ldr	r12, =dscm_irq + IRQ_IN_HALT
+	ldrb	r0, [r12, #IRQ_DATA_REGION - IRQ_IN_HALT]
+	cmp	r0, #8
+	adrhs	r3, 1f
+	bhs	data_region_scan            @ r0 = the region, 8 if none (then nothing is writable)
+1:	mrc	p15, 0, r1, c5, c0, 2
+	mov	r2, r0, lsl #2              @ a register shift of 32 or more gives 0: no access
+	mov	r1, r1, lsr r2
+	and	r1, r1, #15
+	sub	r1, r1, #1
+	cmp	r1, #3                      @ 1, 2, 3: privileged read/write
+	bhs	2f
 	@ in_halt: a byte in the line every wake uses. Test and set in one step:
 	@ a thread that preempts us between a read and a write would otherwise
 	@ also take the module stack.
-	ldr	r12, =dscm_irq + IRQ_IN_HALT
 	mov	r0, #1
 	swpb	r1, r0, [r12]
 	cmp	r1, #0
@@ -161,18 +170,10 @@ halt_entry:
 	mcr	p15, 0, r0, c7, c0, 4       @ wait for interrupt
 	bx	lr
 
-@ Reset: called from nds-bootstrap's reset path with IRQs off. The game's
-@ threads are gone, so work that was preempted will never resume: clear
-@ the re-entry guards. The achievement reset itself happens in idle time.
-	.global reset_entry
-	.type reset_entry, %function
-reset_entry:
-	ldr	r0, =dscm_irq
-	mov	r1, #0
-	strb	r1, [r0, #IRQ_IN_VBLANK]
-	strb	r1, [r0, #IRQ_IN_HALT]
-	ldr	r0, =module_reset
-	bx	r0
+@ The entries below stay where they were before the MPU check grew
+@ halt_entry (init_entry and reset_entry moved to .text_cold): hot code at
+@ pinned addresses (hot-layout.ref).
+	.org	0xEC
 
 @ void dscm_publish_notify(uint32_t count): store the unlock count and clean
 @ its cache line to RAM so the ARM7 sees it.
@@ -366,6 +367,20 @@ dscm_dtcm_base:
 	.type flush_entry, %function
 flush_entry:
 	push	{r4, lr}
+	@ the data view must be writable now, as halt_entry checks it; if not, a
+	@ later safe point writes the journal
+	ldr	r12, =dscm_irq + IRQ_IN_HALT
+	ldrb	r0, [r12, #IRQ_DATA_REGION - IRQ_IN_HALT]
+	cmp	r0, #8
+	adrhs	r3, 1f
+	bhs	data_region_scan
+1:	mrc	p15, 0, r1, c5, c0, 2
+	mov	r2, r0, lsl #2
+	mov	r1, r1, lsr r2
+	and	r1, r1, #15
+	sub	r1, r1, #1
+	cmp	r1, #3
+	bhs	9f
 	ldr	r12, =dscm_irq + IRQ_IN_HALT
 	mov	r0, #1
 	swpb	r1, r0, [r12]
@@ -383,5 +398,100 @@ flush_entry:
 	strb	r2, [r1, #IRQ_IN_HALT]
 9:	pop	{r4, lr}
 	bx	lr
+
+@ Init: called once by nds-bootstrap's ARM9 before the game starts, with
+@ the session file in r0. Its stack is tiny, so run on the module stack.
+	.global init_entry
+	.type init_entry, %function
+init_entry:
+	push	{r4, lr}
+	mov	r4, sp
+	ldr	sp, =__stack_top
+	push	{r4, r5}
+	ldr	r1, =module_init
+	blx	r1
+	pop	{r4, r5}
+	mov	sp, r4
+	pop	{r4, lr}
+	bx	lr
+
+@ Reset: called from nds-bootstrap's reset path with IRQs off. The game's
+@ threads are gone, so work that was preempted will never resume: clear
+@ the re-entry guards (in_halt, H.busy) and ask for the achievement reset,
+@ which happens in idle time (H.reset_pending). The game's MPU may make the
+@ data view read-only right now (CTRDG, see halt_entry), so the three
+@ writes go to the same RAM through the 0x02000000 view (main RAM, always
+@ writable), with the lines of both views written back and dropped around
+@ them: no stale copy is left in the data cache. No stack is used.
+	.global reset_entry
+	.type reset_entry, %function
+reset_entry:
+	ldr	r0, =dscm_irq
+	ldr	r1, =dscm_h
+	mcr	p15, 0, r0, c7, c14, 1      @ clean and drop: a cached data view (SDK5) may hold them dirty
+	mcr	p15, 0, r1, c7, c14, 1
+	mov	r2, #0
+	mcr	p15, 0, r2, c7, c10, 4
+	bic	r0, r0, #0x0F000000          @ 0x0Cxxxxxx -> 0x02xxxxxx (no change in the cached build)
+	orr	r0, r0, #0x02000000
+	bic	r1, r1, #0x0F000000
+	orr	r1, r1, #0x02000000
+	strb	r2, [r0, #IRQ_IN_HALT]
+	str	r2, [r1, #H_BUSY]
+	mov	r2, #1
+	strb	r2, [r1, #H_RESET_PENDING]
+	mcr	p15, 0, r0, c7, c14, 1
+	mcr	p15, 0, r1, c7, c14, 1
+	mov	r2, #0
+	mcr	p15, 0, r2, c7, c10, 4
+	bx	lr
+
+@ The protection region holding dscm_irq (the highest enabled one), from
+@ CP15 c6, for halt_entry and flush_entry (r12 = dscm_irq + IRQ_IN_HALT,
+@ return address in r3, uses r0-r2). Kept in dscm_irq once it is writable,
+@ so this runs on the first wakes only. Returns r0 = the region, 8 if none.
+	.macro	DATA_REGION n
+	mrc	p15, 0, r1, c6, c\n, 0
+	tst	r1, #1
+	beq	10f
+	mov	r2, r1, lsr #1
+	and	r2, r2, #31
+	add	r2, r2, #1
+	mov	r0, #1
+	mov	r2, r0, lsl r2              @ size: 2 << N (0 for 4 GB: every address)
+	bic	r1, r1, #0xFF0
+	bic	r1, r1, #0xF
+	sub	r1, r12, r1                 @ offset from the base
+	cmp	r2, #0
+	cmpne	r1, r2
+	movlo	r0, #\n
+	blo	11f
+	cmp	r2, #0
+	moveq	r0, #\n
+	beq	11f
+10:
+	.endm
+	.type data_region_scan, %function
+data_region_scan:
+	DATA_REGION 7
+	DATA_REGION 6
+	DATA_REGION 5
+	DATA_REGION 4
+	DATA_REGION 3
+	DATA_REGION 2
+	DATA_REGION 1
+	DATA_REGION 0
+	mov	r0, #8
+	mov	pc, r3
+	@ found: keep it if the region lets us write it (else the next wake looks again)
+11:	mrc	p15, 0, r1, c5, c0, 2
+	mov	r2, r0, lsl #2
+	mov	r1, r1, lsr r2
+	and	r1, r1, #15
+	sub	r1, r1, #1
+	cmp	r1, #3
+	strblo	r0, [r12, #IRQ_DATA_REGION - IRQ_IN_HALT]
+	mov	pc, r3
+	.pool
 	.popsection
 
