@@ -177,6 +177,32 @@ arena and the core's state for sets whose reply is <= 64 KB). Kirby (1500 interv
 cached (shadow ~12-13k either way); Pokemon Black (8000-9500) keeps it cached too. Details, dropped ideas and
 the floor: research/optimize/opt-gamecost.md in the planning folder.
 
+### Combined build: data mirror + change-driven evaluation (integ, Oct 2026)
+
+opt-gamecost (data through the mirror) merged with opt-evalcost (rcheevos patch stack, module built with
+`DSC_FLAGS="-DDSC_CHANGE_DRIVEN -DDSC_CHANGED_RANGES"`, the intended shipping config). Re-sweep of the text and
+data colours with the flags on (Kirby, 1500 intervals, on - off avg; one run each, runs repeat exactly):
+
+| TEXT_COLOUR (DATA 0) | 0x000 | 0x100 | 0x200 | 0x300 | **0x400** | 0x500 | 0x600 | 0x700 |
+|---|---|---|---|---|---|---|---|---|
+| Kirby | 18.5k | 21.2k | 19.6k | 18.2k | **19.2k** | 27.2k | 19.4k | 19.6k |
+
+DATA_COLOUR at TEXT 0x400: 0 19.2k, 0x100 18.4k, 0x200 19.1k, 0x300 19.3k. With the mirror, Kirby's heap
+and statics are uncached, so the colour now moves only the cached code and constants: every point but
+0x500 lies within 3k (the ratchet) of the others. The pin stays at text 0x400 / data 0 (nothing to gain that
+the ratchet could tell from layout noise; MKDS and Black keep their measured layout). opt-evalcost's Kirby
++83k came from its cached heap (no mirror on that branch), not from the patches.
+
+| | Kirby SSU (1500) | MKDS race (2000-3000) | Pokemon Black (8000-9500) |
+|---|---|---|---|
+| opt-gamecost head (flags n/a) | +20.7k (1.85%) | +8.3k raw, +15.2k eq. work, shadow 13.0k | +111.2k (9.92%) |
+| integ, flags off | +17.4k (1.56%) | +13.1k raw, +14.0k eq. work, shadow 12.7k | +111.7k (9.97%) |
+| **integ, flags on (shipping)** | **+19.2k (1.71%)** | +19.3k raw, **+5.3k eq. work**, shadow 13.5k | **+92.7k (8.27%)** |
+
+MKDS's raw delta is workload drift (CPI +0.7%; judge it on the equal-work and shadow lines). Lag intervals
+off/on: Kirby 180/175, MKDS 0/0, Black 2/2; every frame evaluated (MKDS 3012/3012, Black 9506/9506).
+The flags-off column was measured before the TLS-free fix (below), which changes nothing for Kirby (uncached heap).
+
 ### Proposed gate
 
 1. Lag intervals equal off vs on (the existing A/B rule).

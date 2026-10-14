@@ -13,8 +13,10 @@ MEMORY {
 /* Offsets from the way boundaries (make TEXT_COLOUR=.. DATA_COLOUR=..), from a
  * sweep of the game's own cycles (tests/perf/gamecost.sh, melonDS cache model):
  * text 0x400 / data 0 cost Kirby +67.0k cycles a frame (0x000-0x700: 67-100k)
- * and MKDS +8.1k (offset 0: +21.7k). Re-sweep when the hot code changes size
- * a lot; see tests/perf/AB.md "Cache colours". */
+ * and MKDS +8.1k (offset 0: +21.7k). Re-swept with the data mirror and the
+ * change-driven rcheevos (AB.md "Combined build"): 0x400 / 0 kept (Kirby
+ * +19.2k, all colours but text 0x500 within 3k). Re-sweep when the hot code
+ * changes size a lot; see tests/perf/AB.md "Cache colours". */
 DSCM_TEXT_COLOUR = DEFINED(DSCM_TEXT_COLOUR) ? DSCM_TEXT_COLOUR : 0x400;
 DSCM_DATA_COLOUR = DEFINED(DSCM_DATA_COLOUR) ? DSCM_DATA_COLOUR : 0;
 
