@@ -478,6 +478,14 @@ bw_yield:                           @ on the fiber: save it, back to the game's 
 	orr	r1, r1, #REGION_END
 	mov	r2, #0
 	strb	r2, [r1, #-GUARD_BACK + 4]
+	.ifdef BW_SKIP_LATE
+	@ LAB measurement only, NEEDS AN OWNER RULING (the class of ruling C): r0 != 0 = the
+	@ game's own VBlank handler ran during this wait (its flag was set meanwhile): return
+	@ to the game at once instead of the stock wrapper, whose discard would wait a frame
+	@ more. Writes nothing; the flag stays set until the game's next wait discards it.
+	cmp	r0, #0
+	bxne	lr
+	.endif
 	b	bw_stock
 	.ifdef TLS_YIELD
 	@ LAB: yield points on calls between mbedtls files (Makefile TLS_YIELD_WRAPS,
