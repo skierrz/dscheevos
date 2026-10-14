@@ -4,6 +4,7 @@
  * compares per malloc and free; nothing allocates per frame.
  */
 #include "heap.h"
+#include "dscheevos.h"
 #include "rc_api_runtime.h"
 
 #include <errno.h>
@@ -248,8 +249,15 @@ static int lent_slot(const void* p)
   return -1;
 }
 
+/* A load-time allocation failed (cold: linked last, see DSCM_COLD). */
+DSCM_COLD static void oom_note(void)
+{
+  dscm_g_heap.oom++;
+}
+
 void* __wrap_malloc(size_t n)
 {
+  void* p;
   if (Z.loading) {
     if (Z.arena_open && n == HEAP_ARENA_BYTES) {
       Z.arena_open = 0;
@@ -271,12 +279,15 @@ void* __wrap_malloc(size_t n)
       }
     }
     if (Z.parsing) {
-      void* p = bump_alloc(n);
+      p = bump_alloc(n);
       if (p)
         return p;
     }
   }
-  return __real_malloc(n);
+  p = __real_malloc(n);
+  if (!p && Z.loading)
+    oom_note();
+  return p;
 }
 
 void __wrap_free(void* p)
@@ -307,7 +318,12 @@ void* __wrap_calloc(size_t count, size_t size)
     if (p)
       return memset(p, 0, n);
   }
-  return __real_calloc(count, size);
+  {
+    void* p = __real_calloc(count, size);
+    if (!p && Z.loading)
+      oom_note();
+    return p;
+  }
 }
 
 void* __wrap_realloc(void* p, size_t n)
@@ -331,6 +347,14 @@ void* __wrap_realloc(void* p, size_t n)
   return q;
 }
 
+#ifndef DSCM_HEAP_HOST_TEST
+/* Keeps newlib's and lwIP's code where it was before the load-time changes of
+ * this file (the hot-code layout decides what the module costs the game
+ * through the I-cache; research/optimize/bigset.md). Change it with the map:
+ * the addresses of code past heap.o must not move. */
+__asm__(".pushsection .text.__wrap_realloc,\"ax\",%progbits\n .space 68\n .popsection");
+#endif
+
 /* rc_client's only parse of the set: every allocation in it is the parsed
  * response, which rc_client frees (rc_api_destroy_fetch_game_sets_response)
  * once it has built its own game data from it. */
@@ -346,7 +370,7 @@ int __wrap_rc_api_process_fetch_game_sets_server_response(rc_api_fetch_game_sets
   return result;
 }
 
-int heap_load_end(void)
+DSCM_COLD int heap_load_end(void)
 {
   int i, left = Z.live;
   for (i = 0; i < LEND_MAX; i++)
@@ -360,5 +384,5 @@ int heap_load_end(void)
   dscm_g_heap.load_in_use = (uint32_t)mallinfo().uordblks - g_gap;
 #endif
   dscm_g_heap.load_left = (uint32_t)left;
-  return left ? -1 : 0;
+  return left || (dscm_g_heap.oom && !dsc_is_active()) ? -1 : 0;
 }

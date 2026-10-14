@@ -608,7 +608,7 @@ int module_init(const dscm_boot_t* boot)
    * unfinished load never resumes: module_idle runs only when active. */
   for (i = 0; i < DSCM_PRELOAD_COUNT; i++)
     g_boot.preload_length[i] = 0;
-  if (heap_load_end() != 0 && dsc_is_active()) {
+  if (heap_load_end() != 0) {   /* load-time blocks left in the arena, or an allocation failed (the set didn't fit) */
     dsc_shutdown();
     dscm_g_status.error = DSCM_ERROR_NO_MEMORY;
   }

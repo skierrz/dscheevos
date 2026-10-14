@@ -64,7 +64,9 @@ void heap_arena_window(int open);
  * next malloc(len + 1): the core's copy of a reply. NULL: stop lending. */
 void heap_lend(const char* body, uint32_t len);
 /* The load is over: nothing load-time may stay in the arena. Returns 0 if
- * nothing does, else -1 (the arena would overwrite it: don't start). */
+ * nothing does, else -1 (the arena would overwrite it: don't start). Also -1
+ * if an allocation failed and the load didn't finish: the set doesn't fit
+ * the heap (module_init reports DSCM_ERROR_NO_MEMORY). */
 int heap_load_end(void);
 /* After the module's last read of the session's replies and CA (module_init's
  * end): a moved session's bytes become heap. A no-op otherwise. */
@@ -85,6 +87,7 @@ typedef struct dscm_heap_t {
   uint32_t wrong_view;                /* frees/reallocs of a heap block through the other view
                                          (cached vs mirror): a bug, must stay 0 (status.py fails) */
   uint32_t moved;                     /* a session bigger than the arena: where its copy went during the load (0: none) */
+  uint32_t oom;                       /* allocations that failed during the load: the set doesn't fit (module_init reports NO_MEMORY) */
 } dscm_heap_t;
 extern dscm_heap_t dscm_g_heap;
 

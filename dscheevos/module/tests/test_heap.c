@@ -28,12 +28,14 @@ static size_t chunk(size_t n) { size_t c = (n + 4 + 7) & ~(size_t)7; return c < 
 static size_t in_use, peak, set_blocks;   /* set_blocks: heap copies of the set (its size + 1) */
 static size_t set_size = (size_t)-1;
 static int counting = 1;
+static size_t malloc_cap;   /* nonzero: h_malloc fails past this many bytes in use (a heap that is full) */
 #define HDR 16
 static void count(long d) { in_use += d; if (in_use > peak) peak = in_use; }
 void* h_malloc(size_t n)
 {
   size_t* p = (size_t*)malloc(n + HDR);
   if (!p) return NULL;
+  if (malloc_cap && counting && in_use + chunk(n) > malloc_cap) { free(p); return NULL; }
   p[0] = n;
   if (n == set_size + 1) set_blocks++;
   if (counting) count((long)chunk(n));
@@ -155,6 +157,7 @@ typedef struct result_t {
 } result_t;
 
 /* module_init's sequence, then n frames. place: the heap placement on. */
+static size_t cap_after_init;   /* nonzero: from dsc_init's end the heap holds only this many bytes more */
 static result_t run(int place, uint32_t arena_bytes, uint32_t n)
 {
   dsc_platform_t pl;
@@ -185,6 +188,7 @@ static result_t run(int place, uint32_t arena_bytes, uint32_t n)
   if (dsc_init(&pl, &c) != 0) { printf("  dsc_init failed\n"); return res; }
   heap_arena_window(0);
   res.init = in_use;
+  malloc_cap = cap_after_init ? in_use + cap_after_init : 0;
   dsc_begin_session(boot->game_hash);
   for (i = 0; i < 8 && !dsc_is_active(); i++)
     dsc_idle();
@@ -207,6 +211,7 @@ static result_t run(int place, uint32_t arena_bytes, uint32_t n)
     dsc_vblank();
     dsc_idle();
   }
+  malloc_cap = 0;
   res.steady = in_use;
   res.peak = peak;
   res.digest = digest;
@@ -332,6 +337,25 @@ static void test_oversized_set(void)
   free(set);
 }
 
+static void test_no_memory(void)
+{
+  /* a heap too small for the set's game data: the load can't finish, and
+   * the module must be able to say why (module_init: DSCM_ERROR_NO_MEMORY
+   * when oom is set, the load unfinished and no other error) */
+  result_t a;
+  printf("heap full during the load\n");
+  make_session(small_set, sizeof(small_set) - 1, 0);
+  cap_after_init = 512;
+  a = run(1, HEAP_ARENA_BYTES, 10);
+  cap_after_init = 0;
+  CHECK(!a.active);
+  CHECK(a.heap.oom > 0 && a.left == -1);   /* heap_load_end: module_init's NO_MEMORY */
+  /* and a load that fits records nothing */
+  make_session(small_set, sizeof(small_set) - 1, 0);
+  a = run(1, HEAP_ARENA_BYTES, 10);
+  CHECK(a.active && a.heap.oom == 0 && a.left == 0);
+}
+
 static void test_no_arena(void)
 {
   result_t a;
@@ -371,6 +395,7 @@ int main(void)
   test_old_layout();
   test_parse_overflow();
   test_oversized_set();
+  test_no_memory();
   test_no_arena();
   printf("%d checks, %d failures\n", checks, failures);
   return failures != 0;
