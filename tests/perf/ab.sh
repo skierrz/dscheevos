@@ -57,7 +57,13 @@ for mode in ${MODES:-off on}; do
   grep "^\[prof\]\|^\[runner\]\|^\[game\]\|^\[arm7\]\|^\[cache\]" "$work/runner.log" || { echo "no profile; see $work/run.out"; exit 1; }
   [ -z "${PROFDIR:-}" ] || cp "$work/prof.csv" "$PROFDIR/prof.$mode.csv"
   if [ $mode = on ]; then
-    [ -f "$work/sd/_nds/dscheevos/session.used" ] || { echo "FAIL: nds-bootstrap didn't use the session"; exit 1; }
+    if [ ! -f "$work/sd/_nds/dscheevos/session.used" ]; then
+      # say why (the work folder goes on exit): the launcher's log ("couldn't write the session
+      # files" = the set is over DSCM_SESSION_MAX; wifi:/session: lines = it never got a session)
+      echo "FAIL: nds-bootstrap didn't use the session"
+      sed -n '/^launcher.log:/,$p' "$work/run.out" | sed -E 's/[A-Za-z0-9+\/=_-]{20,}/<redacted>/g' | head -20
+      exit 1
+    fi
     grep -q "OS_Halt ->" "$work/runner.log" || { echo "FAIL: no module in RAM"; exit 1; }
     echo "server saw $(grep -c '"unlock"' "$work/events.jsonl" || true) unlocks"
     # the module's own counters (frames snapshotted, dropped, evaluated; self-timing)
