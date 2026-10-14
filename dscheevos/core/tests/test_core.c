@@ -353,11 +353,26 @@ static int clock_utc;                     /* platform.clock_is_utc for start_wit
 static int clock_bits;                    /* platform.clock (DSCM_CLOCK_*) for start_with */
 static uint32_t (*platform_frame)(void);
 static void (*platform_journal_sync)(const void*, uint32_t);
+static uint32_t (*platform_unix_time_at)(uint32_t);
+/* hand-over: config.handover, and the ARM9's cache hook (its calls must pair up) */
+static int handover_mode;
+static int own_acquires, own_releases, own_bad;
+static void ownership(int acquire)
+{
+  if (dsc_owner() != DSC_OWNER_ARM9) own_bad++;          /* still the ARM9's in both calls */
+  if (acquire) { if (own_acquires != own_releases) own_bad++; own_acquires++; }
+  else { if (own_acquires != own_releases + 1) own_bad++; own_releases++; }
+}
 static void start_with(int hardcore, uint32_t slots, uint32_t bytes)
 {
   dsc_platform_t p = { read_memory, millis, http_send, on_event, dbg_log, unix_time, &journal, &notices, publish_list, platform_frame,
                        use_map ? memory_map : NULL, interrupt_pending, platform_journal_sync, clock_utc, clock_bits };
   dsc_config_t c = { "http://mock", "tester", "tok", hardcore, max_addresses, slots, bytes, spectator, halt_mode, idle_budget };
+  p.unix_time_at = platform_unix_time_at;
+  p.ownership = ownership;
+  c.handover = handover_mode;
+  own_acquires = handover_mode ? 1 : 0;    /* dsc_init: the ARM9's from the start, nothing to invalidate */
+  own_releases = own_bad = 0;
   seen_valid = 0;
   table_full_logs = 0;
   memset(ram, 0, sizeof ram);
@@ -1211,6 +1226,40 @@ static void RC_CCONV ref_event(const rc_runtime_event_t* e)
  * must not see that). Returns how many unlocked. In this test build the
  * core also checks each snapshot against the old copy code and rcheevos
  * (DSC_CHECK_FAST_STEPS), and aborts on any difference. */
+/* Hand-over on the host: two evaluators share the rc_client. The "ARM9"
+ * (dsc_idle) wants it for a random 1-8 frames, then gives it back for a
+ * random 1-8 frames; each frame, the two get a random number of turns in a
+ * random order, the "ARM7" (dsc_arm7_step) a random number of frames each.
+ * The core aborts if a CPU evaluates without owning it (CHECK_OWNER). */
+static int ho_want, ho_switch_in, ho_switches;
+static uint32_t ho_rng = 7;
+static uint32_t ho_rnd(void) { ho_rng ^= ho_rng << 13; ho_rng ^= ho_rng >> 17; ho_rng ^= ho_rng << 5; return ho_rng; }
+static void handover_tick(void)
+{
+  int k;
+  if (--ho_switch_in <= 0) {
+    ho_want = !ho_want;
+    dsc_want(ho_want);
+    ho_switch_in = 1 + (int)(ho_rnd() % 8);
+    ho_switches++;
+  }
+  for (k = (int)(ho_rnd() % 4); k > 0; k--) {
+    if (ho_rnd() % 2)
+      dsc_idle();
+    else
+      dsc_arm7_step(ho_rnd() % 4);    /* 0: all queued */
+  }
+}
+/* Both evaluators until nothing is queued. */
+static void handover_catch_up(void)
+{
+  int guard = 0;
+  while ((dsc_backlog() || dsc_work_pending()) && guard++ < 100000)
+    handover_tick();
+  dsc_idle();
+  dsc_arm7_step(0);
+}
+
 static int compare_with_rcheevos(const char* const* triggers, int n, int frames_to_run, int idle_every,
                                  void (*mutate)(int frame, int when), dsc_stats_t* stats)
 {
@@ -1228,17 +1277,26 @@ static int compare_with_rcheevos(const char* const* triggers, int n, int frames_
   for (i = 0; i < n; i++)
     parsed += rc_runtime_activate_achievement(&ref, DIFF_BASE + i, triggers[i], NULL, 0) == RC_OK;
   CHECK(parsed == n);
+  if (handover_mode) {
+    ho_want = 1;
+    ho_switch_in = 1 + (int)(ho_rnd() % 8);
+  }
   for (f = 1; f <= frames_to_run; f++) {
     mutate(f, 0);
     dsc_vblank();
     ref_frame = f;
     rc_runtime_do_frame(&ref, ref_event, ref_peek, NULL, NULL);
     mutate(f, 1);
-    if (f % idle_every == 0)
+    if (handover_mode)
+      handover_tick();
+    else if (f % idle_every == 0)
       dsc_idle();
   }
-  while (dsc_idle())    /* catch up (several calls with idle_max_frames) */
-    ;
+  if (handover_mode)
+    handover_catch_up();
+  else
+    while (dsc_idle())    /* catch up (several calls with idle_max_frames) */
+      ;
   dsc_get_stats(stats);
   CHECK(stats->frames_dropped == 0);
   CHECK(stats->frames_evaluated == (uint32_t)frames_to_run);
@@ -1911,6 +1969,239 @@ static void test_budgeted_idle_matches_rcheevos(void)
   halt_mode = saved;
 }
 
+
+/* ---- queue lifecycle and hand-over (research/offload/handover-step0.md) ---- */
+
+/* An unlock in the frames queued before a reset is evaluated, then the reset
+ * (reset is queued in frame order; it used to drop the queued frames). */
+static void test_reset_evaluates_queued_frames_first(void)
+{
+  dsc_stats_t s;
+  start_with(1, 1024, 0);
+  frames(3);
+  ram[0x10] = 5;
+  dsc_vblank();                /* queued, not evaluated yet */
+  dsc_vblank();
+  ram[0x10] = 0;
+  CHECK(!was_unlocked(1001));
+  dsc_reset();
+  frames(2);
+  CHECK(was_unlocked(1001));
+  CHECK(journal.count == 1 && journal.e[0].id == 1001);
+  dsc_get_stats(&s);
+  CHECK(s.frames_discarded == 0 && s.frames_dropped == 0);
+  CHECK(s.frames_evaluated == s.frames_snapshotted);
+  dsc_shutdown();
+}
+
+/* A reset clears hit counts at its place in the queue: 60 frames before it
+ * and 60 after it don't add up to the 100 that achievement 1004 needs, and
+ * 100 after it do. */
+static void test_reset_in_queue_clears_hits_in_order(void)
+{
+  int i;
+  start_with(1, 1024, 0);
+  frames(2);
+  ram[0x20] = 3;
+  for (i = 0; i < 60; i++) dsc_vblank();
+  dsc_reset();
+  for (i = 0; i < 60; i++) dsc_vblank();
+  while (dsc_idle()) ;
+  CHECK(!was_unlocked(1004));
+  for (i = 0; i < 41; i++) dsc_vblank();
+  while (dsc_idle()) ;
+  CHECK(was_unlocked(1004));
+  dsc_shutdown();
+}
+
+/* Hardcore off is queued too: an unlock captured before it is sent as hardcore. */
+static void test_hardcore_off_in_frame_order(void)
+{
+  start_with(1, 1024, 0);
+  frames(3);
+  ram[0x10] = 5;
+  dsc_vblank();
+  ram[0x10] = 0;
+  ram[0x24] = 7;               /* 1002: pointer at 0x100 -> 0x20, +4 */
+  dsc_hardcore_off();
+  dsc_vblank();
+  while (dsc_idle()) ;
+  CHECK(award_count == 2 && awards[0] == 1001 && award_hardcore[0] == 1);
+  CHECK(awards[1] == 1002 && award_hardcore[1] == 0);
+  CHECK(journal.count == 2 && journal.e[0].hardcore == 1 && journal.e[1].hardcore == 0);
+  dsc_shutdown();
+}
+
+/* Quit with frames queued: they are evaluated and journalled first. */
+static void test_shutdown_evaluates_queued_frames(void)
+{
+  int i;
+  start_with(1, 1024, 0);
+  frames(3);
+  for (i = 0; i < 50; i++) dsc_vblank();
+  ram[0x10] = 5;
+  dsc_vblank();
+  ram[0x10] = 0;
+  for (i = 0; i < 9; i++) dsc_vblank();    /* 60 frames queued, the unlock in them */
+  CHECK(!was_unlocked(1001));
+  dsc_shutdown();
+  CHECK(was_unlocked(1001));
+  CHECK(journal.count == 1 && journal.e[0].id == 1001 && journal.e[0].sent == 1);
+}
+
+/* A journal entry carries the time its frame was captured, not evaluated. */
+static uint32_t vblanks_total;
+static uint32_t unix_at(uint32_t ago) { return 1700000000 + (vblanks_total - ago) / 60; }
+static void test_journal_time_is_capture_time(void)
+{
+  int i;
+  uint32_t captured;
+  platform_unix_time_at = unix_at;
+  start_with(1, 1024, 0);
+  vblanks_total = 0;
+  for (i = 0; i < 200; i++) { dsc_vblank(); vblanks_total++; }
+  while (dsc_idle()) ;
+  ram[0x10] = 5;
+  dsc_vblank(); vblanks_total++;           /* frame 201, at 1700000003 */
+  captured = 1700000000 + vblanks_total / 60;
+  ram[0x10] = 0;
+  for (i = 0; i < 600; i++) { dsc_vblank(); vblanks_total++; }    /* 10 s queued behind it */
+  fake_time = 1700000000 + vblanks_total / 60;
+  while (dsc_idle()) ;
+  CHECK(was_unlocked(1001));
+  CHECK(journal.count == 1 && journal.e[0].unix_time == captured);
+  platform_unix_time_at = NULL;
+  dsc_shutdown();
+  /* without the platform's clock: the time now less the lag, to the second */
+  start_with(1, 1024, 0);
+  frames(3);
+  fake_time = 1700000000;
+  ram[0x10] = 5;
+  dsc_vblank();
+  ram[0x10] = 0;
+  for (i = 0; i < 600; i++) dsc_vblank();
+  fake_time = 1700000010;
+  while (dsc_idle()) ;
+  if (journal.e[0].unix_time != 1700000000) printf("  journal time %u count %u\n", (unsigned)journal.e[0].unix_time, (unsigned)journal.count);
+  CHECK(journal.count == 1 && journal.e[0].unix_time == 1700000000);
+  dsc_shutdown();
+}
+
+/* 40 notices from 40 queued frames, evaluated in one go: a reader that
+ * looks once a frame sees every one, in order. */
+static uint32_t paced_frame;
+static uint32_t paced_frames(void) { return paced_frame; }
+static void test_notices_paced_none_lost(void)
+{
+  uint32_t seen = 0, next, lost = 0, order_ok = 1, i;
+  int kind = DSCM_NOTICE_LEADERBOARD_STARTED;
+  dsc_stats_t s;
+  serve_v6 = 1;
+  platform_frame = paced_frames;
+  paced_frame = 1;
+  start_with(1, 1024, 0);
+  frames(3);
+  seen = notices.head;
+  for (i = 0; i < 40; i++) {      /* each frame starts or cancels the leaderboard: one notice each */
+    ram[0x60] = (i % 2) ? 2 : 1;
+    dsc_vblank();
+    ram[0x60] = 0;
+    dsc_vblank();
+  }
+  dsc_get_stats(&s);
+  for (i = 0; i < 200 && (seen != notices.head || dsc_backlog() || s.notices_waiting); i++) {
+    paced_frame++;
+    dsc_idle();
+    /* the reader: everything since what it saw last must still be in the ring */
+    if (notices.head - seen > DSCM_NOTICE_RING) lost++;
+    for (next = seen + 1; next <= notices.head; next++) {
+      const dscm_notice_t* n = &notices.ring[next % DSCM_NOTICE_RING];
+      if (n->seq != next || n->kind != kind || n->id != 2001) order_ok = 0;
+      kind = kind == DSCM_NOTICE_LEADERBOARD_STARTED ? DSCM_NOTICE_LEADERBOARD_FAILED : DSCM_NOTICE_LEADERBOARD_STARTED;
+    }
+    seen = notices.head;
+    dsc_get_stats(&s);
+  }
+  if (notices.head != 41) printf("  head %u lost %u order %u nlost %u waiting %u backlog %u\n", (unsigned)notices.head, (unsigned)lost, (unsigned)order_ok, (unsigned)s.notices_lost, (unsigned)s.notices_waiting, (unsigned)dsc_backlog());
+  CHECK(notices.head == 41);       /* session start + 40 */
+  CHECK(lost == 0 && order_ok && s.notices_lost == 0 && s.notices_waiting == 0);
+  platform_frame = NULL;
+  serve_v6 = 0;
+  dsc_shutdown();
+}
+
+/* The protocol step by step: the ARM9 asks and doesn't wait; the ARM7 grants
+ * only between frames; giving back, the ARM9 can't ask again until the ARM7
+ * took it back. */
+static void test_ownership_protocol(void)
+{
+  int saved = handover_mode, i;
+  handover_mode = 1;
+  start_with(1, 1024, 0);
+  CHECK(dsc_owner() == DSC_OWNER_ARM9);      /* load and first frames on the ARM9 */
+  frames(2);
+  CHECK(dsc_arm7_step(0) == 0);              /* the ARM9's: the ARM7 does nothing */
+  dsc_want(0);
+  CHECK(dsc_owner() == DSC_OWNER_ARM7);
+  for (i = 0; i < 5; i++) dsc_vblank();
+  CHECK(dsc_idle() == 0);                    /* not the ARM9's: it only queues */
+  CHECK(dsc_backlog() == 5);
+  CHECK(dsc_arm7_step(2) == 2 && dsc_backlog() == 3);
+  dsc_want(1);
+  CHECK(dsc_idle() == 0);                    /* asked, not granted yet: no wait, no evaluation */
+  CHECK(dsc_owner() == DSC_OWNER_ARM7);
+  CHECK(dsc_arm7_step(0) == 0);              /* asked before its first frame: grants at once */
+  CHECK(dsc_owner() == DSC_OWNER_ARM9);
+  CHECK(dsc_idle() == 3 && dsc_backlog() == 0);
+  for (i = 0; i < 3; i++) dsc_vblank();
+  dsc_want(0);                               /* give back between frames */
+  CHECK(dsc_owner() == DSC_OWNER_ARM7);
+  dsc_want(1);                               /* (0,1): can't ask again yet */
+  CHECK(dsc_idle() == 0);
+  CHECK(dsc_owner() == DSC_OWNER_ARM7);
+  CHECK(dsc_arm7_step(1) == 1);              /* takes it back (0,0) and evaluates */
+  CHECK(dsc_idle() == 0);                    /* asked from (0,0) only: the request comes now */
+  CHECK(dsc_arm7_step(1) == 0 && dsc_owner() == DSC_OWNER_ARM9);
+  CHECK(dsc_idle() == 2);
+  /* the ARM7 stops between frames when the ARM9 asks in the middle of its pass */
+  dsc_want(0);
+  for (i = 0; i < 4; i++) dsc_vblank();
+  dsc_idle();                                /* commits the VBlanks */
+  CHECK(dsc_arm7_step(1) == 1);
+  dsc_want(1);
+  dsc_idle();
+  CHECK(dsc_arm7_step(0) == 0 && dsc_owner() == DSC_OWNER_ARM9 && dsc_backlog() == 3);
+  /* quit while the ARM9 owns it: nothing left behind */
+  ram[0x10] = 5;
+  dsc_vblank();
+  dsc_shutdown();
+  CHECK(was_unlocked(1001));
+  CHECK(own_bad == 0 && own_acquires == own_releases + 1);
+  handover_mode = saved;
+}
+
+/* Results identical to rcheevos with the owner switching every random 1-8
+ * frames (the comparison tests' sets and mutations). */
+static void test_handover_matches_rcheevos(void)
+{
+  dsc_stats_t s;
+  int saved = handover_mode, round, unlocks;
+  handover_mode = 1;
+  ho_switches = 0;
+  for (round = 0; round < 3; round++) {
+    rng = 101 + round;
+    CHECK(compare_with_rcheevos(layout_triggers, (int)(sizeof(layout_triggers) / sizeof(layout_triggers[0])), 400, 1, layout_mutate, &s) >= 8);
+    CHECK(own_bad == 0);
+    rng = round == 2 ? 36 : 32 + 8 * round;    /* the seeds test_budgeted_idle_matches_rcheevos uses, and one more */
+    unlocks = compare_with_rcheevos(more_chain_triggers, (int)(sizeof(more_chain_triggers) / sizeof(more_chain_triggers[0])), 400, 1, more_chain_mutate, &s);
+    if (unlocks < 8) printf("  more_chain round %d: %d unlocks\n", round, unlocks);
+    CHECK(unlocks >= 8);
+    CHECK(own_bad == 0);
+  }
+  CHECK(ho_switches > 100);
+  handover_mode = saved;
+}
+
 static void run_all(void)
 {
   for (use_map = 0; use_map < 2; use_map++) {    /* the snapshot tests, without and with a memory map */
@@ -1966,6 +2257,14 @@ static void run_all(void)
   RUN(test_notice_unlock_and_mastery);
   RUN(test_shutdown_right_after_mastery);
   RUN(test_budgeted_idle_matches_rcheevos);
+  RUN(test_reset_evaluates_queued_frames_first);
+  RUN(test_reset_in_queue_clears_hits_in_order);
+  RUN(test_hardcore_off_in_frame_order);
+  RUN(test_shutdown_evaluates_queued_frames);
+  RUN(test_journal_time_is_capture_time);
+  RUN(test_notices_paced_none_lost);
+  RUN(test_ownership_protocol);
+  RUN(test_handover_matches_rcheevos);
   RUN(test_notice_uses_platform_frame);
   RUN(test_notice_ring_wraps);
   RUN(test_no_outputs_is_fine);

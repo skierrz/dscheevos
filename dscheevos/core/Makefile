@@ -1,9 +1,12 @@
 # Host build of the DScheevos core and its unit tests.
 #   make test        build and run the tests
+#   make test DSC_FLAGS="-DDSC_CHANGE_DRIVEN -DDSC_CHANGED_RANGES" BUILD=build-flags
+#                    the same with the module's default flags
 RCHEEVOS ?= ../../external/rcheevos
 CC       ?= cc
 CFLAGS   ?= -O1 -g -Wall -Wextra
 DEFS     := -DRC_NO_THREADS
+DSC_FLAGS ?=
 INCLUDES := -Iinclude -I$(RCHEEVOS)/include -I$(RCHEEVOS)/src
 
 RC_SRC := $(addprefix $(RCHEEVOS)/src/, \
@@ -28,7 +31,7 @@ $(BUILD)/rc/%.o: $(RCHEEVOS)/src/%.c
 
 $(BUILD)/test_core: tests/test_core.c src/dscheevos.c include/dscheevos.h $(RC_OBJ)
 	@mkdir -p $(BUILD)
-	$(CC) $(CFLAGS) $(DEFS) -DDSC_CHECK_FAST_STEPS $(INCLUDES) tests/test_core.c src/dscheevos.c $(RC_OBJ) -lm -o $@
+	$(CC) $(CFLAGS) $(DEFS) $(DSC_FLAGS) -DDSC_CHECK_FAST_STEPS $(INCLUDES) tests/test_core.c src/dscheevos.c $(RC_OBJ) -lm -o $@
 
 clean:
 	rm -rf $(BUILD)

@@ -15,6 +15,8 @@
  *                 interrupt_pending() says an interrupt is waiting.
  *   dsc_idle()    when the game is idle: evaluates waiting snapshots with
  *                 rcheevos and finishes server replies. Can be interrupted.
+ *                 With config.handover, only while the ARM9 owns the
+ *                 rc_client; dsc_arm7_step() is the ARM7's evaluator.
  *   dsc_http_done()  when a request the core asked for has an answer.
  *
  * Everything else (memory map, clock, network, display) comes through
@@ -115,6 +117,16 @@ typedef struct dsc_platform_t {
   int clock_is_utc;
   /* DSCM_CLOCK_*: the speed-ups the session runs with, for the journal. */
   int clock;
+  /* unix_time as it was frames_ago VBlanks ago: journal entries are stamped
+   * with the time their frame was captured, not evaluated. May be NULL:
+   * unix_time() less frames_ago / 60 s, rounded. */
+  uint32_t (*unix_time_at)(uint32_t frames_ago);
+  /* handover only, called on the ARM9 (the CPU with a data cache) around its
+   * turns with the rc_client: acquire = 1 after the ARM7 granted it, before
+   * the ARM9 reads any shared state (invalidate those lines by address);
+   * acquire = 0 before the ARM9 gives it back (clean those lines by address,
+   * drain the write buffer). May be NULL (no cache, or the host). */
+  void (*ownership)(int acquire);
 } dsc_platform_t;
 
 typedef struct dsc_config_t {
@@ -128,13 +140,14 @@ typedef struct dsc_config_t {
   int spectator;                 /* 1: rc_client spectator mode, nothing is sent or journaled */
   int capture_at_halt;           /* 1: dsc_capture() takes the snapshot, dsc_vblank() queues it */
   uint32_t idle_max_frames;      /* frames one dsc_idle() call evaluates at most; 0 = all queued when it starts */
+  int handover;                  /* 1: two evaluators share the rc_client (see "Hand-over" below); 0: dsc_idle() owns it */
 } dsc_config_t;
 
 typedef struct dsc_stats_t {
   uint32_t frames_snapshotted;
   uint32_t frames_evaluated;
   uint32_t frames_dropped;       /* snapshots lost because evaluation was behind */
-  uint32_t frames_discarded;     /* queued snapshots from before a game reset */
+  uint32_t frames_discarded;     /* always 0: queued frames are evaluated before a reset now (kept for the layout) */
   uint32_t frames_repeated;      /* snapshotted frames queued as a repeat of the one before */
   uint32_t live_reads;           /* reads not covered by the snapshot (new or moved addresses) */
   uint32_t addresses;            /* addresses captured each VBlank */
@@ -145,6 +158,10 @@ typedef struct dsc_stats_t {
   uint32_t captures;             /* dsc_capture() calls that finished a copy */
   uint32_t captures_stopped;     /* ... that stopped for an interrupt */
   uint32_t frames_stale;         /* VBlanks with no capture since the one before: evaluated with the last copy */
+  uint32_t notices_lost;         /* notices that found the waiting queue full (one frame raised too many) */
+  uint32_t notices_waiting;      /* raised, not in the ring yet (at most DSC_NOTICES_PER_FRAME go in per frame) */
+  uint32_t handovers;            /* times the ARM9 took or gave back the rc_client (handover) */
+  uint32_t lifecycle_lost;       /* resets or hardcore switches that found the ring full (never, in practice) */
 } dsc_stats_t;
 
 /* Progress in the loaded game's core set (for menus). */
@@ -206,14 +223,76 @@ void dsc_drain(void);
  * through: 0x02000000 (cached) or 0x0C000000 (the mirror). No-op elsewhere. */
 void dsc_state_view(uint32_t high_byte);
 
-/* The game was reset: drop queued frames and reset achievement state, as
- * an emulator does on reset. Call from idle context, not from an IRQ. */
+/* The game was reset: reset achievement state, as an emulator does on
+ * reset. Queued in frame order: every frame captured before the reset is
+ * still evaluated first, then rcheevos is reset, then the frames after it.
+ * Call from idle context (the ARM9), not from an IRQ. */
 void dsc_reset(void);
+
+/* Hardcore off (never on again), queued in frame order like dsc_reset. */
+void dsc_hardcore_off(void);
+
+/* Evaluate every frame queued now, lifecycle changes included, ignoring
+ * idle_max_frames and notice pacing: for a window where the game is frozen
+ * (in-game menu, reset, quit). The caller must own the rc_client (always
+ * without handover). Returns the frames evaluated, -1 if it doesn't own it. */
+int dsc_flush(void);
+
+/* Frames captured and not evaluated yet (for an ownership policy). */
+uint32_t dsc_backlog(void);
+
+/* ---- Hand-over (config.handover) ----
+ * One rc_client, evaluated by whichever CPU owns it, one whole frame at a
+ * time, oldest queued frame first; ownership changes only between frames.
+ * Two flags, each written by one CPU only: req9 (ARM9) and grant7 (ARM7).
+ * The ARM9 owns it iff req9 && grant7, else the ARM7 does:
+ *   (0,0) ARM7 owns -> ARM9 asks: (1,0), ARM7 still owns until its frame ends
+ *   -> ARM7 grants between frames: (1,1) ARM9 owns -> ARM9 gives it back
+ *   between frames: (0,1) nobody evaluates -> ARM7 takes it: (0,0).
+ * The ARM9 asks again only from (0,0), so the two never evaluate at once.
+ * The ARM9 never waits: it asks and goes on; dsc_idle() evaluates only once
+ * the grant has come. Everything that touches the rc_client (frames, server
+ * replies, rcheevos' timers, the list, notices) runs on the owner.
+ * dsc_vblank/dsc_capture/dsc_reset/dsc_hardcore_off stay on the ARM9.
+ * dsc_init() starts with the ARM9 owning it (1,1), for the set load and the
+ * first frame; dsc_want(0) then hands it to the ARM7. */
+#define DSC_OWNER_ARM9 0
+#define DSC_OWNER_ARM7 1
+#define DSC_NOTICES_PER_FRAME 8    /* notices that go into the ring per platform frame at most */
+
+/* ARM9, idle context: want the rc_client (1) or give it back (0). Giving it
+ * back happens at once (the ARM9 is between frames whenever it can call
+ * this); taking it happens in a later dsc_idle(), once the ARM7 granted it. */
+void dsc_want(int want);
+
+/* Who owns the rc_client now: DSC_OWNER_*. Without handover, the ARM9. */
+int dsc_owner(void);
+
+/* ARM7: when the ARM7 owns the rc_client, evaluate up to max_frames queued
+ * frames (0: all queued when it starts), stopping early between frames if
+ * the ARM9 asked for it; grant it to the ARM9 between frames when asked.
+ * Returns the frames evaluated. */
+int dsc_arm7_step(uint32_t max_frames);
 
 void dsc_get_progress(dsc_progress_t* progress);
 
-/* Tear down: unload the game and free everything. */
+/* Tear down: evaluate the frames still queued (when the caller owns the
+ * rc_client, see dsc_flush), then unload the game and free everything. */
 void dsc_shutdown(void);
+
+#ifdef DSC_TEST_HOOKS
+/* Host tests only (tests/difftest core mode): see the frames and rcheevos'
+ * events as rc_client makes them. */
+typedef struct dsc_test_hooks_t {
+  void (*rc_event)(const void* event, void* client);   /* every rc_client_event_t, before the core handles it */
+  void (*frame_begin)(uint32_t frame);                  /* before a queued frame's rc_client_do_frame (core frame number) */
+  void (*frame_end)(void* client, uint32_t frame);      /* after it */
+  void (*lifecycle)(int what);                          /* a queued reset (1) or hardcore off (2), before it is applied */
+  int sync_replies;                                     /* an answer given inside http_send goes to rc_client at once, as a synchronous server would */
+} dsc_test_hooks_t;
+void dsc_test_set_hooks(const dsc_test_hooks_t* hooks);
+void* dsc_test_client(void);
+#endif
 
 #ifdef __cplusplus
 }
