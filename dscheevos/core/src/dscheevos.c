@@ -2792,6 +2792,23 @@ WAKE_INL int32_t arena_alloc(uint32_t n)
   return tail - head > n ? (int32_t)head : -1;
 }
 
+/* Producer: the lag cap (config.lag_cap_*): queueing n more arena bytes as
+ * a new frame would pass it. Repeats take no bytes and are always queued. */
+static WAKE int lag_capped(uint32_t n)
+{
+  uint32_t frames = S.items_in - S.items_out;
+  if (S.config.lag_cap_frames && frames >= S.config.lag_cap_frames)
+    return 1;
+  if (S.config.lag_cap_bytes) {
+    uint32_t used = 0, tail = arena_oldest();
+    if (tail != NO_KEEP)
+      used = S.arena_head >= tail ? S.arena_head - tail : S.arena_size - tail + S.arena_head;
+    if (used + n > S.config.lag_cap_bytes)
+      return 1;
+  }
+  return 0;
+}
+
 /* Words a..b of two snapshots hold the same watched bytes. */
 static WAKE int same_words(const uint8_t* x, const uint8_t* y, const uint32_t* mask, uint32_t a, uint32_t b)
 {
@@ -3005,11 +3022,19 @@ static WAKE_SMALL void commit(int staged)
   if (prev && prev->event)
     prev = NULL;                 /* a lifecycle change: the frames before it are not repeated after it */
   if (staged) {
+    int repeat = S.stage_same && prev && S.stage_prev == S.slot_head - 1 && prev->state == SLOT_READY
+                 && snapshot_same(slot, prev);
+    if ((S.config.lag_cap_frames || S.config.lag_cap_bytes) && lag_capped(repeat ? 0 : slot->size)) {
+      sync_restore();
+      slot->state = SLOT_FREE;
+      S.pstats.frames_dropped++;
+      S.pstats.frames_capped++;
+      return;
+    }
     S.sync_dirty = 0;            /* the chain copies' state is this frame's now */
     S.pstats.frames_snapshotted++;
     S.have_capture = 1;
-    if (S.stage_same && prev && S.stage_prev == S.slot_head - 1 && prev->state == SLOT_READY
-        && snapshot_same(slot, prev)) {
+    if (repeat) {
       /* prev is the newest slot: the owner may be evaluating it, but it
        * frees it only once a newer slot exists, so this frame is seen */
       INTERLEAVE(2);
@@ -3038,6 +3063,11 @@ static WAKE_SMALL void commit(int staged)
    * memory captured last, as a repeat of it. */
   if (S.stage_failed || (!prev && S.keep == NO_KEEP && !S.have_capture) || (!(prev && prev->state == SLOT_READY) && S.slot_head - S.slot_tail > S.slot_count)) {
     S.pstats.frames_dropped++;
+    return;
+  }
+  if ((S.config.lag_cap_frames || S.config.lag_cap_bytes) && lag_capped(0)) {
+    S.pstats.frames_dropped++;
+    S.pstats.frames_capped++;
     return;
   }
   sync_unchanged();
@@ -3146,6 +3176,7 @@ HOT void dsc_vblank_copy(void)
   }
 #endif
   size = t->words * 4 + S.chains.target_count * sizeof(target_t);
+  S.pstats.frame_bytes = size;
   offset = S.slot_head - S.slot_tail <= S.slot_count ? arena_alloc(size) : -1;
   if (offset < 0) {
     S.pstats.frames_dropped++;
@@ -3176,6 +3207,12 @@ HOT void dsc_vblank_copy(void)
   if (HAS_CHAINS())
     run_chains(slot->targets, &m, NULL);
   same = prev && snapshot_same(slot, prev);
+  if ((S.config.lag_cap_frames || S.config.lag_cap_bytes) && lag_capped(same ? 0 : size)) {
+    slot->state = SLOT_FREE;
+    S.pstats.frames_dropped++;
+    S.pstats.frames_capped++;
+    return;
+  }
   slot->frame = S.frame_counter;
   S.pstats.frames_snapshotted++;
   S.have_capture = 1;
@@ -3234,6 +3271,7 @@ WAKE int dsc_capture(void)
   }
 #endif
   size = t->words * 4 + S.chains.target_count * sizeof(target_t);
+  S.pstats.frame_bytes = size;
   offset = S.slot_head - S.slot_tail <= S.slot_count ? arena_alloc(size) : -1;
   if (offset < 0) {
     S.stage_failed = 1;
@@ -3742,6 +3780,32 @@ void dsc_want(int want)
     arm9_release();    /* between frames: give it back (or stop asking) now */
 }
 
+int dsc_handover_policy(int frozen)
+{
+  uint32_t frames, bytes, hi_f, lo_f, hi_b, lo_b;
+  int want;
+  if (!S.initialized || !S.config.handover)
+    return 0;
+  frames = dsc_backlog();
+  /* bytes behind: what the arena holds less the frame evaluated last (kept
+   * for a repeat or carry), so a caught-up queue counts 0 */
+  bytes = dsc_arena_used();
+  bytes = !frames ? 0 : bytes > S.pstats.frame_bytes ? bytes - S.pstats.frame_bytes : 0;
+  hi_f = S.config.handover_hi_frames ? S.config.handover_hi_frames : 6;
+  lo_f = S.config.handover_lo_frames ? S.config.handover_lo_frames : 1;
+  hi_b = S.config.handover_hi_bytes ? S.config.handover_hi_bytes : S.arena_size / 4;
+  lo_b = S.config.handover_lo_bytes ? S.config.handover_lo_bytes : S.arena_size / 16;
+  if (frozen || frames >= hi_f || bytes >= hi_b)
+    want = 1;
+  else if (A9.want && (frames > lo_f || bytes > lo_b))
+    want = 1;      /* behind: keep it until the backlog is short in frames and in bytes */
+  else
+    want = 0;
+  if (want != A9.want)
+    dsc_want(want);
+  return want;
+}
+
 int dsc_owner(void)
 {
   if (!S.config.handover)
@@ -3879,6 +3943,8 @@ void dsc_get_stats(dsc_stats_t* stats)
   stats->captures = S.pstats.captures;
   stats->captures_stopped = S.pstats.captures_stopped;
   stats->lifecycle_lost = S.pstats.lifecycle_lost;
+  stats->frame_bytes = S.pstats.frame_bytes;
+  stats->frames_capped = S.pstats.frames_capped;
   stats->arena_used = dsc_arena_used();
 }
 

@@ -390,6 +390,7 @@ static int clock_bits;                    /* platform.clock (DSCM_CLOCK_*) for s
 static uint32_t (*platform_frame)(void);
 static void (*platform_journal_sync)(const void*, uint32_t);
 static uint32_t (*platform_unix_time_at)(uint32_t);
+static uint32_t cap_frames, cap_bytes;      /* config.lag_cap_* for start_with */
 /* hand-over: config.handover, and the ARM9's cache hook (its calls must pair up) */
 static int handover_mode;
 static int own_acquires, own_releases, own_bad;
@@ -408,6 +409,8 @@ static void start_with(int hardcore, uint32_t slots, uint32_t bytes)
   p.http_release = release_mode ? http_release : NULL;
   p.ownership = ownership;
   c.handover = handover_mode;
+  c.lag_cap_frames = cap_frames;
+  c.lag_cap_bytes = cap_bytes;
   own_acquires = handover_mode ? 1 : 0;    /* dsc_init: the ARM9's from the start, nothing to invalidate */
   own_releases = own_bad = 0;
   seen_valid = 0;
@@ -2459,6 +2462,92 @@ static void test_progress_published_by_owner(void)
   handover_mode = saved;
 }
 
+/* The lag cap, in frames and in bytes: frames past it are refused (a gap,
+ * counted), repeats take no bytes, and everything queued is evaluated. */
+static void test_lag_cap(void)
+{
+  dsc_stats_t s, s0;
+  int i;
+  cap_frames = 10;
+  start_with(1, 1024, 0);
+  cap_frames = 0;
+  frames(3);
+  dsc_get_stats(&s0);
+  for (i = 0; i < 30; i++) {
+    ram[0x10] = (uint8_t)(i + 10);     /* every frame differs */
+    dsc_vblank();
+  }
+  dsc_drain();
+  dsc_get_stats(&s);
+  CHECK(s.frames_capped - s0.frames_capped == 20 && s.frames_dropped - s0.frames_dropped == 20);
+  while (dsc_idle()) ;
+  dsc_get_stats(&s);
+  CHECK(s.frames_evaluated == s.frames_snapshotted);
+  dsc_shutdown();
+
+  start_with(1, 1024, 0);
+  frames(3);
+  dsc_get_stats(&s0);
+  dsc_shutdown();
+  cap_bytes = 4 * s0.frame_bytes;     /* the kept frame and three more */
+  start_with(1, 1024, 0);
+  cap_bytes = 0;
+  frames(3);
+  dsc_get_stats(&s0);
+  for (i = 0; i < 3; i++) {           /* fits: the kept frame and three */
+    ram[0x10] = (uint8_t)(i + 10);
+    dsc_vblank();
+  }
+  for (i = 0; i < 10; i++)
+    dsc_vblank();                      /* repeats of the third: no bytes, not capped */
+  for (i = 0; i < 5; i++) {           /* five more distinct frames: past the cap */
+    ram[0x10] = (uint8_t)(i + 20);
+    dsc_vblank();
+  }
+  dsc_drain();
+  dsc_get_stats(&s);
+  CHECK(s.frame_bytes > 0 && s.frames_capped - s0.frames_capped == 5);
+  CHECK(s.frames_repeated - s0.frames_repeated == 10);
+  while (dsc_idle()) ;
+  dsc_get_stats(&s);
+  CHECK(s.frames_evaluated == s.frames_snapshotted);
+  dsc_shutdown();
+}
+
+/* P1: the ARM9 asks when the backlog reaches hi frames or hi bytes, keeps
+ * it until lo frames and lo bytes, and always when frozen. */
+static void test_handover_policy(void)
+{
+  dsc_stats_t s;
+  int saved = handover_mode, i;
+  handover_mode = 1;
+  start_with(1, 1024, 0);
+  frames(3);
+  dsc_want(0);
+  dsc_arm7_step(0);                    /* the ARM7 takes it: (0,0) */
+  dsc_get_stats(&s);
+  CHECK(dsc_handover_policy(0) == 0);
+  for (i = 0; i < 6; i++) {           /* 6 distinct frames: hi = 6 */
+    ram[0x10] = (uint8_t)(i + 10);
+    dsc_vblank();
+  }
+  dsc_drain();
+  CHECK(dsc_handover_policy(0) == 1);
+  dsc_idle();                          /* asks */
+  dsc_arm7_step(0);                    /* grants */
+  CHECK(dsc_owner() == DSC_OWNER_ARM9);
+  while (dsc_idle()) ;
+  CHECK(dsc_handover_policy(0) == 0);  /* caught up: given back */
+  CHECK(dsc_owner() != DSC_OWNER_ARM9);
+  CHECK(dsc_handover_policy(1) == 1);  /* frozen */
+  dsc_handover_policy(0);
+  dsc_want(1);
+  dsc_idle();
+  dsc_arm7_step(0);
+  dsc_shutdown();
+  handover_mode = saved;
+}
+
 static void test_state_layout(void)
 {
   CHECK(dsc_test_layout() == 0);
@@ -2533,6 +2622,8 @@ static void run_all(void)
   RUN(test_http_release);
   RUN(test_progress_published_by_owner);
   RUN(test_state_layout);
+  RUN(test_lag_cap);
+  RUN(test_handover_policy);
   RUN(test_notice_uses_platform_frame);
   RUN(test_notice_ring_wraps);
   RUN(test_no_outputs_is_fine);

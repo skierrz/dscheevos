@@ -147,6 +147,17 @@ typedef struct dsc_config_t {
   int capture_at_halt;           /* 1: dsc_capture() takes the snapshot, dsc_vblank() queues it */
   uint32_t idle_max_frames;      /* frames one dsc_idle() call evaluates at most; 0 = all queued when it starts */
   int handover;                  /* 1: two evaluators share the rc_client (see "Hand-over" below); 0: dsc_idle() owns it */
+  /* dsc_handover_policy (P1, "ARM7 first, ARM9 when behind"): the ARM9 wants
+   * the rc_client from hi frames OR hi bytes of backlog and gives it back at
+   * lo frames AND lo bytes. 0 = the defaults: 6 / 1 frames, a quarter / a
+   * sixteenth of snapshot_bytes. Busy frames of heavy sets are KBs each, so
+   * the bytes, not the frames, decide for them. */
+  uint32_t handover_hi_frames, handover_lo_frames;
+  uint32_t handover_hi_bytes, handover_lo_bytes;
+  /* Lag cap: a frame that would make the backlog more than cap frames or
+   * cap bytes is not queued (a gap, counted in frames_dropped, as when the
+   * ring or arena is full). 0 = no cap but the ring's and the arena's. */
+  uint32_t lag_cap_frames, lag_cap_bytes;
 } dsc_config_t;
 
 typedef struct dsc_stats_t {
@@ -169,6 +180,8 @@ typedef struct dsc_stats_t {
   uint32_t handovers;            /* times the ARM9 took or gave back the rc_client (handover) */
   uint32_t lifecycle_lost;       /* resets or hardcore switches that found the ring full (never, in practice) */
   uint32_t arena_used;           /* snapshot bytes held now (queued frames and the one evaluated last), of config.snapshot_bytes */
+  uint32_t frame_bytes;          /* arena bytes one distinct frame takes with the current table (repeats take none) */
+  uint32_t frames_capped;        /* of frames_dropped: refused by the lag cap */
 } dsc_stats_t;
 
 /* Progress in the loaded game's core set (for menus). */
@@ -277,6 +290,12 @@ uint32_t dsc_arena_used(void);
  * back happens at once (the ARM9 is between frames whenever it can call
  * this); taking it happens in a later dsc_idle(), once the ARM7 granted it. */
 void dsc_want(int want);
+
+/* ARM9, idle context: the P1 policy. Wants the rc_client when the game is
+ * frozen (menu, reset, quit) or the backlog reaches hi frames or hi bytes,
+ * and gives it back once it is down to lo frames and lo bytes (config).
+ * Calls dsc_want; returns what it wants. */
+int dsc_handover_policy(int frozen);
 
 /* Who owns the rc_client now: DSC_OWNER_*. Without handover, the ARM9. */
 int dsc_owner(void);

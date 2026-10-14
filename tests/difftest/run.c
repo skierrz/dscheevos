@@ -812,7 +812,7 @@ static dscm_journal_t g_journal;
 static dscm_notices_t g_notices;
 static uint32_t g_ho_rng;
 static int g_ho_want, g_ho_switch_in, g_ho_stall, g_handover;
-static uint32_t g_ho_switches, g_ho_stalls, g_max_backlog, g_ho_catchups;
+static uint32_t g_ho_switches, g_ho_stalls, g_max_backlog, g_ho_catchups, g_max_arena;
 static int g_cpu;                        /* which simulated CPU is calling the core */
 static uint32_t g_by_cpu[2];             /* frames evaluated by each */
 static int g_core_fault;                 /* --fault: self-test, resets and the hardcore switch one frame late */
@@ -1137,16 +1137,17 @@ static int core_main(const char* features, int hardcore, long full_from, long ma
     if (late & 1) dsc_reset();
     if (late & 2) dsc_hardcore_off();
     {
-      uint32_t b = dsc_backlog();
+      uint32_t b = dsc_backlog(), a = dsc_arena_used();
       if (b > g_max_backlog) g_max_backlog = b;
+      if (a > g_max_arena) g_max_arena = a;
     }
     core_tick();
   }
   core_freeze();     /* the end: everything evaluated */
   dsc_get_stats(&st);
-  fprintf(g_log, "# core: frames %u evaluated %u (arm9 %u arm7 %u) dropped %u repeated %u stale %u live_reads %u handovers %u switches %u stalls %u max_backlog %u notices_lost %u lag %u catchups %u\n",
+  fprintf(g_log, "# core: frames %u evaluated %u (arm9 %u arm7 %u) dropped %u repeated %u stale %u live_reads %u handovers %u switches %u stalls %u max_backlog %u notices_lost %u lag %u catchups %u frame_bytes %u max_arena %u\n",
           st.frames_snapshotted, st.frames_evaluated, g_by_cpu[0], g_by_cpu[1], st.frames_dropped, st.frames_repeated, st.frames_stale, st.live_reads,
-          st.handovers, g_ho_switches, g_ho_stalls, g_max_backlog, st.notices_lost, g_lag_frames, g_ho_catchups);
+          st.handovers, g_ho_switches, g_ho_stalls, g_max_backlog, st.notices_lost, g_lag_frames, g_ho_catchups, st.frame_bytes, g_max_arena);
   if (st.frames_dropped) fprintf(stderr, "difftest-run-core: %u frames dropped\n", st.frames_dropped);
   fprintf(g_log, "END %u\n", g_frames_done);
   dsc_shutdown();
