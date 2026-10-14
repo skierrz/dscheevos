@@ -962,8 +962,18 @@ WAKE_CODE int module_idle(int idle_loop)
     return 0;
   }
   /* idle work parked elsewhere (dscm_idle_step): the stock halt */
-  if (wake_swap(&H.busy, 1))
+#ifdef BW_HALT_CAPTURE
+  /* LAB coverage build: the whole idle wake runs masked (vblank_poll, the
+   * capture, the halt), so it can never be preempted holding H.busy or the
+   * guard: in a BIOS-wait game the idle thread may never run again */
+  uint32_t bw_cpsr0 = wake_irq_off();
+#endif
+  if (wake_swap(&H.busy, 1)) {
+#ifdef BW_HALT_CAPTURE
+    wake_irq_restore(bw_cpsr0);
+#endif
     return 0;
+  }
   H.halts_idle++;
   /* IRQs stay on: only the idle thread touches these (no IRQ work of ours) */
   /* the game's MPU is set up once it idles: is the 0x0C000000 mirror
@@ -1016,7 +1026,12 @@ WAKE_CODE int module_idle(int idle_loop)
     idle_frames(WP, wake_swap(&dscm_irq.idle_open, 0) ? lines_since(start) : 0);
     H.busy = 0;       /* IRQs masked: nothing runs before the halt */
     wake_wfi();
+#ifdef BW_HALT_CAPTURE
+    (void)cpsr;
+    wake_irq_restore(bw_cpsr0);
+#else
     wake_irq_restore(cpsr);
+#endif
     return 1;   /* halted here */
   }
 }
@@ -1108,8 +1123,11 @@ __attribute__((section(".text_cold"), noinline, target("arm"))) void module_wait
     start = REG_VCOUNT;
     used = bw_step(left);
     BW_UNITS++;
-    if (!used && !H.more)
-      break;
+    if (!used) {
+      if (!H.more)
+        break;
+      continue;            /* answers or a lifecycle change (load, reset): not a frame's cost */
+    }
     used = lines_between(start, REG_VCOUNT);
     if (BW_UNITS == 1) {
       /* the first evaluated frame builds rcheevos' indexes (0.4-6.5M cycles,
