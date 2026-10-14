@@ -1,0 +1,24 @@
+#!/usr/bin/perl
+# hardtimeout SECONDS command...: run a test with a hard time limit that kills the WHOLE run.
+# `perl -e 'alarm N; exec @ARGV'` kills only the top shell: its mock server keeps the slot's port
+# and its emulator keeps running, so the next run in that emu-lock slot talks to a stale server
+# (tests/launcher/run.sh now refuses a busy port). This puts the command in its own process group
+# and, at the limit, sends TERM then KILL to the group. Exit status: the command's, or 124 on timeout.
+# Use it inside emu-lock: emu-lock -l label tests/perf/hardtimeout 900 tests/perf/gamecost.sh ...
+use strict;
+use POSIX qw(setpgid :sys_wait_h);
+my $secs = shift @ARGV;
+die "usage: hardtimeout SECONDS command...\n" unless defined $secs && $secs =~ /^\d+$/ && @ARGV;
+my $pid = fork() // die "fork: $!\n";
+if ($pid == 0) { setpgid(0, 0); exec @ARGV or die "exec $ARGV[0]: $!\n"; }
+setpgid($pid, $pid);
+my $timed_out = 0;
+local $SIG{ALRM} = sub { $timed_out = 1; kill 'TERM', -$pid; sleep 5; kill 'KILL', -$pid; };
+for my $s (qw(INT TERM HUP)) { $SIG{$s} = sub { kill 'TERM', -$pid; sleep 2; kill 'KILL', -$pid; exit 130; }; }
+alarm $secs;
+waitpid($pid, 0);
+my $st = $?;
+alarm 0;
+kill 'KILL', -$pid;   # anything the command left running in its group (a background mock server)
+if ($timed_out) { print STDERR "hardtimeout: killed after $secs s: @ARGV\n"; exit 124; }
+exit($st & 127 ? 128 + ($st & 127) : $st >> 8);

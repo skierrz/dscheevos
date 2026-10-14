@@ -13,12 +13,13 @@ set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 [ $# -ge 1 ] || { sed -n '2,13p' "$0"; exit 2; }
 game=$1 frames=${2:-1500} script=${3:-}
-dir=${OUT:-$(mktemp -d)}
+# a port of its own: two lanes' mock servers on ab.sh's default port make the launcher fail
+# ("nds-bootstrap didn't use the session"); emu-lock exports one per slot
+PORT=${PORT:-$((8500 + $$ % 400))}
+dir=${OUT:-$(mktemp -d "${TMPDIR:-/tmp}/dsc-gc-p$PORT.XXXXXX")}
 [ -n "${OUT:-}" ] || trap 'rm -rf "$dir"' EXIT
 mkdir -p "$dir"
-# a port of its own: two lanes' mock servers on ab.sh's default port make the launcher fail
-# ("nds-bootstrap didn't use the session")
-PORT=${PORT:-$((8500 + $$ % 400))} PROFDIR=$dir EXTRA_ARGS="--thumb-cycle ${EXTRA_ARGS:-}" CACHE_MODEL=1 MODES="off on" \
+PORT=$PORT PROFDIR=$dir EXTRA_ARGS="--thumb-cycle ${EXTRA_ARGS:-}" CACHE_MODEL=1 MODES="off on" \
   "$here/ab.sh" "$game" "$frames" $script > "$dir/ab.txt" 2>&1 || { tail -20 "$dir/ab.txt"; exit 1; }
 grep "^FAIL\|^server saw" "$dir/ab.txt" || true
 python3 "$here/gamecost.py" ${SKIP:+--skip $SKIP} ${JSON:+--json} "$dir/prof.off.csv" "$dir/prof.on.csv"
