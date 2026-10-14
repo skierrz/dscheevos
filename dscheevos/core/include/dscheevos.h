@@ -127,6 +127,12 @@ typedef struct dsc_platform_t {
    * acquire = 0 before the ARM9 gives it back (clean those lines by address,
    * drain the write buffer). May be NULL (no cache, or the host). */
   void (*ownership)(int acquire);
+  /* With it, dsc_http_done keeps the platform's body buffer (no copy, no
+   * allocation on the network side) until the owner has copied it, then
+   * calls http_release(handle): the buffer is the platform's again. Needed
+   * with hand-over (the owner may be the other CPU, and the heap is one).
+   * May be NULL: dsc_http_done copies the body at once. */
+  void (*http_release)(void* handle);
 } dsc_platform_t;
 
 typedef struct dsc_config_t {
@@ -205,7 +211,9 @@ int dsc_idle(void);
 /* Answer for a request from dsc_platform_t.http_send. */
 void dsc_http_done(void* handle, int http_status, const char* body, size_t body_length);
 
-/* Idle context (it queues the frames dsc_vblank() counted first). */
+/* Idle context (it queues the frames dsc_vblank() counted first; with
+ * hand-over it only reads, since it may be called on either CPU: call
+ * dsc_drain() on the ARM9 first for the latest frame counts). */
 void dsc_get_stats(dsc_stats_t* stats);
 
 /* Nonzero if dsc_idle() has work besides the once-a-frame kind: frames queued
@@ -239,8 +247,12 @@ void dsc_hardcore_off(void);
  * without handover). Returns the frames evaluated, -1 if it doesn't own it. */
 int dsc_flush(void);
 
-/* Frames captured and not evaluated yet (for an ownership policy). */
+/* Frames (and queued lifecycle changes) captured and not evaluated yet. */
 uint32_t dsc_backlog(void);
+
+/* Snapshot arena bytes held now (queued frames and the one evaluated last),
+ * of config.snapshot_bytes. Producer side, cheap. */
+uint32_t dsc_arena_used(void);
 
 /* ---- Hand-over (config.handover) ----
  * One rc_client, evaluated by whichever CPU owns it, one whole frame at a
@@ -280,6 +292,16 @@ void dsc_get_progress(dsc_progress_t* progress);
 /* Tear down: evaluate the frames still queued (when the caller owns the
  * rc_client, see dsc_flush), then unload the game and free everything. */
 void dsc_shutdown(void);
+
+#ifdef DSC_CHECK_FAST_STEPS
+/* Host tests only: called at points where the other CPU may run in the
+ * middle of a cross-CPU step (1: take_table, 2: before the producer adds a
+ * frame to the ring, 3: before the owner evaluates a frame, 4: before the
+ * owner frees a sealed slot). */
+extern void (*dsc_test_interleave)(int point);   /* 5: after take_table, before the copy */
+void dsc_test_republish(uint32_t address);
+int dsc_test_layout(void);
+#endif
 
 #ifdef DSC_TEST_HOOKS
 /* Host tests only (tests/difftest core mode): see the frames and rcheevos'

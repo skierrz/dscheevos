@@ -54,6 +54,7 @@
 #include "client/rc_client_internal.h"
 #include "runtime/rc_internal.h"
 
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -101,6 +102,20 @@
 /* Readers (in-game menu, ARM7) may look at any time: a count or head is
  * stored only after what it covers. */
 #define PUBLISH_BARRIER() __asm__ __volatile__("" ::: "memory")
+/* Between a store and a load of words the other CPU writes (take_table and
+ * the owner's table release, a Dekker-style pair): a compiler barrier on the
+ * host; on the DS the ARM9 must also drain its write buffer here (step 1). */
+#define CROSS_BARRIER() PUBLISH_BARRIER()
+
+/* Test builds: points where the other CPU may run in the middle of a
+ * cross-CPU step (tests/test_core.c simulates it there). */
+#ifdef DSC_CHECK_FAST_STEPS
+void (*dsc_test_interleave)(int point);
+#define INTERLEAVE(point) do { if (dsc_test_interleave) dsc_test_interleave(point); } while (0)
+static void check_failed(const char* what, uint32_t index);
+#else
+#define INTERLEAVE(point) ((void)0)
+#endif
 
 /* Word access to game memory and snapshots, which are byte arrays. */
 typedef uint32_t __attribute__((may_alias)) word_t;
@@ -211,55 +226,123 @@ typedef struct chains_t {
   uint16_t* target_slot;       /* the reverse */
 } chains_t;
 
+/* A queued frame (or lifecycle entry). Written by the producer only (the
+ * ARM9's capture side); the consumer (the rc_client's owner) reads it and
+ * keeps its own progress in S.done[]. A slot is the producer's again once
+ * slot_tail has passed it. */
 typedef struct slot_t {
-  volatile int state;
+  volatile int state;         /* SLOT_*, the producer's own bookkeeping */
   uint8_t* data;
   uint32_t offset;            /* in the arena */
   uint32_t size;
   const table_t* table;
   target_t* targets;          /* chains.target_count of them */
   uint32_t frame;
-  volatile uint32_t repeats;  /* later frames whose bytes matched exactly; evaluated from this copy */
+  /* Later frames whose bytes matched exactly; evaluated from this copy.
+   * Only the newest slot grows, and the consumer frees a slot only once a
+   * newer one exists (slot_head moved past it), so it never misses one. */
+  volatile uint32_t repeats;
   uint32_t map;               /* how game memory was read (mem_t): only a snapshot taken the same way can repeat it */
   uint8_t carry;              /* capture_at_halt: no capture for this frame, evaluated with the last snapshot's memory */
-  uint32_t done;              /* frames of it evaluated so far (dsc_idle may stop part-way, idle_max_frames) */
   uint8_t event;              /* QEV_*: not a frame but a lifecycle change, applied in its place in the ring */
 } slot_t;
 
 /* Lifecycle changes queued in frame order (slot_t.event). */
 enum { QEV_NONE, QEV_RESET, QEV_HARDCORE_OFF };
 
+/* A request rc_client made (owner side). */
 typedef struct http_pending_t {
   int used;
-  int done;
+  uint32_t taken;             /* reply[].seq when the owner last took an answer */
   rc_client_server_callback_t callback;
   void* callback_data;
-  int status;
-  char* body;
-  size_t body_length;
   uint8_t journal_kind;       /* DSCM_JOURNAL_* if the request is an award or a leaderboard entry */
   uint32_t journal_id;
   int32_t journal_score;      /* leaderboard entries only */
 } http_pending_t;
 
+/* Its answer (network side, dsc_http_done): seq != http[].taken means one waits. */
+typedef struct http_reply_t {
+  volatile uint32_t seq;
+  int status;
+  const char* body;           /* the platform's buffer (platform.http_release), else a copy */
+  size_t body_length;
+  int copied;                 /* body is our malloc'd copy */
+} http_reply_t;
+
+#define LINE __attribute__((aligned(32)))    /* a new cache line: the groups below have one writer each */
+#define NO_KEEP 0xFFFFFFFFu
+
+/* The core's state, in groups by writer (hand-over: the ARM9's data cache
+ * writes back whole 32-byte lines, so two writers must never share one):
+ *   set at init, then only read;
+ *   P: the producer (the ARM9: capture, VBlank, drain, reset; its idle side);
+ *   C: the owner of the rc_client (evaluation and everything rc_client does);
+ *   N: the network side (dsc_http_done).
+ * slots[] are P's, done[] are C's. */
 static struct state_t {
+  /* ---- set at init ---- */
   int initialized;
   dsc_platform_t platform;
   dsc_config_t config;
   rc_client_t* client;
-  volatile int active;         /* set last: dsc_vblank uses the table and chains only after it */
-  int hardcore_refused;
-  chains_t chains;
+  uint32_t slot_count;         /* most frames that may wait (the ring also keeps the newest evaluated one) */
+  uint8_t* arena;
+  uint32_t arena_size;
+  char game_hash[33];
 
+  /* ---- P: producer ---- */
+  volatile uint32_t slot_head LINE; /* written by commit (drain), dsc_vblank_copy and push_event, never at once */
+  volatile uint32_t items_in;  /* frames and lifecycle entries queued, all time (repeats count) */
+  const table_t* volatile held;/* the table a capture or stage in slots[slot_head] uses (see take_table) */
+  volatile int active;         /* set last: dsc_vblank uses the table and chains only after it */
+  uint32_t arena_head;         /* end of the newest snapshot's bytes */
+  volatile uint32_t frame_counter;
+  int have_capture;            /* a frame was copied since dsc_init or the last dsc_reset */
+  uint32_t idle_clock;         /* platform frame (or millis) when dsc_idle() last did its housekeeping */
+  /* capture_at_halt: slots[slot_head] holds a capture for the next VBlank (Q.stage) */
+  int stage_same;              /* its bytes and targets equal the newest queued snapshot's */
+  uint32_t stage_prev;         /* slot_head - 1 when it was taken */
+  volatile int stage_failed;   /* the last capture found no room: the frame is dropped */
+  int capturing;               /* in dsc_capture with interrupt_pending: poll it */
+  uint32_t capture_frame;      /* Q.count when the copy began */
+  uint8_t* scratch;            /* dsc_vblank without memory_map: the longest run */
+  uint32_t scratch_size;
+  /* Chain copies whose rcheevos state (prior, changed) advances with each
+   * frame: saved before a capture, put back if it is replaced or stopped. */
+  rc_memref_value_t** sync;
+  rc_memref_value_t* sync_saved;
+  uint32_t sync_count;
+  int sync_dirty;              /* the values hold an uncommitted capture's state */
+  chains_t chains;             /* compiled at load; the capture runs them */
+  dsc_stats_t pstats;          /* the producer's counters (dsc_get_stats merges them) */
+#ifdef DSC_CHECK_FAST_STEPS
+  chains_t ref;                /* chains run only by rcheevos' own code */
+  uint8_t* shadow[MAX_SLOTS];  /* per slot: the snapshot as the old code took it */
+  uint32_t shadow_size[MAX_SLOTS];
+#endif
+  slot_t slots[MAX_SLOTS] LINE;/* ring: [slot_tail, slot_head) are queued */
+
+  /* ---- C: the rc_client's owner ---- */
+  volatile uint32_t slot_tail LINE; /* written by the owner only */
+  volatile uint32_t items_out; /* items_in the owner has finished */
+  /* The oldest arena offset the owner still needs besides the queued slots
+   * (S.last's bytes), or NO_KEEP: the one word of S.last the producer reads. */
+  volatile uint32_t keep;
+  slot_t* evaluating;
+  uint32_t eval_frame;         /* the frame rc_client_do_frame is running for (repeats counted) */
+  /* The snapshot evaluated last: its bytes stay in the arena while a carry
+   * slot may still need them. */
+  slot_t last;
+  int has_last;
+  int hardcore_refused;
   table_t tables[TABLES];
-  table_t* volatile current;   /* read by dsc_vblank */
+  table_t* volatile current;   /* read by the producer */
   int tables_spare;            /* a table other than current may hold memory */
   int table_full_logged;
   uint32_t* pending_new;       /* addresses missed during evaluation, merged after the frame */
   uint32_t pending_new_count;
   uint32_t pending_new_size;   /* allocated */
-  uint8_t* scratch;            /* dsc_vblank without memory_map: the longest run */
-  uint32_t scratch_size;
   /* The direct reads rcheevos makes each frame, in its order (every memref
    * it reads, rc_client_update_memref_values): table_t.seq says where each
    * lands. seq_next is the one expected next while a frame is evaluated. */
@@ -267,54 +350,19 @@ static struct state_t {
   uint8_t* seq_bytes;
   uint32_t seq_count;
   uint32_t seq_next;
-
-  slot_t slots[MAX_SLOTS];     /* ring: [slot_tail, slot_head) are queued */
-  uint32_t slot_count;         /* most frames that may wait */
-  volatile uint32_t slot_head; /* written by commit (drain) and dsc_vblank_copy, never at once */
-  volatile uint32_t slot_tail; /* written by dsc_idle only */
-  uint8_t* arena;
-  uint32_t arena_size;
-  uint32_t arena_head;         /* end of the newest snapshot's bytes */
-  slot_t* evaluating;
-  /* The snapshot evaluated last: its bytes stay in the arena while a carry
-   * slot may still need them. */
-  slot_t last;
-  volatile int has_last;
-  volatile uint32_t last_offset;
-  /* capture_at_halt: slots[slot_head] holds a capture for the next VBlank (Q.stage) */
-  int stage_same;              /* its bytes and targets equal the newest queued snapshot's */
-  uint32_t stage_prev;         /* slot_head - 1 when it was taken */
-  volatile int stage_failed;   /* the last capture found no room: the frame is dropped */
-  int capturing;               /* in dsc_capture with interrupt_pending: poll it */
-  uint32_t capture_frame;      /* Q.count when the copy began */
-  /* Chain copies whose rcheevos state (prior, changed) advances with each
-   * frame: saved before a capture, put back if it is replaced or stopped. */
-  rc_memref_value_t** sync;
-  rc_memref_value_t* sync_saved;
-  uint32_t sync_count;
-  int sync_dirty;              /* the values hold an uncommitted capture's state */
   uint32_t target_cursor;      /* the chain read rcheevos likely asks for next (see read_memory) */
-  volatile uint32_t frame_counter;
-
   http_pending_t http[MAX_PENDING_HTTP];
-  /* answers dsc_http_done() stored (the network side counts them) and given
-   * to rcheevos (the owner counts them): one writer each */
-  volatile uint32_t http_answered;
-  volatile uint32_t http_taken;
-  uint32_t idle_clock;         /* platform frame (or millis) when dsc_idle() last did its housekeeping */
-  char game_hash[33];
-
   dscm_list_t* list_buf[2];    /* double buffer; list_published is the one readers may use */
   dscm_list_t* list_published;
   uint32_t list_max;
   uint32_t list_generation;
   uint32_t list_frame;         /* frame_counter at the last build */
   int list_stale;
-
-  dsc_stats_t stats;
-
-  uint32_t eval_frame;         /* the frame rc_client_do_frame is running for (repeats counted) */
-  int have_capture;            /* a frame was copied since dsc_init or the last dsc_reset (producer) */
+  /* progress for dsc_get_progress, published like the list (two copies) */
+  dsc_progress_t progress[2];
+  volatile uint32_t progress_index;
+  int progress_stale;
+  dsc_stats_t stats;           /* the owner's counters */
   uint32_t dropped_reported;   /* frames_dropped when DSC_EVENT_DEGRADED was last raised */
   /* notices raised, waiting for the ring (owner): DSC_NOTICES_PER_FRAME a
    * platform frame go in, so a reader that looks once a frame sees them all */
@@ -322,7 +370,6 @@ static struct state_t {
   uint32_t nq_head, nq_tail;   /* [nq_tail, nq_head) wait */
   uint32_t nq_frame, nq_sent;  /* platform frame, and notices put in the ring during it */
   int flushing;                /* dsc_flush: no notice pacing, no pause for it */
-
 #ifdef DSC_CHANGED_RANGES
   /* The frame evaluated last (see changes_before): its snapshot, kept in
    * the arena while S.last or the slot being evaluated holds it. */
@@ -336,12 +383,14 @@ static struct state_t {
   rc_client_memory_range_t* ranges;
   uint32_t range_count, range_size;
 #endif
+  uint32_t done[MAX_SLOTS];    /* per slot: frames of it evaluated so far */
 
-#ifdef DSC_CHECK_FAST_STEPS
-  chains_t ref;                /* chains run only by rcheevos' own code */
-  uint8_t* shadow[MAX_SLOTS];  /* per slot: the snapshot as the old code took it */
-  uint32_t shadow_size[MAX_SLOTS];
-#endif
+  volatile uint32_t http_taken;/* answers given to rcheevos, all time (http_answered: the network's count) */
+
+  /* ---- N: the network side ---- */
+  http_reply_t reply[MAX_PENDING_HTTP] LINE;
+  volatile uint32_t http_answered;  /* answers stored, all time */
+  uint32_t end LINE;           /* nothing after N shares its last line */
 } S_storage;
 /* The state through the view the platform picked (dsc_state_view): cached,
  * or uncached through the DS's 0x0C000000 mirror. Evaluation reads it for
@@ -374,8 +423,8 @@ static struct {
  * writer; on the DS both must be read and written past the ARM9's data
  * cache (step 1 places them uncached). */
 static struct {
-  volatile uint32_t req9;      /* ARM9 only: it wants the rc_client, or has it */
-  volatile uint32_t grant7;    /* ARM7 only: it stopped and let the ARM9 have it */
+  volatile uint32_t req9 LINE; /* ARM9 only: it wants the rc_client, or has it */
+  volatile uint32_t grant7 LINE; /* ARM7 only: it stopped and let the ARM9 have it */
 } O;
 
 #ifdef DSC_TEST_HOOKS
@@ -678,8 +727,11 @@ static int table_in_use(const table_t* t)
   (void)i;
   if (t == S.current)
     return 1;
-  /* the stage first, also once a VBlank took it (sealed, not drained yet) */
-  if ((Q.stage || (int32_t)(Q.sealed - Q.taken) > 0) && S.slots[S.slot_head % MAX_SLOTS].table == t)
+  /* the producer's capture or stage (take_table): read after current was
+   * stored (CROSS_BARRIER in the caller's publish), so either it saw the new
+   * current or this sees its table */
+  CROSS_BARRIER();
+  if (S.held == t)
     return 1;
   if (S.has_last && S.last.table == t)
     return 1;
@@ -747,6 +799,7 @@ static void publish_pending_addresses(void)
   }
   PUBLISH_BARRIER();
   S.current = t; /* single word store: dsc_vblank sees the old or the new table, never a mix */
+  CROSS_BARRIER();
   S.tables_spare = t != old;
   S.stats.addresses = t->count;
   if (t->count >= S.config.max_addresses && !S.table_full_logged) {
@@ -2150,6 +2203,25 @@ static void indicator_clear(dscm_indicator_t* list, uint32_t id)
   n->indicators_generation++;
 }
 
+/* Owner: publish the core set's progress for dsc_get_progress (which the
+ * ARM9 may call while the ARM7 owns the rc_client). */
+static void progress_publish(void)
+{
+  rc_client_user_game_summary_t summary;
+  uint32_t i = (S.progress_index + 1) & 1;
+  dsc_progress_t* p = &S.progress[i];
+  memset(p, 0, sizeof(*p));
+  rc_client_get_user_game_summary(S.client, &summary);
+  p->achievements = summary.num_promoted_achievements;
+  p->unlocked = summary.num_unlocked_achievements;
+  p->points = summary.points_available;
+  p->points_unlocked = summary.points_unlocked;
+  p->hardcore_refused = S.hardcore_refused;
+  PUBLISH_BARRIER();
+  S.progress_index = i;
+  S.progress_stale = 0;
+}
+
 static void list_free(void)
 {
   if (S.list_published && S.platform.publish_list)
@@ -2433,6 +2505,7 @@ static void RC_CCONV server_call(const rc_api_request_t* request, rc_client_serv
   }
 
   memset(&S.http[i], 0, sizeof(S.http[i]));
+  S.http[i].taken = S.reply[i].seq;
   S.http[i].used = 1;
   S.http[i].callback = callback;
   S.http[i].callback_data = callback_data;
@@ -2445,7 +2518,7 @@ static void RC_CCONV server_call(const rc_api_request_t* request, rc_client_serv
   req.handle = &S.http[i];
   S.platform.http_send(&req);
 #ifdef DSC_TEST_HOOKS
-  if (T.sync_replies && S.http[i].used && S.http[i].done)
+  if (T.sync_replies && S.http[i].used && S.reply[i].seq != S.http[i].taken)
     finish_http();
 #endif
 }
@@ -2480,6 +2553,7 @@ static void RC_CCONV event_handler(const rc_client_event_t* event, rc_client_t* 
       journal_add(DSCM_JOURNAL_AWARD, a->id, 0);
       notice(DSCM_NOTICE_UNLOCK, a->id, (int32_t)a->points, a->title, a->description);
       S.list_stale = 1;
+      S.progress_stale = 1;
       break;
     case RC_CLIENT_EVENT_ACHIEVEMENT_PROGRESS_INDICATOR_SHOW:
     case RC_CLIENT_EVENT_ACHIEVEMENT_PROGRESS_INDICATOR_UPDATE:
@@ -2568,6 +2642,7 @@ static void RC_CCONV game_loaded(int result, const char* error_message, rc_clien
       game ? game->title : NULL, count);
     PUBLISH_BARRIER();
     S.active = 1;
+    progress_publish();
     Q.mode = MODE_COPY;
     emit(DSC_EVENT_GAME_LOADED, game ? game->id : 0, 0, game ? game->title : NULL, NULL);
   }
@@ -2601,6 +2676,7 @@ int dsc_init(const dsc_platform_t* platform, const dsc_config_t* config)
   memset(&S, 0, sizeof(S));
   memset((void*)&Q, 0, sizeof(Q));
   memset((void*)&O, 0, sizeof(O));
+  S.keep = NO_KEEP;
   S.platform = *platform;
   S.config = *config;
   if (!S.config.max_addresses)
@@ -2672,15 +2748,42 @@ int dsc_is_active(void)
   return S.active;
 }
 
+/* Producer: the oldest arena byte still needed, or NO_KEEP: the owner's
+ * keep word (S.last's bytes), else the oldest queued slot. slot_tail is read
+ * before keep: the owner stores keep before it moves slot_tail, so a stale
+ * pair only ever protects more. */
+static WAKE uint32_t arena_oldest(void)
+{
+  uint32_t tail = S.slot_tail, keep;
+  PUBLISH_BARRIER();
+  keep = S.keep;
+  if (keep != NO_KEEP)
+    return keep;
+  return tail != S.slot_head ? S.slots[tail % MAX_SLOTS].offset : NO_KEEP;
+}
+
+/* The table the capture uses: S.current, announced in S.held first and read
+ * again after (the owner frees a table only if held isn't it, see
+ * table_in_use). Producer side. */
+static WAKE const table_t* take_table(void)
+{
+  const table_t* t;
+  do {
+    t = S.current;
+    S.held = t;
+    CROSS_BARRIER();
+    INTERLEAVE(1);
+  } while (S.current != t);
+  return t;
+}
+
 /* Space for n bytes after the newest snapshot, or at the start of the
  * arena, without reaching the oldest queued one. -1 if there is none. */
 WAKE_INL int32_t arena_alloc(uint32_t n)
 {
-  uint32_t head = S.arena_head, tail;
-  if (S.slot_head == S.slot_tail && (!S.has_last || !S.last.size))
+  uint32_t head = S.arena_head, tail = arena_oldest();
+  if (tail == NO_KEEP)
     return n <= S.arena_size ? 0 : -1;    /* nothing queued or kept: start over */
-  /* the oldest bytes still needed: the last evaluated snapshot's, else the oldest queued */
-  tail = S.has_last ? S.last_offset : S.slots[S.slot_tail % MAX_SLOTS].offset;
   if (head >= tail) {
     if (S.arena_size - head >= n) return (int32_t)head;
     if (tail > n) return 0;
@@ -2891,25 +2994,30 @@ static WAKE_SMALL void commit(int staged)
 
   S.frame_counter++;
   /* frames waiting, repeats included: past MAX_SLOTS (~17 s), drop */
-  if (S.stats.frames_snapshotted - S.stats.frames_evaluated - S.stats.frames_discarded >= MAX_SLOTS) {
+  if (S.items_in - S.items_out >= MAX_SLOTS) {
     if (staged) {
       sync_restore();
       slot->state = SLOT_FREE;
     }
-    S.stats.frames_dropped++;
+    S.pstats.frames_dropped++;
     return;
   }
   if (prev && prev->event)
     prev = NULL;                 /* a lifecycle change: the frames before it are not repeated after it */
   if (staged) {
     S.sync_dirty = 0;            /* the chain copies' state is this frame's now */
-    S.stats.frames_snapshotted++;
+    S.pstats.frames_snapshotted++;
     S.have_capture = 1;
     if (S.stage_same && prev && S.stage_prev == S.slot_head - 1 && prev->state == SLOT_READY
         && snapshot_same(slot, prev)) {
+      /* prev is the newest slot: the owner may be evaluating it, but it
+       * frees it only once a newer slot exists, so this frame is seen */
+      INTERLEAVE(2);
       prev->repeats++;
+      PUBLISH_BARRIER();
+      S.items_in++;
       slot->state = SLOT_FREE;
-      S.stats.frames_repeated++;
+      S.pstats.frames_repeated++;
       return;
     }
     slot->repeats = 0;
@@ -2918,22 +3026,28 @@ static WAKE_SMALL void commit(int staged)
     slot->frame = S.frame_counter;
     S.arena_head = slot->offset + slot->size;
     slot->state = SLOT_READY;
+    INTERLEAVE(2);
+    PUBLISH_BARRIER();
     S.slot_head++;    /* publish last */
+    S.items_in++;
     return;
   }
 
   /* No capture since the last VBlank: the game didn't halt (a lag frame),
    * or every capture stopped for an interrupt. Evaluate this frame with the
    * memory captured last, as a repeat of it. */
-  if (S.stage_failed || (!prev && !S.has_last && !S.have_capture) || (!(prev && prev->state == SLOT_READY) && S.slot_head - S.slot_tail >= S.slot_count)) {
-    S.stats.frames_dropped++;
+  if (S.stage_failed || (!prev && S.keep == NO_KEEP && !S.have_capture) || (!(prev && prev->state == SLOT_READY) && S.slot_head - S.slot_tail > S.slot_count)) {
+    S.pstats.frames_dropped++;
     return;
   }
   sync_unchanged();
-  S.stats.frames_snapshotted++;
-  S.stats.frames_stale++;
+  S.pstats.frames_snapshotted++;
+  S.pstats.frames_stale++;
   if (prev && prev->state == SLOT_READY) {
+    INTERLEAVE(2);
     prev->repeats++;
+    PUBLISH_BARRIER();
+    S.items_in++;
     return;
   }
   /* the newest snapshot is being evaluated, or done, or a lifecycle change
@@ -2948,7 +3062,9 @@ static WAKE_SMALL void commit(int staged)
   slot->table = NULL;
   slot->frame = S.frame_counter;
   slot->state = SLOT_READY;
+  PUBLISH_BARRIER();
   S.slot_head++;
+  S.items_in++;
 }
 
 /* The VBlanks the IRQ queued, oldest first, into the ring. Idle time:
@@ -3017,16 +3133,28 @@ HOT void dsc_vblank_copy(void)
   }
 
   S.frame_counter++;
-  t = S.current;
+  t = take_table();
+#ifdef DSC_CHECK_FAST_STEPS
+  {
+    /* the owner may publish and free tables now (the other CPU): the one
+     * taken must stay as it is through the copy */
+    uint32_t generation = t->generation;
+    const uint32_t* addresses = t->addresses;
+    INTERLEAVE(5);
+    if (t->generation != generation || t->addresses != addresses)
+      check_failed("table freed under a capture", generation);
+  }
+#endif
   size = t->words * 4 + S.chains.target_count * sizeof(target_t);
-  offset = S.slot_head - S.slot_tail < S.slot_count ? arena_alloc(size) : -1;
+  offset = S.slot_head - S.slot_tail <= S.slot_count ? arena_alloc(size) : -1;
   if (offset < 0) {
-    S.stats.frames_dropped++;
+    S.pstats.frames_dropped++;
     return;
   }
 
-  /* Same watched bytes and targets as the newest queued frame, which idle
-   * hasn't started on: count it there instead (cutscenes, loading, menus).
+  /* Same watched bytes and targets as the newest queued frame (which may be
+   * being evaluated: it is freed only once a newer slot exists): count it
+   * there instead (cutscenes, loading, menus).
    * Each repeat is still evaluated as its own frame, so nothing is lost.
    * The copy compares as it goes, until the first difference. */
   slot = &S.slots[S.slot_head % MAX_SLOTS];
@@ -3049,7 +3177,7 @@ HOT void dsc_vblank_copy(void)
     run_chains(slot->targets, &m, NULL);
   same = prev && snapshot_same(slot, prev);
   slot->frame = S.frame_counter;
-  S.stats.frames_snapshotted++;
+  S.pstats.frames_snapshotted++;
   S.have_capture = 1;
 #ifdef DSC_CHECK_FAST_STEPS
   check_snapshot(slot, t);
@@ -3058,9 +3186,12 @@ HOT void dsc_vblank_copy(void)
 #endif
 
   if (same) {
+    INTERLEAVE(2);
     prev->repeats++;
+    PUBLISH_BARRIER();
+    S.items_in++;
     slot->state = SLOT_FREE;
-    S.stats.frames_repeated++;
+    S.pstats.frames_repeated++;
     return;
   }
 
@@ -3068,7 +3199,9 @@ HOT void dsc_vblank_copy(void)
   slot->carry = 0;
   S.arena_head = (uint32_t)offset + size;
   slot->state = SLOT_READY;
+  PUBLISH_BARRIER();
   S.slot_head++;    /* publish last */
+  S.items_in++;
 }
 
 WAKE int dsc_capture(void)
@@ -3088,9 +3221,20 @@ WAKE int dsc_capture(void)
   Q.stage = 0;
   sync_restore();
 
-  t = S.current;
+  t = take_table();
+#ifdef DSC_CHECK_FAST_STEPS
+  {
+    /* the owner may publish and free tables now (the other CPU): the one
+     * taken must stay as it is through the copy */
+    uint32_t generation = t->generation;
+    const uint32_t* addresses = t->addresses;
+    INTERLEAVE(5);
+    if (t->generation != generation || t->addresses != addresses)
+      check_failed("table freed under a capture", generation);
+  }
+#endif
   size = t->words * 4 + S.chains.target_count * sizeof(target_t);
-  offset = S.slot_head - S.slot_tail < S.slot_count ? arena_alloc(size) : -1;
+  offset = S.slot_head - S.slot_tail <= S.slot_count ? arena_alloc(size) : -1;
   if (offset < 0) {
     S.stage_failed = 1;
     return -1;
@@ -3122,7 +3266,7 @@ WAKE int dsc_capture(void)
     sync_restore();
     if (S.slot_head == head)
       slot->state = SLOT_FREE;    /* else a VBlank copied into it (nothing captured before) */
-    S.stats.captures_stopped++;
+    S.pstats.captures_stopped++;
     return 1;
   }
   /* a repeat of prev? decided at the commit (snapshot_same), once a frame */
@@ -3132,7 +3276,7 @@ WAKE int dsc_capture(void)
   if (prev && snapshot_same(slot, prev) != check_repeat(prev, slot, t))
     check_failed("repeat decision", same);
 #endif
-  S.stats.captures++;
+  S.pstats.captures++;
   S.stage_same = same;
   S.stage_prev = S.slot_head - 1;
   PUBLISH_BARRIER();
@@ -3148,15 +3292,38 @@ static void finish_http(void)
    progress = 0;
    for (i = 0; i < MAX_PENDING_HTTP; i++) {
     http_pending_t* p = &S.http[i];
-    if (p->used && p->done) {
+    const http_reply_t* r = &S.reply[i];
+    uint32_t seq = r->seq;
+    if (p->used && seq != p->taken) {
       rc_api_server_response_t resp;
       rc_client_server_callback_t cb = p->callback;
       void* data = p->callback_data;
-      char* body = p->body;
+      char* body;
+      size_t length = r->body_length;
+      int status = r->status;
 
-      resp.body = body;
-      resp.body_length = p->body_length;
-      resp.http_status_code = p->status;
+      PUBLISH_BARRIER();      /* the answer is complete before seq moves */
+      if (r->copied) {
+        body = (char*)r->body;
+      }
+      else {
+        /* the platform's buffer: copied here, on the owner, which is the
+         * only side that allocates (one allocator, two CPUs), then given back */
+        body = (char*)malloc(length + 1);
+        if (body) {
+          memcpy(body, r->body, length);
+          body[length] = '\0';
+        }
+        else {
+          length = 0;
+          status = RC_API_SERVER_RESPONSE_RETRYABLE_CLIENT_ERROR;
+        }
+        S.platform.http_release(p);
+      }
+      resp.body = body ? body : "";
+      resp.body_length = length;
+      resp.http_status_code = status;
+      p->taken = seq;
       p->used = 0;
       S.http_taken++;
       S.stats.pending_requests--;
@@ -3322,6 +3489,7 @@ static void apply_event(uint8_t ev)
   if (T.lifecycle)
     T.lifecycle(ev);
 #endif
+  S.progress_stale = 1;
   if (ev == QEV_RESET) {
     if (S.active) {
       rc_client_reset(S.client);
@@ -3361,7 +3529,7 @@ static void push_event(uint8_t ev)
 {
   slot_t* slot;
   if (S.slot_head - S.slot_tail >= MAX_SLOTS) {
-    S.stats.lifecycle_lost++;
+    S.pstats.lifecycle_lost++;
     dsc_log("ring full: a reset or hardcore change was lost");
     return;
   }
@@ -3375,11 +3543,11 @@ static void push_event(uint8_t ev)
   slot->targets = NULL;
   slot->table = NULL;
   slot->map = 0;
-  slot->done = 0;
   slot->frame = S.frame_counter;
   slot->state = SLOT_READY;
   PUBLISH_BARRIER();
   S.slot_head++;    /* publish last */
+  S.items_in++;
 }
 
 /* The owner's pass (cpu: DSC_OWNER_*): server answers, then the frames and
@@ -3397,29 +3565,23 @@ static int owner_pass(uint32_t budget, int cpu)
   /* Only what is queued now: frames that arrive meanwhile wait for the next
    * call, so the caller gets back to the network and the next capture even
    * when evaluation is slower than the game. */
-  stop = S.slot_head;
-  while (S.slot_tail != stop && budget) {
-    slot_t* next = &S.slots[S.slot_tail % MAX_SLOTS];
-    if (must_stop(cpu))
+  stop = S.items_in;
+  while (budget && S.items_out != stop) {
+    uint32_t tail = S.slot_tail, n, k, k0;
+    slot_t* next;
+    if (tail == S.slot_head || must_stop(cpu))
       break;
+    next = &S.slots[tail % MAX_SLOTS];
     if (next->event) {
-      if (next->state != SLOT_READY)
-        break;
       apply_event(next->event);
-      next->event = QEV_NONE;
-      next->state = SLOT_FREE;
-      S.slot_tail++;
+      S.items_out++;
+      PUBLISH_BARRIER();
+      S.slot_tail = tail + 1;
       continue;
     }
-    if (next->state == SLOT_READY) {
-      next->done = 0;
-      next->state = SLOT_EVAL;        /* from here on, dsc_vblank leaves repeats alone */
-    }
-    else if (next->state != SLOT_EVAL) {
-      break;
-    }
-    {
-      uint32_t n = 1 + next->repeats, k;
+    n = 1 + next->repeats;
+    k0 = k = S.done[tail % MAX_SLOTS];
+    if (k < n) {
       slot_t carried;
       if (next->carry) {
         /* frames with no capture: the last snapshot's memory */
@@ -3430,10 +3592,11 @@ static int owner_pass(uint32_t budget, int cpu)
       else {
         S.evaluating = next;
       }
-      for (k = next->done; k < n && budget; k++, budget--) {
-        if (k != next->done && must_stop(cpu))
+      for (; k < n && budget && S.items_out != stop; k++, budget--) {
+        if (k != k0 && must_stop(cpu))
           break;
         CHECK_OWNER(cpu);
+        INTERLEAVE(3);
         S.seq_next = 0;
         S.eval_frame = next->frame + k;
 #ifdef DSC_TEST_HOOKS
@@ -3452,17 +3615,32 @@ static int owner_pass(uint32_t budget, int cpu)
           T.frame_end(S.client, S.eval_frame);
 #endif
         S.stats.frames_evaluated++;
+        S.items_out++;
         evaluated++;
 #ifdef DSC_TEST_HOOKS
         if (T.sync_replies)
           finish_http();
 #endif
       }
-      next->done = k;
+      S.done[tail % MAX_SLOTS] = k;
       S.evaluating = NULL;
+      publish_pending_addresses();
+      finish_http();
+      notices_send();
       if (k < n)
         break;    /* out of budget, or ownership/notices: the rest of this slot next time */
+      continue;   /* look again: the producer may have added repeats meanwhile */
     }
+    /* Every frame of it so far is evaluated. The newest slot may still get
+     * repeats (the producer adds them only there), so it stays queued; once
+     * a newer slot exists its repeats are final (stored before slot_head
+     * moved): read them again, then free it. */
+    INTERLEAVE(4);       /* (n was read above: the producer may add to it, then seal it) */
+    if (S.slot_head == tail + 1)
+      break;
+    PUBLISH_BARRIER();
+    if (1 + next->repeats != k)
+      continue;
 #ifdef DSC_CHANGED_RANGES
     if (!next->carry) {
       /* keep its bytes: a carry slot after it reads them, changes_before compares with them */
@@ -3471,16 +3649,12 @@ static int owner_pass(uint32_t budget, int cpu)
       /* keep its bytes: a carry slot after it reads them */
 #endif
       S.last = *next;
-      S.last_offset = next->offset;
-      PUBLISH_BARRIER();
       S.has_last = 1;
+      S.keep = next->offset;     /* before slot_tail moves (see arena_oldest) */
     }
-    next->state = SLOT_FREE;
-    S.slot_tail++;
-
-    publish_pending_addresses();
-    finish_http();
-    notices_send();
+    S.done[tail % MAX_SLOTS] = 0;
+    PUBLISH_BARRIER();
+    S.slot_tail = tail + 1;
   }
 
   release_tables();
@@ -3488,9 +3662,11 @@ static int owner_pass(uint32_t budget, int cpu)
     rc_client_idle(S.client);
   list_update();
   notices_send();
+  if (S.progress_stale)
+    progress_publish();
 
-  if (S.stats.frames_dropped != S.dropped_reported) {
-    S.dropped_reported = S.stats.frames_dropped;
+  if (S.pstats.frames_dropped != S.dropped_reported) {
+    S.dropped_reported = S.pstats.frames_dropped;
     emit(DSC_EVENT_DEGRADED, S.dropped_reported, 0, NULL, "evaluation fell behind; frames were dropped");
   }
   return evaluated;
@@ -3545,7 +3721,7 @@ int dsc_idle(void)
    * touching more memory (rcheevos' own timers run once a frame below). */
   {
     uint32_t clock = S.platform.frame ? S.platform.frame() : S.platform.millis();
-    if (clock == S.idle_clock && Q.frames == Q.taken && S.slot_tail == S.slot_head && S.http_answered == S.http_taken
+    if (clock == S.idle_clock && Q.frames == Q.taken && S.items_in == S.items_out && S.http_answered == S.http_taken
         && A9.want == A9.acquired)    /* hand-over: wanted and not held yet, ask (arm9_turn) */
       return 0;
     S.idle_clock = clock;
@@ -3597,16 +3773,10 @@ int dsc_arm7_step(uint32_t max_frames)
 
 uint32_t dsc_backlog(void)
 {
-  uint32_t n, frames = 0;
   if (!S.initialized)
     return 0;
-  frames = Q.frames - Q.taken;
-  for (n = S.slot_tail; n != S.slot_head; n++) {
-    const slot_t* q = &S.slots[n % MAX_SLOTS];
-    if (!q->event)
-      frames += 1 + q->repeats - (q->state == SLOT_EVAL ? q->done : 0);
-  }
-  return frames;
+  /* lifecycle entries count too: one each */
+  return (Q.frames - Q.taken) + (S.items_in - S.items_out);
 }
 
 int dsc_flush(void)
@@ -3626,26 +3796,45 @@ int dsc_flush(void)
 void dsc_http_done(void* handle, int http_status, const char* body, size_t body_length)
 {
   http_pending_t* p = (http_pending_t*)handle;
-  if (!p || !p->used || p->done)
+  http_reply_t* r;
+  uint32_t i;
+  if (!p || p < S.http || p >= S.http + MAX_PENDING_HTTP)
     return;
-  p->body = (char*)malloc(body_length + 1);
-  if (p->body) {
-    memcpy(p->body, body, body_length);
-    p->body[body_length] = '\0';
-    p->body_length = body_length;
-    p->status = http_status;
+  i = (uint32_t)(p - S.http);
+  r = &S.reply[i];
+  if (!p->used || r->seq != p->taken)
+    return;              /* not asked, or answered already */
+  if (S.platform.http_release) {
+    /* the platform keeps the bytes until http_release: nothing allocated here */
+    r->body = body;
+    r->copied = 0;
+    r->body_length = body_length;
+    r->status = http_status;
   }
   else {
-    p->body_length = 0;
-    p->status = RC_API_SERVER_RESPONSE_RETRYABLE_CLIENT_ERROR;
+    char* copy = (char*)malloc(body_length + 1);
+    r->copied = 1;
+    if (copy) {
+      memcpy(copy, body, body_length);
+      copy[body_length] = '\0';
+      r->body = copy;
+      r->body_length = body_length;
+      r->status = http_status;
+    }
+    else {
+      r->body = NULL;
+      r->body_length = 0;
+      r->status = RC_API_SERVER_RESPONSE_RETRYABLE_CLIENT_ERROR;
+    }
   }
-  p->done = 1;
+  PUBLISH_BARRIER();
+  r->seq = p->taken + 1;
   S.http_answered++;
 }
 
 int dsc_work_pending(void)
 {
-  return S.initialized && (Q.frames != Q.taken || S.slot_tail != S.slot_head || S.http_answered != S.http_taken);
+  return S.initialized && (Q.frames != Q.taken || S.items_in != S.items_out || S.http_answered != S.http_taken);
 }
 
 void dsc_state_view(uint32_t high_byte)
@@ -3663,19 +3852,34 @@ WAKE_SMALL void dsc_drain(void)
     drain();
 }
 
+uint32_t dsc_arena_used(void)
+{
+  uint32_t tail;
+  if (!S.initialized)
+    return 0;
+  /* as arena_alloc sees it: from the oldest bytes still needed to the newest */
+  tail = arena_oldest();
+  if (tail == NO_KEEP)
+    return 0;
+  return S.arena_head >= tail ? S.arena_head - tail : S.arena_size - tail + S.arena_head;
+}
+
+/* The owner's counters, with the producer's merged in (one writer each). */
 void dsc_get_stats(dsc_stats_t* stats)
 {
-  if (S.initialized) {
-    uint32_t tail;
+  /* drain() is the producer's (the ARM9's): with hand-over this may be
+   * called on the owner, e.g. from an event callback, so it only reads */
+  if (S.initialized && !S.config.handover)
     drain();
-    /* as arena_alloc sees it: from the oldest bytes still needed to the newest */
-    S.stats.arena_used = 0;
-    if (S.slot_head != S.slot_tail || (S.has_last && S.last.size)) {
-      tail = S.has_last ? S.last_offset : S.slots[S.slot_tail % MAX_SLOTS].offset;
-      S.stats.arena_used = S.arena_head >= tail ? S.arena_head - tail : S.arena_size - tail + S.arena_head;
-    }
-  }
   *stats = S.stats;
+  stats->frames_snapshotted = S.pstats.frames_snapshotted;
+  stats->frames_dropped = S.pstats.frames_dropped;
+  stats->frames_repeated = S.pstats.frames_repeated;
+  stats->frames_stale = S.pstats.frames_stale;
+  stats->captures = S.pstats.captures;
+  stats->captures_stopped = S.pstats.captures_stopped;
+  stats->lifecycle_lost = S.pstats.lifecycle_lost;
+  stats->arena_used = dsc_arena_used();
 }
 
 void dsc_reset(void)
@@ -3727,16 +3931,20 @@ static int hardcore_refused(rc_client_t* client)
 
 void dsc_get_progress(dsc_progress_t* progress)
 {
-  rc_client_user_game_summary_t summary;
+  int tries;
   memset(progress, 0, sizeof(*progress));
   if (!S.initialized || !S.active)
     return;
-  rc_client_get_user_game_summary(S.client, &summary);
-  progress->achievements = summary.num_promoted_achievements;
-  progress->unlocked = summary.num_unlocked_achievements;
-  progress->points = summary.points_available;
-  progress->points_unlocked = summary.points_unlocked;
-  progress->hardcore_refused = S.hardcore_refused;
+  /* the owner's last published copy (progress_publish): two buffers, so a
+   * copy that saw the index move is taken again, once */
+  for (tries = 0; tries < 2; tries++) {
+    uint32_t i = S.progress_index;
+    PUBLISH_BARRIER();
+    *progress = S.progress[i & 1];
+    PUBLISH_BARRIER();
+    if (S.progress_index == i)
+      break;
+  }
 }
 
 void dsc_shutdown(void)
@@ -3775,8 +3983,8 @@ void dsc_shutdown(void)
     free(S.shadow[i]);
 #endif
   for (i = 0; i < MAX_PENDING_HTTP; i++)
-    if (S.http[i].used)
-      free(S.http[i].body);
+    if (S.http[i].used && S.reply[i].seq != S.http[i].taken && S.reply[i].copied)
+      free((void*)S.reply[i].body);
   free(S.pending_new);
   free(S.nq);
 #ifdef DSC_CHANGED_RANGES
@@ -3788,6 +3996,33 @@ void dsc_shutdown(void)
   memset((void*)&Q, 0, sizeof(Q));
   memset((void*)&O, 0, sizeof(O));
 }
+
+#ifdef DSC_CHECK_FAST_STEPS
+/* Tests: each writer's group starts a cache line, and the groups are in
+ * the order the struct declares (P, slots, C, N): 0 if so. */
+int dsc_test_layout(void)
+{
+#define OFF(f) ((uint32_t)offsetof(struct state_t, f))
+  if (OFF(slot_head) % 32 || OFF(slots) % 32 || OFF(slot_tail) % 32 || OFF(reply) % 32 || OFF(end) % 32)
+    return 1;
+  if (!(OFF(game_hash) < OFF(slot_head) && OFF(pstats) < OFF(slots) && OFF(slots) < OFF(slot_tail) &&
+        OFF(done) < OFF(reply) && OFF(http_taken) < OFF(reply) && OFF(http_answered) < OFF(end)))
+    return 2;
+  if (((uintptr_t)&S_storage) % 32 || ((uintptr_t)&O.grant7 - (uintptr_t)&O.req9) < 32)
+    return 3;
+  return 0;
+#undef OFF
+}
+
+/* Tests: the owner adds an address to the table now (a new table published,
+ * unused ones freed), as a live read during evaluation would. */
+void dsc_test_republish(uint32_t address)
+{
+  note_missing(address);
+  publish_pending_addresses();
+  release_tables();
+}
+#endif
 
 #ifdef DSC_TEST_HOOKS
 void dsc_test_set_hooks(const dsc_test_hooks_t* hooks)

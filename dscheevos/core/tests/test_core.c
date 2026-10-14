@@ -212,6 +212,42 @@ static const char* param(const char* post, const char* key, char* out, size_t ou
   return NULL;
 }
 
+/* platform.http_release: answers come from buffers the platform keeps
+ * until the core gives them back (no copy on the network side) */
+static int release_mode, releases, release_bad;
+static void* held_handle[16];
+static char* held_body[16];
+static void answer(void* handle, int status, const char* body, size_t len)
+{
+  int i;
+  if (!release_mode) {
+    dsc_http_done(handle, status, body, len);
+    return;
+  }
+  for (i = 0; i < 16 && held_handle[i]; i++)
+    ;
+  if (i == 16) { release_bad++; return; }
+  held_handle[i] = handle;
+  held_body[i] = (char*)malloc(len + 1);
+  memcpy(held_body[i], body, len);
+  held_body[i][len] = 0;
+  dsc_http_done(handle, status, held_body[i], len);
+}
+static void http_release(void* handle)
+{
+  int i;
+  for (i = 0; i < 16; i++) {
+    if (held_handle[i] == handle) {
+      memset(held_body[i], 'X', strlen(held_body[i]));   /* the core must not read it after this */
+      free(held_body[i]);
+      held_handle[i] = NULL;
+      releases++;
+      return;
+    }
+  }
+  release_bad++;
+}
+
 static void http_send(const dsc_http_request_t* req)
 {
   char r[32] = "", v[32];
@@ -221,7 +257,7 @@ static void http_send(const dsc_http_request_t* req)
   const char* post = req->post_data ? req->post_data : "";
 
   if (server_down) {
-    dsc_http_done(req->handle, 503, "Service Unavailable", 19);
+    answer(req->handle, 503, "Service Unavailable", 19);
     return;
   }
   param(post, "r", r, sizeof r);
@@ -263,7 +299,7 @@ static void http_send(const dsc_http_request_t* req)
     snprintf(buf, sizeof buf, "{\"Success\":true,\"Response\":{\"Score\":%d,\"BestScore\":%d,\"RankInfo\":{\"Rank\":2,\"NumEntries\":\"7\"},\"TopEntries\":[]}}", score, score);
     body = buf;
   }
-  dsc_http_done(req->handle, status, body, strlen(body));
+  answer(req->handle, status, body, strlen(body));
 }
 
 /* ---- events ---- */
@@ -369,6 +405,7 @@ static void start_with(int hardcore, uint32_t slots, uint32_t bytes)
                        use_map ? memory_map : NULL, interrupt_pending, platform_journal_sync, clock_utc, clock_bits };
   dsc_config_t c = { "http://mock", "tester", "tok", hardcore, max_addresses, slots, bytes, spectator, halt_mode, idle_budget };
   p.unix_time_at = platform_unix_time_at;
+  p.http_release = release_mode ? http_release : NULL;
   p.ownership = ownership;
   c.handover = handover_mode;
   own_acquires = handover_mode ? 1 : 0;    /* dsc_init: the ARM9's from the start, nothing to invalidate */
@@ -1234,6 +1271,43 @@ static void RC_CCONV ref_event(const rc_runtime_event_t* e)
 static int ho_want, ho_switch_in, ho_switches;
 static uint32_t ho_rng = 7;
 static uint32_t ho_rnd(void) { ho_rng ^= ho_rng << 13; ho_rng ^= ho_rng >> 17; ho_rng ^= ho_rng << 5; return ho_rng; }
+/* Interleaving (dsc_test_interleave): at the core's cross-CPU points the
+ * other side runs in the middle of the step. While the producer is in
+ * take_table or about to add a frame (points 1, 2), the "ARM7" evaluates;
+ * while the "ARM7" is about to evaluate or free a slot (3, 4), the VBlank
+ * the test loop left pending (capture, then queue) happens. */
+static int il_on, il_depth, il_pending_vblank, il_cpu7, il_hits[6], il_republish;
+static uint32_t il_republish_address = 0x30000;
+static void interleave(int point)
+{
+  if (!il_on || il_depth)
+    return;
+  il_depth++;
+  if (point == 5) {
+    /* the producer has its table and is about to copy with it: the owner
+     * publishes a new one and frees what nothing uses */
+    if (il_republish && dsc_owner() == DSC_OWNER_ARM7) {
+      il_hits[5]++;
+      dsc_test_republish(il_republish_address);
+      il_republish_address += 4;
+    }
+  }
+  else if (point <= 2) {
+    if (ho_rnd() % 2) {
+      il_hits[point]++;
+      il_cpu7 = 1;
+      dsc_arm7_step(1 + ho_rnd() % 2);
+      il_cpu7 = 0;
+    }
+  }
+  else if (il_cpu7 && il_pending_vblank && ho_rnd() % 2) {
+    il_hits[point]++;
+    il_pending_vblank = 0;
+    dsc_vblank();
+  }
+  il_depth--;
+}
+
 static void handover_tick(void)
 {
   int k;
@@ -1246,8 +1320,11 @@ static void handover_tick(void)
   for (k = (int)(ho_rnd() % 4); k > 0; k--) {
     if (ho_rnd() % 2)
       dsc_idle();
-    else
+    else {
+      il_cpu7 = 1;
       dsc_arm7_step(ho_rnd() % 4);    /* 0: all queued */
+      il_cpu7 = 0;
+    }
   }
 }
 /* Both evaluators until nothing is queued. */
@@ -1283,11 +1360,23 @@ static int compare_with_rcheevos(const char* const* triggers, int n, int frames_
   }
   for (f = 1; f <= frames_to_run; f++) {
     mutate(f, 0);
-    dsc_vblank();
+    if (handover_mode && il_on) {
+      /* the VBlank may come while the "ARM7" is in the middle of a frame */
+      il_pending_vblank = 1;
+      handover_tick();
+      if (il_pending_vblank) {
+        il_pending_vblank = 0;
+        dsc_vblank();
+      }
+    }
+    else
+      dsc_vblank();
     ref_frame = f;
     rc_runtime_do_frame(&ref, ref_event, ref_peek, NULL, NULL);
     mutate(f, 1);
-    if (handover_mode)
+    if (handover_mode && il_on)
+      ;
+    else if (handover_mode)
       handover_tick();
     else if (f % idle_every == 0)
       dsc_idle();
@@ -1404,15 +1493,17 @@ static void test_snapshot_without_dtcm(void)
 static void test_new_memory_map_is_not_a_repeat(void)
 {
   dsc_stats_t s;
+  dsc_stats_t s0;
   start_with(1, 1024, 0);
   frames(3);
-  dsc_vblank();
+  dsc_get_stats(&s0);
+  dsc_vblank();                /* the same memory as the frame before: a repeat of it */
   dsc_vblank();                /* DTCM is all 0: a repeat */
   dtcm_known = 0;
   dsc_vblank();                /* DTCM reads 0 now too, but it wasn't read */
   dtcm_known = 1;
   dsc_get_stats(&s);
-  CHECK(s.frames_repeated == (use_map ? 1u : 2u));    /* without a map, the core can't tell */
+  CHECK(s.frames_repeated - s0.frames_repeated == (use_map ? 2u : 3u));    /* without a map, the core can't tell */
   dsc_idle();
   dsc_shutdown();
 }
@@ -1424,7 +1515,7 @@ static void test_any_word_breaks_a_repeat(void)
   static char text[20][32];
   const char* triggers[20];
   char* json;
-  dsc_stats_t s;
+  dsc_stats_t s, s0;
   int i;
   for (i = 0; i < 20; i++) {
     snprintf(text[i], sizeof text[i], "0xH%06x=200", 0x800 + 16 * i);
@@ -1435,17 +1526,18 @@ static void test_any_word_breaks_a_repeat(void)
   start_with(1, 1024, 0);
   serve_set = NULL;
   frames(3);
+  dsc_get_stats(&s0);
   for (i = 0; i < 40; i++) {
     ram[0x800 + 16 * (i % 20)]++;
     dsc_vblank();
   }
   dsc_get_stats(&s);
-  CHECK(s.frames_repeated == 0);
+  CHECK(s.frames_repeated == s0.frames_repeated);
   for (i = 0; i < 10; i++)
     dsc_vblank();
   dsc_idle();
   dsc_get_stats(&s);
-  CHECK(s.frames_repeated == 10);
+  CHECK(s.frames_repeated - s0.frames_repeated == 10);
   CHECK(s.frames_evaluated == s.frames_snapshotted);
   dsc_shutdown();
   free(json);
@@ -1572,10 +1664,11 @@ static void test_recall_chain_reads_live(void)
 /* A change to an unwatched byte in a watched word is not a change. */
 static void test_unwatched_bytes_still_repeat(void)
 {
-  dsc_stats_t s;
+  dsc_stats_t s, s0;
   int i;
   start_with(1, 1024, 0);
   frames(3);
+  dsc_get_stats(&s0);
   for (i = 0; i < 20; i++) {
     ram[0x11] = (uint8_t)i;    /* same word as 0x10, not watched */
     ram[0x103 + 0x20] = (uint8_t)i;
@@ -1583,7 +1676,7 @@ static void test_unwatched_bytes_still_repeat(void)
   }
   dsc_idle();
   dsc_get_stats(&s);
-  CHECK(s.frames_repeated == 19);
+  CHECK(s.frames_repeated - s0.frames_repeated == 20);    /* the first repeats the last frame before them too */
   dsc_shutdown();
 }
 
@@ -2202,6 +2295,175 @@ static void test_handover_matches_rcheevos(void)
   handover_mode = saved;
 }
 
+/* The same comparisons with the other side running in the middle of the
+ * cross-CPU steps (repeats added while the newest slot is evaluated, frames
+ * queued while the owner frees a slot). */
+static void test_handover_interleaved_matches_rcheevos(void)
+{
+  dsc_stats_t s;
+  int saved = handover_mode, round, unlocks;
+  handover_mode = 1;
+  il_on = 1;
+  dsc_test_interleave = interleave;
+  memset(il_hits, 0, sizeof(il_hits));
+  for (round = 0; round < 3; round++) {
+    rng = 301 + round;
+    CHECK(compare_with_rcheevos(layout_triggers, (int)(sizeof(layout_triggers) / sizeof(layout_triggers[0])), 400, 1, layout_mutate, &s) >= 8);
+    CHECK(own_bad == 0);
+    rng = round == 2 ? 36 : 32 + 8 * round;
+    unlocks = compare_with_rcheevos(more_chain_triggers, (int)(sizeof(more_chain_triggers) / sizeof(more_chain_triggers[0])), 400, 1, more_chain_mutate, &s);
+    CHECK(unlocks >= 8);
+    CHECK(own_bad == 0);
+  }
+  printf("  interleavings: take_table %d, add to ring %d, before a frame %d, before freeing %d\n",
+    il_hits[1], il_hits[2], il_hits[3], il_hits[4]);
+  CHECK(il_hits[1] > 50 && il_hits[2] > 50 && il_hits[3] > 50 && il_hits[4] > 50);
+  dsc_test_interleave = NULL;
+  il_on = 0;
+  handover_mode = saved;
+}
+
+/* The owner republishes the address table (a Recall chain's live reads add
+ * addresses) while the producer is between reading S.current and copying
+ * with it: the table it took stays allocated (S.held). Run the tests with
+ * -fsanitize=address to see a use after free. */
+static void test_table_held_across_republish(void)
+{
+  static const char* const triggers[] = { "K:0xX001000&33554431_I:{recall}_0xH000004=1" };
+  char* json = make_set(triggers, 1);
+  dsc_stats_t s;
+  int saved = handover_mode, i;
+  handover_mode = 1;
+  serve_set = json;
+  start_with(1, 1024, 0);
+  serve_set = NULL;
+  put32(0x1000, 0x02000020);
+  frames(3);
+  dsc_want(0);
+  il_on = 1;
+  il_republish = 1;
+  dsc_test_interleave = interleave;
+  memset(il_hits, 0, sizeof(il_hits));
+  for (i = 0; i < 60; i++) {
+    if (i == 30)
+      ram[0x24] = 1;
+    put32(0x1000, 0x02000020 + 0x40 * (uint32_t)(i % 7));    /* new targets: new addresses to publish */
+    ram[0x24 + 0x40 * (i % 7)] = i >= 30;
+    dsc_vblank();
+    il_cpu7 = 1;
+    dsc_arm7_step(0);
+    il_cpu7 = 0;
+  }
+  dsc_test_interleave = NULL;
+  il_on = 0;
+  il_republish = 0;
+  while (dsc_arm7_step(0))
+    ;
+  dsc_get_stats(&s);
+  CHECK(il_hits[1] > 5 && il_hits[5] > 20);
+  CHECK(s.live_reads > 0 && s.addresses > 0);
+  CHECK(was_unlocked(DIFF_BASE));
+  CHECK(s.frames_evaluated == s.frames_snapshotted);
+  dsc_want(1);
+  dsc_idle();
+  dsc_arm7_step(0);
+  dsc_shutdown();
+  free(json);
+  handover_mode = saved;
+}
+
+/* The repeat race step by step (the old code lost a frame here): the
+ * "ARM7" is evaluating the newest slot, having read how many frames it has;
+ * meanwhile the producer adds a repeat to that slot (same memory) and then a
+ * new slot (memory changed). The repeat must still be evaluated. */
+static int race_armed, race_done;
+static void repeat_then_seal(int point)
+{
+  if (point != 3 || !race_armed || race_done)
+    return;
+  race_done = 1;
+  dsc_vblank();          /* the same memory: a repeat of the newest slot */
+  ram[0x10] ^= 2;        /* a watched byte */
+  dsc_vblank();          /* different: a new slot after it */
+}
+static void test_repeat_added_while_evaluating(void)
+{
+  dsc_stats_t s;
+  int saved = handover_mode;
+  handover_mode = 1;
+  start_with(1, 1024, 0);
+  frames(3);
+  dsc_want(0);
+  ram[0x10] ^= 4;
+  dsc_vblank();          /* a new newest slot, not evaluated yet */
+  dsc_drain();
+  race_armed = 1;
+  race_done = 0;
+  dsc_test_interleave = repeat_then_seal;
+  dsc_arm7_step(0);
+  dsc_test_interleave = NULL;
+  race_armed = 0;
+  CHECK(race_done);
+  dsc_drain();
+  while (dsc_arm7_step(0))
+    ;
+  dsc_get_stats(&s);
+  CHECK(s.frames_evaluated == s.frames_snapshotted && s.frames_dropped == 0);
+  dsc_want(1);
+  dsc_idle();
+  dsc_arm7_step(0);
+  dsc_shutdown();
+  handover_mode = saved;
+}
+
+/* With platform.http_release the network side keeps the platform's buffer
+ * and the owner copies it, then gives it back: every answer released once,
+ * after rcheevos had it (the buffer is scribbled over at release). */
+static void test_http_release(void)
+{
+  int i;
+  release_mode = 1;
+  releases = release_bad = 0;
+  start(1);                      /* login, set, session: three answers */
+  unlock_1001();
+  CHECK(award_count == 1);
+  CHECK(releases >= 4 && release_bad == 0);
+  for (i = 0; i < 16; i++)
+    CHECK(held_handle[i] == NULL);
+  dsc_shutdown();
+  release_mode = 0;
+}
+
+/* dsc_get_progress reads what the owner published: right after the "ARM7"
+ * evaluated an unlock, without touching the rc_client itself. */
+static void test_progress_published_by_owner(void)
+{
+  dsc_progress_t p;
+  int saved = handover_mode;
+  handover_mode = 1;
+  start_with(1, 1024, 0);
+  frames(3);
+  dsc_want(0);
+  dsc_get_progress(&p);
+  CHECK(p.achievements == 4 && p.unlocked == 0);
+  ram[0x10] = 5;
+  dsc_vblank(); dsc_drain(); dsc_arm7_step(0);
+  dsc_vblank(); dsc_drain(); dsc_arm7_step(0);
+  CHECK(was_unlocked(1001));
+  dsc_get_progress(&p);
+  CHECK(p.unlocked == 1 && p.points_unlocked == 5);
+  dsc_want(1);
+  dsc_idle();
+  dsc_arm7_step(0);
+  dsc_shutdown();
+  handover_mode = saved;
+}
+
+static void test_state_layout(void)
+{
+  CHECK(dsc_test_layout() == 0);
+}
+
 static void run_all(void)
 {
   for (use_map = 0; use_map < 2; use_map++) {    /* the snapshot tests, without and with a memory map */
@@ -2265,6 +2527,12 @@ static void run_all(void)
   RUN(test_notices_paced_none_lost);
   RUN(test_ownership_protocol);
   RUN(test_handover_matches_rcheevos);
+  RUN(test_handover_interleaved_matches_rcheevos);
+  RUN(test_table_held_across_republish);
+  RUN(test_repeat_added_while_evaluating);
+  RUN(test_http_release);
+  RUN(test_progress_published_by_owner);
+  RUN(test_state_layout);
   RUN(test_notice_uses_platform_frame);
   RUN(test_notice_ring_wraps);
   RUN(test_no_outputs_is_fine);
