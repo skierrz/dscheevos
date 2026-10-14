@@ -32,7 +32,7 @@ fi
 rom=$1 frames=${2:-1500} script=${3:-}
 . "$here/../lib/workdir.sh"
 out=$(dsc_mkwork "dsc-lc-p${PORT:-8453}")
-trap 'exit 130' INT TERM HUP; trap 'dsc_rmwork "$out"' EXIT
+dsc_softterm; trap 'dsc_rmwork "$out"' EXIT
 "$here/ab.sh" "$rom" "$frames" $script > "$out/ab.txt" 2>&1 || true
 python3 - "$out/ab.txt" "$(basename "$rom")" <<'EOF'
 import re, sys
