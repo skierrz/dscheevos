@@ -3665,8 +3665,16 @@ WAKE_SMALL void dsc_drain(void)
 
 void dsc_get_stats(dsc_stats_t* stats)
 {
-  if (S.initialized)
+  if (S.initialized) {
+    uint32_t tail;
     drain();
+    /* as arena_alloc sees it: from the oldest bytes still needed to the newest */
+    S.stats.arena_used = 0;
+    if (S.slot_head != S.slot_tail || (S.has_last && S.last.size)) {
+      tail = S.has_last ? S.last_offset : S.slots[S.slot_tail % MAX_SLOTS].offset;
+      S.stats.arena_used = S.arena_head >= tail ? S.arena_head - tail : S.arena_size - tail + S.arena_head;
+    }
+  }
   *stats = S.stats;
 }
 

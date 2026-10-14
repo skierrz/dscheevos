@@ -28,7 +28,7 @@
  * rc_client instead (dscheevos/core, its snapshot queue, the module's flags),
  * fed one capture and VBlank per trace frame, and evaluated by two simulated
  * CPUs that hand the rc_client over every random 1-8 frames (--handover SEED;
- * stalls of up to 150 frames, ending at 48 queued, build a backlog). Resets and the hardcore switch
+ * stalls of up to 150 frames, ending at 48 queued or half the arena, build a backlog). Resets and the hardcore switch
  * go through the core's queue (dsc_reset, dsc_hardcore_off); pauses and MENU
  * frames are a frozen window: the ARM9 takes the rc_client and drains the
  * queue (dsc_flush), then the paused frames run rc_client_idle. rc_client's
@@ -959,11 +959,15 @@ static void core_tick(void)
     dsc_idle();
     return;
   }
-  /* a stall ends early at 48 queued frames: under the design's 60-frame lag
-   * cap, and inside the 256 KB arena for every set (busy fuzz frames of
-   * Platinum or Digimon fill it at about 60-75 frames; then frames drop, which
-   * is the dropped-frames gap, not hand-over) */
-  if (g_ho_stall > 0 && dsc_backlog() < 48) { g_ho_stall--; return; }
+  /* a stall ends early at 48 queued frames (under the design's 60-frame lag
+   * cap) or half the 256 KB arena: busy fuzz frames fill it at about 60-75
+   * frames for Platinum or Digimon, far fewer for SoulSilver (chain targets);
+   * then frames drop, which is the dropped-frames gap, not hand-over */
+  if (g_ho_stall > 0 && dsc_backlog() < 48) {
+    dsc_stats_t st;
+    dsc_get_stats(&st);
+    if (st.arena_used < 128u * 1024u) { g_ho_stall--; return; }
+  }
   g_ho_stall = 0;
   if (ho_rnd() % 200 == 0) { g_ho_stall = 1 + (int)(ho_rnd() % 150); g_ho_stalls++; }
   if (--g_ho_switch_in <= 0) {

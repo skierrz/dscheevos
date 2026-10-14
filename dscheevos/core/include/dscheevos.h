@@ -162,6 +162,7 @@ typedef struct dsc_stats_t {
   uint32_t notices_waiting;      /* raised, not in the ring yet (at most DSC_NOTICES_PER_FRAME go in per frame) */
   uint32_t handovers;            /* times the ARM9 took or gave back the rc_client (handover) */
   uint32_t lifecycle_lost;       /* resets or hardcore switches that found the ring full (never, in practice) */
+  uint32_t arena_used;           /* snapshot bytes held now (queued frames and the one evaluated last), of config.snapshot_bytes */
 } dsc_stats_t;
 
 /* Progress in the loaded game's core set (for menus). */
