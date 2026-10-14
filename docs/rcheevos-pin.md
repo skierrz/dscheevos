@@ -33,7 +33,8 @@ frame's work"**, 3 files (`src/runtime/rc_internal.h`, `src/client/rc_client.c`,
 - **Identical when on (difftest):** `tests/difftest/core.sh` with `YIELD=1` adds a variant built with the hook, in which
   one yield point in 8 (at most once per evaluation turn, as the console's gate captures once per wait) runs the next
   trace frame's capture and VBlank from inside the hook, in the middle of `rc_client_do_frame` or the index build. Result
-  on every real set with a real RAM dump: see biowait.md (corpus run 2026-10-14).
+  (2026-10-14, 1500 fuzzed frames per set from the real RAM dump): all 16 real sets that have a dump, 96 runs each, zero
+  differences, ~15,300 mid-evaluation captures per set (emulator-free host test). 7 sets were rerun on the final tree.
 - **Upstream:** DSi-specific; to be raised as an issue/discussion (draft to the owner), not a PR.
 - Tried and dropped: an `rc_client_build_change_index()` to build the index at load. Its second caller stops GCC inlining
   `rc_client_cd_build` into `rc_client_do_frame` (moves the hot layout), and the yield points in the build already
