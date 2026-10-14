@@ -1028,6 +1028,68 @@ static void core_freeze(void)
   if (dsc_flush() < 0) die("flush without the rc_client");
 }
 
+#ifdef DIFFTEST_YIELD
+/* Yield mode (difftest-run-core-yield, rcheevos built with RC_CLIENT_YIELD_HOOK=dt_yield):
+ * the module's BIOS-wait gate suspends an evaluation at rcheevos' yield points and, in
+ * the next wait, captures the game's new frame before resuming it. Here: at about one
+ * yield point in 8 (at most once per evaluation turn, as the gate captures once a wait),
+ * the next trace frame's capture and VBlank run from inside the hook,
+ * in the middle of rc_client_do_frame (or of the change-driven index build), unless that
+ * frame has a lifecycle command, a pause or MENU (those run between evaluations, as on
+ * the console). The log must still equal stock's. */
+static uint32_t g_y_rng = 7, g_y_calls, g_y_feeds;
+static int g_y_busy, g_y_ci, g_core_paused, g_y_fed;
+static long g_core_seen, g_core_max;
+static int core_feed_frame(int from_yield);
+static int trace_peek(uint32_t* frame, uint8_t* flags)
+{
+  if (g_trace_pos + 6 > g_trace_size) return 0;
+  memcpy(frame, g_trace + g_trace_pos, 4);
+  *flags = g_trace[g_trace_pos + 4];
+  return 1;
+}
+void dt_yield(void)
+{
+  uint32_t frame;
+  uint8_t fl;
+  g_y_calls++;
+  if (g_y_busy || g_y_fed || g_core_paused > 0 || g_core_fault || g_handover) return;
+  g_y_rng = g_y_rng * 1103515245u + 12345u;
+  if ((g_y_rng >> 16) % 8) return;
+  if (!trace_peek(&frame, &fl) || (fl & FLAG_MENU)) return;
+  if (g_y_ci < g_ncmds && g_cmds[g_y_ci].frame <= frame) return;
+  if (g_core_max >= 0 && g_core_seen >= g_core_max) return;
+  g_y_busy = 1;
+  if (core_feed_frame(1) >= 0) { g_y_feeds++; g_y_fed = 1; }
+  g_y_busy = 0;
+}
+#endif
+
+#ifdef DIFFTEST_YIELD
+/* the game halts with the next trace frame's memory, then its VBlank (no
+ * lifecycle command, pause or MENU frame: the caller checked) */
+static int core_feed_frame(int from_yield)
+{
+  uint32_t frame;
+  int flags = trace_next(&frame);
+  (void)from_yield;
+  if (flags < 0) return -1;
+#ifdef DIFFTEST_YIELD
+  g_core_seen++;
+#endif
+  g_platform_frame = frame;
+  if (g_trace_ranges)
+    g_changed_since_capture = 1;
+  while (dsc_capture() == 1) ;
+  g_changed_since_capture = 0;
+  g_vblanks++;
+  if (g_vblanks >= g_core_map_size) die("too many frames");
+  g_core_map[g_vblanks] = frame;
+  dsc_vblank();
+  return flags;
+}
+#endif
+
 static int core_main(const char* features, int hardcore, long full_from, long max_frames, long state_sparse, uint32_t ho_seed)
 {
   dsc_platform_t p;
@@ -1084,10 +1146,21 @@ static int core_main(const char* features, int hardcore, long full_from, long ma
   if (!dsc_is_active()) die("core mode: the game didn't load (%d)", g_load_result);
   if (g_handover) { g_ho_want = 1; g_ho_switch_in = 1 + (int)(ho_rnd() % 8); }
 
+#ifdef DIFFTEST_YIELD
+  g_core_max = max_frames;
+#endif
   while ((flags = trace_next(&frame)) >= 0) {
     int late = 0;
+#ifdef DIFFTEST_YIELD
+    frames_seen = g_core_seen;
+    g_y_ci = ci;
+    g_core_paused = paused;
+#endif
     if (max_frames >= 0 && frames_seen >= max_frames) break;
     frames_seen++;
+#ifdef DIFFTEST_YIELD
+    g_core_seen = frames_seen;
+#endif
     g_platform_frame = frame;
     for (; ci < g_ncmds && g_cmds[ci].frame <= frame; ci++) {
       command_t* cmd = &g_cmds[ci];
@@ -1141,6 +1214,11 @@ static int core_main(const char* features, int hardcore, long full_from, long ma
       if (b > g_max_backlog) g_max_backlog = b;
       if (a > g_max_arena) g_max_arena = a;
     }
+#ifdef DIFFTEST_YIELD
+    g_y_ci = ci;
+    g_core_paused = paused;
+    g_y_fed = 0;     /* at most one capture fed from inside each turn (one per wait on the console) */
+#endif
     core_tick();
   }
   core_freeze();     /* the end: everything evaluated */
@@ -1149,6 +1227,9 @@ static int core_main(const char* features, int hardcore, long full_from, long ma
           st.frames_snapshotted, st.frames_evaluated, g_by_cpu[0], g_by_cpu[1], st.frames_dropped, st.frames_repeated, st.frames_stale, st.live_reads,
           st.handovers, g_ho_switches, g_ho_stalls, g_max_backlog, st.notices_lost, g_lag_frames, g_ho_catchups, st.frame_bytes, g_max_arena);
   if (st.frames_dropped) fprintf(stderr, "difftest-run-core: %u frames dropped\n", st.frames_dropped);
+#ifdef DIFFTEST_YIELD
+  fprintf(g_log, "# yield: points %u, frames captured inside an evaluation %u\n", g_y_calls, g_y_feeds);
+#endif
   fprintf(g_log, "END %u\n", g_frames_done);
   dsc_shutdown();
   fclose(g_log);

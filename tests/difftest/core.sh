@@ -33,7 +33,12 @@ for script in "$work"/scripts/*.txt; do
    common="--set $set --session $work/session-$sess.json --trace $work/fuzz.dtrc --script $script --hardcore $hc"
    "$B/difftest-run-stock" $common --out "$work/logs/$tag-stock.log" || { echo "FAIL run stock $tag"; fail=1; continue; }
    seed=$((seed * 1103515245 % 2147483647 + 12345))
-   for v in "ho|difftest-run-core|--handover $seed" "ho-noflags|difftest-run-core-noflags|--handover $((seed ^ 0x5a5a))" "plain|difftest-run-core|"; do
+   vs="ho|difftest-run-core|--handover $seed;ho-noflags|difftest-run-core-noflags|--handover $((seed ^ 0x5a5a));plain|difftest-run-core|"
+   # YIELD=1 (LAB coverage): also the rcheevos yield points with captures fed mid-evaluation; YIELD=only: just that
+   [ "${YIELD:-}" = 1 ] && vs="$vs;yield|difftest-run-core-yield|"
+   [ "${YIELD:-}" = only ] && vs="yield|difftest-run-core-yield|"
+   old_ifs=$IFS; IFS=';'; set -- $vs; IFS=$old_ifs
+   for v in "$@"; do
      name=${v%%|*}; rest=${v#*|}; bin=${rest%%|*}; args=${rest#*|}
      log="$work/logs/$tag-$name.log"
      "$B/$bin" $common $args --out "$log" || { echo "FAIL run $tag $name"; fail=1; continue; }
@@ -42,7 +47,7 @@ for script in "$work"/scripts/*.txt; do
      if ! python3 "$here/cmp.py" "$work/logs/$tag-stock.log" "$log" > "$work/logs/$tag-$name.cmp"; then
        echo "DIFF $tag $name: $(head -1 "$work/logs/$tag-$name.cmp")"; fail=1
      else
-       grep '^# core' "$log" | sed "s/^# core:/STAT $tag $name:/" >> "$work/stats.txt"
+       grep '^# core\|^# yield' "$log" | sed "s/^# core:/STAT $tag $name:/; s/^# yield:/YIELD $tag $name:/" >> "$work/stats.txt"
        rm -f "$log" "$work/logs/$tag-$name.cmp"
      fi
    done

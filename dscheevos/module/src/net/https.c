@@ -467,6 +467,11 @@ static int chunked_done(void)
       && (R.body_len == 5 || !memcmp(R.body + R.body_len - 7, "\r\n", 2));
 }
 
+/* LAB coverage (BW=1 builds): a yield point in the BIOS-wait gate's fiber (module.c); returns at once elsewhere */
+#ifdef BW_FIBER
+void dscm_yield_point(void);
+#define NET_YIELD() dscm_yield_point()
+#endif
 static void request_step(void)
 {
   int n;
@@ -492,7 +497,16 @@ static void request_step(void)
       if (n == 0) return;
       R.head_len++;
       R.head[R.head_len] = '\0';
+      /* the blank line can only have just completed: check the last 4 bytes
+       * (was strstr over the whole header after every byte: quadratic, up
+       * to hundreds of lines for a 1 KB header, research/optimize/biowait.md) */
+#ifdef BW_FIBER
+      end = R.head_len >= 4 && !memcmp(R.head + R.head_len - 4, "\r\n\r\n", 4) ? R.head + R.head_len - 4 : NULL;
+      if (!(R.head_len & 63))
+        NET_YIELD();
+#else
       end = strstr(R.head, "\r\n\r\n");
+#endif
       if (end) {
         R.head_len = (uint32_t)(end - R.head) + 2;
         parse_head();
@@ -517,6 +531,9 @@ static void request_step(void)
       }
       if (n == 0) return;
       R.body_len += (uint32_t)n;
+#ifdef BW_FIBER
+      NET_YIELD();
+#endif
     }
     if (R.chunked) R.body_len = dechunk(R.body, R.body_len);
     C.last_use = g_now;
