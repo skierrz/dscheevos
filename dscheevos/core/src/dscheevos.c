@@ -35,6 +35,15 @@
  *
  * Journal, notices and the achievement list (ABI v6) are filled from
  * rc_client's events and server replies, all in idle time.
+ *
+ * DSC_CHANGED_RANGES (needs rc_client_set_changed_memory, our rcheevos fork):
+ * before each evaluated frame, rcheevos is told exactly which memory may read
+ * differently than in the frame evaluated before (changes_before): the
+ * snapshot words and chain targets that differ between the two snapshots. It
+ * then skips the indirect reads whose pointer and target didn't change. The
+ * snapshot evaluated last stays in the arena for this (S.last). Anything else
+ * (no frame evaluated before, another table or memory map, a frame missed, a
+ * live read, a reset or load) is "unknown": every indirect read is redone.
  */
 #include "dscheevos.h"
 #include "../../module/include/dscheevos_module.h"
@@ -125,6 +134,9 @@ typedef struct table_t {
   uint32_t zero_words;
   fix_t* fix;
   uint32_t fix_count;
+#ifdef DSC_CHANGED_RANGES
+  uint32_t* word_address;     /* per snapshot word: the RA address of its first byte */
+#endif
 } table_t;
 
 #define BAD_ADDRESS 0xFFFFFFFFu
@@ -285,6 +297,20 @@ static struct state_t {
   int list_stale;
 
   dsc_stats_t stats;
+
+#ifdef DSC_CHANGED_RANGES
+  /* The frame evaluated last (see changes_before): its snapshot, kept in
+   * the arena while S.last or the slot being evaluated holds it. */
+  const uint8_t* prev_data;
+  const target_t* prev_targets;
+  const table_t* prev_table;
+  uint32_t prev_map;
+  uint32_t prev_next_frame;    /* the frame after it */
+  int prev_valid;
+  int live_read;               /* read_memory read game memory live in this frame */
+  rc_client_memory_range_t* ranges;
+  uint32_t range_count, range_size;
+#endif
 
 #ifdef DSC_CHECK_FAST_STEPS
   chains_t ref;                /* chains run only by rcheevos' own code */
@@ -501,6 +527,9 @@ static int build_program(table_t* t)
 
   size = (t->count + words + single + 2 * blocks) * sizeof(uint32_t) + fix_count * sizeof(fix_t) +
          S.seq_count * sizeof(uint16_t);
+#ifdef DSC_CHANGED_RANGES
+  size += words * sizeof(uint32_t);
+#endif
   p = (uint8_t*)malloc(size ? size : 1);
   if (!p) {
     free(w);
@@ -513,7 +542,13 @@ static int build_program(table_t* t)
   t->mask = t->where + t->count;
   t->single = t->mask + words;
   t->block = t->single + single;
+#ifdef DSC_CHANGED_RANGES
+  t->word_address = t->block + 2 * blocks;
+  memset(t->word_address, 0, words * sizeof(uint32_t));
+  t->fix = (fix_t*)(t->word_address + words);
+#else
   t->fix = (fix_t*)(t->block + 2 * blocks);
+#endif
   t->seq = (uint16_t*)(t->fix + fix_count);
   t->words = words;
   t->single_main = single_main;
@@ -557,6 +592,9 @@ static int build_program(table_t* t)
     }
     at = pos[part]++;
     t->mask[at] = w[i].mask;
+#ifdef DSC_CHANGED_RANGES
+    t->word_address[at] = w[i].address;
+#endif
     for (j = w[i].first; j < t->count && (t->addresses[j] & ~3u) == w[i].address; j++) {
       t->where[j] = at * 4 + (t->addresses[j] & 3);
       if (part == 5) {
@@ -1701,6 +1739,9 @@ static void prepare_snapshots(void)
   uint32_t i, j, n = 0, bytes_total = 0;
 
   Q.stage = 0;
+#ifdef DSC_CHANGED_RANGES
+  S.prev_valid = 0;
+#endif
   free_chains();
   free(S.seq_address);
   free(S.seq_bytes);
@@ -2150,11 +2191,17 @@ static HOT uint32_t RC_CCONV read_memory(uint32_t address, uint8_t* buffer, uint
       }
       if (w == SEQ_LIVE) {
         /* the table is full: read live, as the general path would */
+#ifdef DSC_CHANGED_RANGES
+        S.live_read = 1;
+#endif
         if (S.platform.read_memory(address, buffer, num_bytes) != num_bytes) {
           memset(buffer, 0, num_bytes);
           return 0;
         }
         S.stats.live_reads += num_bytes;
+#ifdef DSC_CHANGED_RANGES
+        S.live_read = 1;
+#endif
         return num_bytes;
       }
       break;
@@ -2165,8 +2212,11 @@ static HOT uint32_t RC_CCONV read_memory(uint32_t address, uint8_t* buffer, uint
    * order. Any target with these bytes holds the same values as the table,
    * if it has them too: both are copied in the same snapshot. */
   failed = 0;
-  if (S.chains.target_count) {
+  {
     uint32_t n = S.chains.target_count, k = S.target_cursor;
+#ifdef DSC_CHANGED_RANGES
+    uint32_t missed;
+#endif
     for (i = 0; i < n && i < CURSOR_WINDOW; i++, k = k + 1 == n ? 0 : k + 1) {
       const target_t* g = &slot->targets[S.chains.target_slot[k]];
       if (g->address != address)
@@ -2179,13 +2229,35 @@ static HOT uint32_t RC_CCONV read_memory(uint32_t address, uint8_t* buffer, uint
       failed = !g->length;
       break;
     }
-  }
+#ifdef DSC_CHANGED_RANGES
+    missed = i == CURSOR_WINDOW && i < n;
+#endif
 
-  /* whole read inside one run of the snapshot's table, stored in order */
-  lo = table_lower(t, address);
-  if (table_run_read(t, lo, address, num_bytes)) {
-    memcpy(buffer, slot->data + t->where[lo], num_bytes);
-    return num_bytes;
+    /* whole read inside one run of the snapshot's table, stored in order */
+    lo = table_lower(t, address);
+    if (table_run_read(t, lo, address, num_bytes)) {
+      memcpy(buffer, slot->data + t->where[lo], num_bytes);
+      return num_bytes;
+    }
+
+#ifdef DSC_CHANGED_RANGES
+    /* rcheevos skips the chain reads whose pointer and target didn't change
+     * (changes_before), so the one it asks for may be further on: look on,
+     * in its order (the reads of a frame come in that order, so a frame's
+     * look-ahead adds up to about one pass over the targets). */
+    for (; missed && i < n; i++, k = k + 1 == n ? 0 : k + 1) {
+      const target_t* g = &slot->targets[S.chains.target_slot[k]];
+      if (g->address != address)
+        continue;
+      S.target_cursor = k + 1 == n ? 0 : k + 1;
+      if (g->length >= num_bytes) {
+        memcpy(buffer, g->bytes, num_bytes);
+        return num_bytes;
+      }
+      failed = !g->length;
+      break;
+    }
+#endif
   }
 
   /* A chain read that read nothing at VBlank, no byte in the table, first
@@ -2220,6 +2292,9 @@ static HOT uint32_t RC_CCONV read_memory(uint32_t address, uint8_t* buffer, uint
       return 0;    /* the chain's read failed at VBlank (e.g. across the end of main RAM): fail it again */
     }
     else {
+#ifdef DSC_CHANGED_RANGES
+      S.live_read = 1;
+#endif
       if (S.platform.read_memory(a, buffer + i, 1) != 1) {
         memset(buffer, 0, num_bytes);    /* fails whole, as the platform's read */
         return 0;
@@ -2434,6 +2509,11 @@ int dsc_init(const dsc_platform_t* platform, const dsc_config_t* config)
   if (S.config.host)
     rc_client_set_host(S.client, S.config.host);
   rc_client_set_hardcore_enabled(S.client, S.config.hardcore ? 1 : 0);
+#ifdef DSC_CHANGE_DRIVEN
+  /* skip achievements and leaderboards whose inputs didn't change (rcheevos patch on our
+   * fork, results identical to stock: docs/rcheevos-pin.md); off unless built with it */
+  rc_client_set_change_driven_enabled(S.client, 1);
+#endif
   /* before login: rc_client can't turn it on once a game is loaded */
   if (S.config.spectator)
     rc_client_set_spectator_mode_enabled(S.client, 1);
@@ -2957,6 +3037,118 @@ static void finish_http(void)
   }
 }
 
+#ifdef DSC_CHANGED_RANGES
+/* Adds [address, address + n) to the frame's changed memory. Returns 0, or
+ * -1 if out of memory. */
+static int add_range(uint32_t address, uint32_t n)
+{
+  rc_client_memory_range_t* r;
+  if (S.range_count) {
+    r = &S.ranges[S.range_count - 1];
+    if (r->address + r->num_bytes == address) {
+      r->num_bytes += n;
+      return 0;
+    }
+  }
+  if (S.range_count == S.range_size) {
+    uint32_t size = S.range_size ? S.range_size * 2 : 64;
+    r = (rc_client_memory_range_t*)realloc(S.ranges, size * sizeof(*r));
+    if (!r)
+      return -1;
+    S.ranges = r;
+    S.range_size = size;
+  }
+  r = &S.ranges[S.range_count++];
+  r->address = address;
+  r->num_bytes = n;
+  return 0;
+}
+
+/* Tells rcheevos which memory may read differently in this frame (slot s,
+ * frame number frame) than in the frame evaluated before: every byte
+ * read_memory serves from either snapshot that differs, with the same table
+ * (the same words) and chains (the same targets). A target that moved or
+ * changed counts at its old and its new address. Otherwise "unknown". */
+static void changes_before(const slot_t* s, uint32_t frame)
+{
+  static const rc_client_memory_range_t none;
+  const table_t* t = s->table;
+  uint32_t a;
+
+  S.range_count = 0;
+  if (!S.prev_valid || frame != S.prev_next_frame || t != S.prev_table || s->map != S.prev_map ||
+      !s->data || !S.prev_data || (s->data == S.prev_data) != (s->targets == S.prev_targets)) {
+    rc_client_set_changed_memory(S.client, NULL, 0);
+    return;
+  }
+  if (s->data != S.prev_data) {
+    const word_t* p = (const word_t*)s->data;
+    const word_t* q = (const word_t*)S.prev_data;
+    for (a = 0; a < t->words; a++) {
+      if (((p[a] ^ q[a]) & t->mask[a]) && add_range(t->word_address[a], 4) != 0) {
+        rc_client_set_changed_memory(S.client, NULL, 0);
+        return;
+      }
+    }
+    for (a = 0; a < S.chains.target_count; a++) {
+      const target_t* g = &s->targets[a];
+      const target_t* h = &S.prev_targets[a];
+      if (g->address == h->address && g->length == h->length && !memcmp(g->bytes, h->bytes, g->length))
+        continue;
+      if (add_range(h->address, h->length ? h->length : 1) != 0 ||
+          add_range(g->address, g->length ? g->length : 1) != 0) {
+        rc_client_set_changed_memory(S.client, NULL, 0);
+        return;
+      }
+    }
+  }
+  rc_client_set_changed_memory(S.client, S.range_count ? S.ranges : &none, S.range_count);
+}
+
+#ifdef DSC_CHECK_FAST_STEPS
+static uint32_t RC_CCONV check_read(uint32_t address, uint8_t* buffer, uint32_t num_bytes, void* ud)
+{
+  /* as rc_client_read_modified_memory_helper */
+  if (address > S.client->game->max_valid_address)
+    return 0;
+  return read_memory(address, buffer, num_bytes, (rc_client_t*)ud);
+}
+
+/* Every indirect read rcheevos skipped holds what reading it now gives. */
+static void check_indirect_reads(void)
+{
+  rc_modified_memref_list_t* ml;
+  uint32_t i, index = 0;
+  if (!S.client->game || S.client->game->waiting_for_reset || !S.client->game->runtime.memrefs)
+    return;
+  for (ml = &S.client->game->runtime.memrefs->modified_memrefs; ml; ml = ml->next) {
+    for (i = 0; i < ml->count; i++, index++) {
+      const rc_modified_memref_t* m = &ml->items[i];
+      if (m->modifier_type == RC_OPERATOR_INDIRECT_READ &&
+          rc_get_modified_memref_value(m, check_read, S.client) != m->memref.value.value)
+        check_failed("indirect read after changes_before", index);
+    }
+  }
+}
+#endif
+
+/* After the frame: it is the one evaluated before the next, unless it read
+ * game memory live (which may have changed since). */
+static void changes_after(const slot_t* s, uint32_t frame)
+{
+#ifdef DSC_CHECK_FAST_STEPS
+  check_indirect_reads();
+#endif
+  S.prev_valid = !S.live_read && s->data != NULL;
+  S.live_read = 0;
+  S.prev_data = s->data;
+  S.prev_targets = s->targets;
+  S.prev_table = s->table;
+  S.prev_map = s->map;
+  S.prev_next_frame = frame + 1;
+}
+#endif
+
 int dsc_idle(void)
 {
   int evaluated = 0;
@@ -3008,7 +3200,13 @@ int dsc_idle(void)
       }
       for (k = next->done; k < n && budget; k++, budget--) {
         S.seq_next = 0;
+#ifdef DSC_CHANGED_RANGES
+        changes_before(S.evaluating, next->frame + k);
         rc_client_do_frame(S.client);
+        changes_after(S.evaluating, next->frame + k);
+#else
+        rc_client_do_frame(S.client);
+#endif
         S.stats.frames_evaluated++;
         evaluated++;
       }
@@ -3017,8 +3215,13 @@ int dsc_idle(void)
       if (k < n)
         break;    /* out of budget: the rest of this slot next time */
     }
+#ifdef DSC_CHANGED_RANGES
+    if (!next->carry) {
+      /* keep its bytes: a carry slot after it reads them, changes_before compares with them */
+#else
     if (S.config.capture_at_halt && !next->carry) {
       /* keep its bytes: a carry slot after it reads them */
+#endif
       S.last = *next;
       S.last_offset = next->offset;
       PUBLISH_BARRIER();
@@ -3106,6 +3309,9 @@ void dsc_reset(void)
   }
   S.slot_tail = head;          /* frames from before the reset */
   S.has_last = 0;
+#ifdef DSC_CHANGED_RANGES
+  S.prev_valid = 0;
+#endif
   sync_restore();
   if (S.active)
     Q.mode = MODE_COPY;        /* the next frame is copied in the IRQ again, as at the start */
@@ -3183,6 +3389,9 @@ void dsc_shutdown(void)
     if (S.http[i].used)
       free(S.http[i].body);
   free(S.pending_new);
+#ifdef DSC_CHANGED_RANGES
+  free(S.ranges);
+#endif
   free_chains();
   list_free();
   memset(&S, 0, sizeof(S));

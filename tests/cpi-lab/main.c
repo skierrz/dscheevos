@@ -289,6 +289,176 @@ static void change_memory(int n)
     dtcm_fake[rnd() & 0x3FFF] = (u8)rnd();
 }
 
+/* Trace replay (sd:/dscheevos-lab/trace.dtrc, tests/difftest/gen.py format): the base image
+ * replaces ram.bin, and each frame applies the trace's changed ranges instead of random bytes,
+ * so evaluation sees real per-frame changes. Per-frame cycles go to the emulator log as
+ * "@@T frame capture eval" lines. */
+static u8* trace;                     /* the whole trace file, read once (no SD access while timing) */
+static u32 trace_size, trace_pos;
+static void report(const char* label, u32* v, int n);
+static u32 trace_frames;
+#define TRACE_MAX_FRAMES 4000
+
+static u32 rd32(const u8* b) { return b[0] | b[1] << 8 | b[2] << 16 | (u32)b[3] << 24; }
+
+static int trace_open(void)
+{
+  u32 main_size, dtcm_size, n;
+  trace = (u8*)load_file("sd:/dscheevos-lab/trace.dtrc", &trace_size);
+  if (!trace) return 0;
+  if (trace_size < 24 || memcmp(trace, "DTRC1", 5)) { free(trace); trace = NULL; return 0; }
+  main_size = rd32(trace + 8);
+  dtcm_size = rd32(trace + 12);
+  trace_frames = rd32(trace + 16);
+  trace_pos = 24;
+  if (!ram) ram = (u8*)memalign(32, 0x400000);
+  memset(ram, 0, 0x400000);
+  n = main_size < 0x400000 ? main_size : 0x400000;
+  memcpy(ram, trace + trace_pos, n);
+  trace_pos += main_size;
+  n = dtcm_size < 0x4000 ? dtcm_size : 0x4000;
+  memcpy(dtcm_fake, trace + trace_pos, n);
+  trace_pos += dtcm_size;
+  ram_dumped = 1;
+  return 1;
+}
+
+/* applies the next frame's ranges; -1 at the end */
+static int trace_step(u32* frame_no)
+{
+  u32 n, k, flags;
+  if (trace_pos + 8 > trace_size) return -1;
+  *frame_no = rd32(trace + trace_pos);
+  flags = trace[trace_pos + 4];
+  n = trace[trace_pos + 6] | trace[trace_pos + 7] << 8;
+  trace_pos += 8;
+  for (k = 0; k < n; k++) {
+    u32 addr, len;
+    if (trace_pos + 6 > trace_size) return -1;
+    addr = rd32(trace + trace_pos);
+    len = trace[trace_pos + 4] | trace[trace_pos + 5] << 8;
+    trace_pos += 6;
+    if (trace_pos + len > trace_size) return -1;
+    if (addr < 0x400000u && addr + len <= 0x400000u) memcpy(ram + addr, trace + trace_pos, len);
+    else if (addr >= 0x1000000u && addr + len <= 0x1004000u) memcpy(dtcm_fake + (addr - 0x1000000u), trace + trace_pos, len);
+    trace_pos += len;
+  }
+  return (int)flags;
+}
+
+static void trace_run(void)
+{
+  static u32 cap_v[TRACE_MAX_FRAMES], eval_v[TRACE_MAX_FRAMES];
+  u32 f, i = 0, cap, ev, t0, t1, ime, sum = 0;
+  char m[64];
+  dsc_stats_t s;
+  while (i < TRACE_MAX_FRAMES && trace_step(&f) >= 0) {
+    frames++;
+    ime = REG_IME;
+    REG_IME = 0;
+    DC_FlushAll(); IC_InvalidateAll();
+    t0 = now();
+    dsc_capture();
+    cap = (now() - t0) * 2;
+    REG_IME = ime;
+    dsc_vblank();
+    answer_requests();
+    ime = REG_IME;
+    REG_IME = 0;
+    DC_FlushAll(); IC_InvalidateAll();
+    t0 = now();
+    dsc_idle();
+    t1 = now();
+    REG_IME = ime;
+    ev = (t1 - t0) * 2;
+    cap_v[i] = cap; eval_v[i] = ev; sum += ev / 64;
+    sprintf(m, "@@T %lu %lu %lu\n", (unsigned long)f, (unsigned long)cap, (unsigned long)ev);
+    nocashMessage(m);
+    i++;
+  }
+  say("trace: %lu frames (of %lu), eval mean %lu", (unsigned long)i, (unsigned long)trace_frames,
+      (unsigned long)(i ? sum / i * 64 : 0));
+  if (i >= 10) {
+    report("capture, cold", cap_v, i);
+    report("idle (eval), cold", eval_v, i);
+  }
+  dsc_get_stats(&s);
+  say("evaluated %lu, dropped %lu", (unsigned long)s.frames_evaluated, (unsigned long)s.frames_dropped);
+}
+
+
+#ifdef LAB_PROFILE
+/* Sampling profiler (build flag -DLAB_PROFILE): timer 2 fires every PROF_TICKS bus ticks (2x ARM9
+ * cycles) only while dsc_idle runs in the cold frames; the IRQ vector is replaced for that time by a
+ * handler that bumps a halfword-PC histogram. The BIOS IRQ stub pushed {r0-r3,r12,lr} before calling
+ * the vector, so the interrupted PC + 4 is at [sp+20]. Dumped as "@@P addr count" lines. */
+#define PROF_TICKS 2000
+#define PROF_BASE 0x02000000u
+#define PROF_BINS (0x400000u / 2)
+u16* prof_hist;
+u32 prof_n, prof_oor, prof_oor_v[256];
+void prof_irq(void);
+__asm__(".arm\n.global prof_irq\n.type prof_irq,%function\nprof_irq:\n"
+        "  ldr r0, =0x04000214\n"
+        "  mov r1, #0x20\n"                   /* IF bit 5 = timer 2 */
+        "  str r1, [r0]\n"
+        "  ldr r2, [sp, #20]\n"
+        "  sub r2, r2, #4\n"
+        "  ldr r3, =prof_n\n  ldr r0, [r3]\n  add r0, r0, #1\n  str r0, [r3]\n"
+        "  sub r1, r2, #0x02000000\n"
+        "  cmp r1, #0x400000\n"
+        "  bhs 1f\n"
+        "  ldr r3, =prof_hist\n  ldr r3, [r3]\n"
+        "  mov r1, r1, lsr #1\n  mov r1, r1, lsl #1\n"
+        "  ldrh r0, [r3, r1]\n  add r0, r0, #1\n  strh r0, [r3, r1]\n"
+        "  bx lr\n"
+        "1: ldr r3, =prof_oor\n  ldr r0, [r3]\n  add r1, r0, #1\n  str r1, [r3]\n"
+        "  and r0, r0, #255\n  ldr r3, =prof_oor_v\n  str r2, [r3, r0, lsl #2]\n"
+        "  bx lr\n  .ltorg\n");
+static VoidFn prof_saved;
+static u32 prof_ie;
+static void prof_on(void)
+{
+  prof_saved = IRQ_HANDLER;
+  prof_ie = REG_IE;
+  IRQ_HANDLER = prof_irq;
+  REG_IE = IRQ_TIMER2;
+  REG_IF = ~0;
+  TIMER_DATA(2) = (u16)(65536 - PROF_TICKS);
+  TIMER_CR(2) = TIMER_ENABLE | TIMER_IRQ_REQ | TIMER_DIV_1;
+  REG_IME = 1;
+}
+static void prof_off(void)
+{
+  REG_IME = 0;
+  TIMER_CR(2) = 0;
+  REG_IF = ~0;
+  REG_IE = prof_ie;
+  IRQ_HANDLER = prof_saved;
+}
+static void prof_dump(void)
+{
+  u32 i;
+  char m[64];
+  sprintf(m, "@@P samples %lu oor %lu ticks %u\n", (unsigned long)prof_n, (unsigned long)prof_oor, PROF_TICKS);
+  nocashMessage(m);
+  for (i = 0; i < prof_oor && i < 256; i++) {
+    sprintf(m, "@@O %08lx\n", (unsigned long)prof_oor_v[i]);
+    nocashMessage(m);
+  }
+  for (i = 0; i < PROF_BINS; i++)
+    if (prof_hist[i]) {
+      sprintf(m, "@@P %08lx %u\n", (unsigned long)(PROF_BASE + i * 2), prof_hist[i]);
+      nocashMessage(m);
+    }
+}
+#define PROF_ON() prof_on()
+#define PROF_OFF() prof_off()
+#else
+#define PROF_ON() ((void)0)
+#define PROF_OFF() ((void)0)
+#endif
+
 #define FRAMES 60
 static u32 cap_cold[FRAMES], idle_cold[FRAMES], cap_warm[FRAMES], idle_warm[FRAMES];
 
@@ -311,6 +481,10 @@ static int core_tests(void)
 
   if (!ram) ram = (u8*)memalign(32, 0x400000);
   if (!ram) { say("FAIL no memory for the fake RAM"); return -1; }
+#ifdef LAB_PROFILE
+  prof_hist = (u16*)calloc(PROF_BINS, 2);
+  if (!prof_hist) { say("FAIL no memory for the profile"); return -1; }
+#endif
   if (!ram_dumped) {
     u32* w = (u32*)ram;
     u32 x = rng;
@@ -347,9 +521,16 @@ static int core_tests(void)
     say("FAIL init");
     return -1;
   }
-  for (i = 0; i < 16 && !dsc_is_active(); i++) {
-    answer_requests();
-    dsc_idle();
+  {
+    u32 t0 = now(), ime;
+    for (i = 0; i < 16 && !dsc_is_active(); i++) {
+      answer_requests();
+      ime = REG_IME;
+      REG_IME = 0;
+      dsc_idle();
+      REG_IME = ime;
+    }
+    say("load: %llu cycles", (unsigned long long)(u32)(now() - t0) * 2u);
   }
   if (!dsc_is_active()) { say("FAIL set not loaded"); return -1; }
   dsc_get_stats(&s);
@@ -359,6 +540,7 @@ static int core_tests(void)
   frames++;
   dsc_vblank();
   dsc_idle();
+  if (trace) { trace_run(); return 0; }
   /* as perf.c's first half: capture, VBlank, idle every frame */
   for (i = 0; i < 2 * FRAMES; i++) {
     int cold = i < FRAMES;
@@ -378,12 +560,17 @@ static int core_tests(void)
     REG_IME = 0;
     if (cold) { DC_FlushAll(); IC_InvalidateAll(); }
     t1 = now();
+    if (cold) PROF_ON();
     dsc_idle();
     t2 = now();
+    if (cold) PROF_OFF();
     REG_IME = ime;
     if (cold) { cap_cold[i] = cap; idle_cold[i] = (t2 - t1) * 2; }
     else { cap_warm[i - FRAMES] = cap; idle_warm[i - FRAMES] = (t2 - t1) * 2; }
   }
+#ifdef LAB_PROFILE
+  prof_dump();
+#endif
   report("capture, cold", cap_cold, FRAMES);
   report("idle (eval), cold", idle_cold, FRAMES);
   report("capture, warm", cap_warm, FRAMES);
@@ -417,6 +604,7 @@ int main(void)
       }
     }
     free(r);
+    trace_open();
   }
   say("cpi-lab: ARM9 timing (DSi mode, ARM9 at 67 MHz)");
   REG_SCFG_CLK9 &= ~1;                     /* 67 MHz, as a DS-mode game */
