@@ -243,6 +243,10 @@ _Static_assert(offsetof(dscm_irq_t, idle_cut_lines) == 32 && offsetof(dscm_irq_t
 #define BW_EST (dscm_irq.frames_missed)
 #define BW_UNITS (dscm_irq.reserved2[0])
 #define BW_BLOCKED (dscm_irq.reserved2[1])   /* start.s bw_blocked: [guard - 80] */
+#define BW_CANARY_SET (dscm_irq.reserved2[2])
+#define BW_STACK_BAD (dscm_irq.reserved2[3])
+#define BW_FIRST_LINES (dscm_irq.in_halt)   /* LAB: the unused byte (clamped to 255) */
+#define BW_FIRST_OVER (dscm_irq.reserved2[4])
 _Static_assert(offsetof(wake_page_t, irq) + offsetof(dscm_irq_t, reserved2) + 4 == offsetof(wake_page_t, guard) - 80, "start.s bw_blocked");
 
 /* The ARM7's VBlank count, written behind the data cache. Through the
@@ -1073,7 +1077,7 @@ __attribute__((section(".text_cold"), noinline, target("arm"))) void module_wait
 {
   wake_page_t* const wp = wake_page_arm();
   uint32_t v0, c0, left, cpsr;
-  if (!dscm_irq.on)
+  if (!dscm_irq.on || BW_STACK_BAD)
     return;
   if (REG_IE & REG_IF & 1)
     return;            /* a VBlank is already requested: the stock wait returns at once */
@@ -1106,6 +1110,15 @@ __attribute__((section(".text_cold"), noinline, target("arm"))) void module_wait
     if (!used && !H.more)
       break;
     used = lines_between(start, REG_VCOUNT);
+    if (BW_UNITS == 1) {
+      /* the first evaluated frame builds rcheevos' indexes (0.4-6.5M cycles,
+       * opt-evalcost.md): not a measure of later units; its overrun, if any,
+       * is counted on its own */
+      BW_FIRST_LINES = used > 255 ? 255 : used;
+      if (vblank_count(WP) != c0)
+        BW_FIRST_OVER = 1;
+      break;
+    }
     if (used + 1 > est)
       BW_EST = used + 1;   /* whole lines: a unit can be up to a line longer than it read */
   }
@@ -1114,8 +1127,18 @@ __attribute__((section(".text_cold"), noinline, target("arm"))) void module_wait
     BW_LINES += lines;
     idle_frames(WP, lines);
   }
-  if (vblank_count(WP) != c0)
+  if (vblank_count(WP) != c0 && !(BW_UNITS == 1 && BW_FIRST_OVER))
     BW_OVERRUNS++;
+  /* the gate's 4 KB stack: a canary at its bottom (DSCM_HEAP_END), set on the
+   * first entry; overwritten = the stack overflowed: stop using the gate */
+  {
+    volatile uint32_t* canary = (volatile uint32_t*)DSCM_DATA_ADDR(DSCM_HEAP_END);
+    if (!BW_CANARY_SET) {
+      canary[0] = 0xB1057ACCu; canary[1] = 0xB1057ACCu; BW_CANARY_SET = 1;
+    }
+    else if (canary[0] != 0xB1057ACCu || canary[1] != 0xB1057ACCu)
+      BW_STACK_BAD = 1;
+  }
   H.busy = 0;
 }
 #undef WP
