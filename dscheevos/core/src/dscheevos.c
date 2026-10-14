@@ -87,6 +87,9 @@
  * function has its own literal pool, a D-cache line that each wake reads
  * again after the game evicted it; one caller is one pool. */
 #define WAKE_INL static inline __attribute__((always_inline))
+/* Rare code (lifecycle changes, hand-over, quit): linked after everything
+ * else (the module's .text_cold). */
+#define COLD __attribute__((section(".text_cold"), noinline))
 /* A pointer every function reads: kept with the code, in cached memory. */
 #define CACHED_DATA __attribute__((section(".data.cached")))
 #else
@@ -96,6 +99,7 @@
 #define WAKE
 #define WAKE_SMALL
 #define WAKE_INL static inline
+#define COLD
 #define CACHED_DATA
 #endif
 
@@ -300,6 +304,10 @@ static struct state_t {
   volatile uint32_t frame_counter;
   int have_capture;            /* a frame was copied since dsc_init or the last dsc_reset */
   uint32_t idle_clock;         /* platform frame (or millis) when dsc_idle() last did its housekeeping */
+  /* hand-over, the ARM9's own side (next to idle_clock: dsc_idle's early
+   * return reads this line anyway) */
+  int a9_want;                 /* dsc_want */
+  int a9_acquired;             /* platform.ownership(1) done for this turn */
   /* capture_at_halt: slots[slot_head] holds a capture for the next VBlank (Q.stage) */
   int stage_same;              /* its bytes and targets equal the newest queued snapshot's */
   uint32_t stage_prev;         /* slot_head - 1 when it was taken */
@@ -412,12 +420,7 @@ static struct {
   volatile uint32_t frames;    /* VBlanks queued, all time */
   volatile uint32_t sealed;    /* the one of those the stage went to */
   volatile uint32_t taken;     /* frames drain() has committed */
-  /* hand-over: the ARM9's own side (only the ARM9 reads or writes these);
-   * here because dsc_idle's early return reads this line anyway */
-  int want;                    /* dsc_want */
-  int acquired;                /* platform.ownership(1) done for this turn */
 } Q IRQ_DATA;
-#define A9 Q
 
 /* Hand-over (config.handover): who owns the rc_client. Each word has one
  * writer; on the DS both must be read and written past the ARM9's data
@@ -2097,7 +2100,7 @@ static int request_answered(uint8_t kind, const rc_api_server_response_t* resp)
  * per platform frame: the ring holds 16, so a reader that looks at least once
  * a frame misses none (the ring has no read index to wait on). Each slot is
  * complete before head moves to it. */
-static void notices_send(void)
+static inline __attribute__((always_inline)) void notices_send(void)
 {
   dscm_notices_t* n = S.platform.notices;
   uint32_t frame;
@@ -2205,7 +2208,7 @@ static void indicator_clear(dscm_indicator_t* list, uint32_t id)
 
 /* Owner: publish the core set's progress for dsc_get_progress (which the
  * ARM9 may call while the ARM7 owns the rc_client). */
-static void progress_publish(void)
+COLD static void progress_publish(void)
 {
   rc_client_user_game_summary_t summary;
   uint32_t i = (S.progress_index + 1) & 1;
@@ -2727,8 +2730,8 @@ int dsc_init(const dsc_platform_t* platform, const dsc_config_t* config)
      * rcheevos' indexes), then gives it to the ARM7 with dsc_want(0) */
     O.req9 = 1;
     O.grant7 = 1;
-    A9.want = 1;
-    A9.acquired = 1;
+    S.a9_want = 1;
+    S.a9_acquired = 1;
   }
   S.initialized = 1;
   return 0;
@@ -2752,7 +2755,7 @@ int dsc_is_active(void)
  * keep word (S.last's bytes), else the oldest queued slot. slot_tail is read
  * before keep: the owner stores keep before it moves slot_tail, so a stale
  * pair only ever protects more. */
-static WAKE uint32_t arena_oldest(void)
+WAKE_INL uint32_t arena_oldest(void)
 {
   uint32_t tail = S.slot_tail, keep;
   PUBLISH_BARRIER();
@@ -2765,7 +2768,7 @@ static WAKE uint32_t arena_oldest(void)
 /* The table the capture uses: S.current, announced in S.held first and read
  * again after (the owner frees a table only if held isn't it, see
  * table_in_use). Producer side. */
-static WAKE const table_t* take_table(void)
+WAKE_INL const table_t* take_table(void)
 {
   const table_t* t;
   do {
@@ -2794,7 +2797,7 @@ WAKE_INL int32_t arena_alloc(uint32_t n)
 
 /* Producer: the lag cap (config.lag_cap_*): queueing n more arena bytes as
  * a new frame would pass it. Repeats take no bytes and are always queued. */
-static WAKE int lag_capped(uint32_t n)
+COLD static int lag_capped(uint32_t n)
 {
   uint32_t frames = S.items_in - S.items_out;
   if (S.config.lag_cap_frames && frames >= S.config.lag_cap_frames)
@@ -3513,7 +3516,7 @@ static void check_owner(int cpu)
 
 /* Stop before the next frame: the ARM9 asked for the rc_client (the ARM7
  * gives it at this boundary), or notices are waiting for readers. */
-static int must_stop(int cpu)
+static inline __attribute__((always_inline)) int must_stop(int cpu)
 {
   if (cpu == DSC_OWNER_ARM7 && O.req9)
     return 1;
@@ -3521,7 +3524,7 @@ static int must_stop(int cpu)
 }
 
 /* A lifecycle change, in its place among the frames. */
-static void apply_event(uint8_t ev)
+COLD static void apply_event(uint8_t ev)
 {
 #ifdef DSC_TEST_HOOKS
   if (T.lifecycle)
@@ -3546,7 +3549,7 @@ static void apply_event(uint8_t ev)
 /* Idle-side writes to the ring (push_event): in MODE_COPY the VBlank IRQ
  * writes slot_head too (dsc_vblank_copy), so until ring_unlock it only
  * counts frames, which drain() then commits behind what idle wrote. */
-static uint32_t ring_lock(void)
+COLD static uint32_t ring_lock(void)
 {
   uint32_t mode = Q.mode;
   if (mode == MODE_COPY)
@@ -3554,7 +3557,7 @@ static uint32_t ring_lock(void)
   return mode;
 }
 
-static void ring_unlock(uint32_t mode)
+COLD static void ring_unlock(uint32_t mode)
 {
   if (mode == MODE_COPY)
     Q.mode = MODE_COPY;
@@ -3563,12 +3566,11 @@ static void ring_unlock(uint32_t mode)
 /* Queue a lifecycle change behind the frames already queued (producer side,
  * idle context, between ring_lock and ring_unlock). EVENT_RESERVE slots are
  * kept for these. */
-static void push_event(uint8_t ev)
+COLD static void push_event(uint8_t ev)
 {
   slot_t* slot;
   if (S.slot_head - S.slot_tail >= MAX_SLOTS) {
     S.pstats.lifecycle_lost++;
-    dsc_log("ring full: a reset or hardcore change was lost");
     return;
   }
   slot = &S.slots[S.slot_head % MAX_SLOTS];
@@ -3592,7 +3594,8 @@ static void push_event(uint8_t ev)
  * lifecycle changes queued when it starts, oldest first, at most budget
  * frames; rcheevos' timers, the list and the notices. Ownership can change
  * only between two frames (must_stop), never inside one. */
-static int owner_pass(uint32_t budget, int cpu)
+/* inline: its loop stays inside dsc_idle, a listed hot function (hot.ld) */
+static inline __attribute__((always_inline)) int owner_pass(uint32_t budget, int cpu)
 {
   int evaluated = 0;
   uint32_t stop;
@@ -3712,38 +3715,38 @@ static int owner_pass(uint32_t budget, int cpu)
 
 /* ARM9, between frames: give the rc_client back. Everything the ARM9 wrote
  * into shared state must reach RAM first; nothing after it may write there. */
-static void arm9_release(void)
+COLD static void arm9_release(void)
 {
-  if (A9.acquired) {
+  if (S.a9_acquired) {
     S.stats.handovers++;
     if (S.platform.ownership)
       S.platform.ownership(0);
   }
-  A9.acquired = 0;
+  S.a9_acquired = 0;
   PUBLISH_BARRIER();
   O.req9 = 0;
 }
 
 /* ARM9, between frames: 1 if it owns the rc_client now (acquiring it if
  * the ARM7 just granted it). Asks for it when wanted; never waits. */
-static int arm9_turn(void)
+static inline __attribute__((always_inline)) int arm9_turn(void)
 {
   if (!S.config.handover)
     return 1;
   if (O.req9 && O.grant7) {
-    if (!A9.want) {
+    if (!S.a9_want) {
       arm9_release();
       return 0;
     }
-    if (!A9.acquired) {
+    if (!S.a9_acquired) {
       if (S.platform.ownership)
         S.platform.ownership(1);
-      A9.acquired = 1;
+      S.a9_acquired = 1;
       S.stats.handovers++;
     }
     return 1;
   }
-  if (A9.want && !O.req9 && !O.grant7)
+  if (S.a9_want && !O.req9 && !O.grant7)
     O.req9 = 1;    /* the ARM7 grants it between two of its frames */
   return 0;
 }
@@ -3760,7 +3763,7 @@ int dsc_idle(void)
   {
     uint32_t clock = S.platform.frame ? S.platform.frame() : S.platform.millis();
     if (clock == S.idle_clock && Q.frames == Q.taken && S.items_in == S.items_out && S.http_answered == S.http_taken
-        && A9.want == A9.acquired)    /* hand-over: wanted and not held yet, ask (arm9_turn) */
+        && S.a9_want == S.a9_acquired)    /* hand-over: wanted and not held yet, ask (arm9_turn) */
       return 0;
     S.idle_clock = clock;
   }
@@ -3771,16 +3774,16 @@ int dsc_idle(void)
   return owner_pass(S.config.idle_max_frames ? S.config.idle_max_frames : 0xFFFFFFFFu, DSC_OWNER_ARM9);
 }
 
-void dsc_want(int want)
+COLD void dsc_want(int want)
 {
   if (!S.initialized || !S.config.handover)
     return;
-  A9.want = want != 0;
-  if (!A9.want && S.config.handover && O.req9)
+  S.a9_want = want != 0;
+  if (!S.a9_want && S.config.handover && O.req9)
     arm9_release();    /* between frames: give it back (or stop asking) now */
 }
 
-int dsc_handover_policy(int frozen)
+COLD int dsc_handover_policy(int frozen)
 {
   uint32_t frames, bytes, hi_f, lo_f, hi_b, lo_b;
   int want;
@@ -3797,23 +3800,23 @@ int dsc_handover_policy(int frozen)
   lo_b = S.config.handover_lo_bytes ? S.config.handover_lo_bytes : S.arena_size / 16;
   if (frozen || frames >= hi_f || bytes >= hi_b)
     want = 1;
-  else if (A9.want && (frames > lo_f || bytes > lo_b))
+  else if (S.a9_want && (frames > lo_f || bytes > lo_b))
     want = 1;      /* behind: keep it until the backlog is short in frames and in bytes */
   else
     want = 0;
-  if (want != A9.want)
+  if (want != S.a9_want)
     dsc_want(want);
   return want;
 }
 
-int dsc_owner(void)
+COLD int dsc_owner(void)
 {
   if (!S.config.handover)
     return DSC_OWNER_ARM9;
   return O.req9 && O.grant7 ? DSC_OWNER_ARM9 : DSC_OWNER_ARM7;
 }
 
-int dsc_arm7_step(uint32_t max_frames)
+COLD int dsc_arm7_step(uint32_t max_frames)
 {
   int n;
   if (!S.initialized || !S.config.handover)
@@ -3835,7 +3838,7 @@ int dsc_arm7_step(uint32_t max_frames)
   return n;
 }
 
-uint32_t dsc_backlog(void)
+COLD uint32_t dsc_backlog(void)
 {
   if (!S.initialized)
     return 0;
@@ -3843,7 +3846,7 @@ uint32_t dsc_backlog(void)
   return (Q.frames - Q.taken) + (S.items_in - S.items_out);
 }
 
-int dsc_flush(void)
+COLD int dsc_flush(void)
 {
   int n;
   if (!S.initialized)
@@ -3916,7 +3919,7 @@ WAKE_SMALL void dsc_drain(void)
     drain();
 }
 
-uint32_t dsc_arena_used(void)
+COLD uint32_t dsc_arena_used(void)
 {
   uint32_t tail;
   if (!S.initialized)
@@ -3948,7 +3951,7 @@ void dsc_get_stats(dsc_stats_t* stats)
   stats->arena_used = dsc_arena_used();
 }
 
-void dsc_reset(void)
+COLD void dsc_reset(void)
 {
   uint32_t mode;
   if (!S.initialized)
@@ -3965,7 +3968,7 @@ void dsc_reset(void)
   ring_unlock(S.active ? MODE_COPY : mode);    /* the next frame is copied in the IRQ again, as at the start */
 }
 
-void dsc_hardcore_off(void)
+COLD void dsc_hardcore_off(void)
 {
   uint32_t mode;
   if (!S.initialized)
@@ -3995,7 +3998,7 @@ static int hardcore_refused(rc_client_t* client)
   return found;
 }
 
-void dsc_get_progress(dsc_progress_t* progress)
+COLD void dsc_get_progress(dsc_progress_t* progress)
 {
   int tries;
   memset(progress, 0, sizeof(*progress));
@@ -4021,8 +4024,8 @@ void dsc_shutdown(void)
   /* the frames still queued: an unlock in the last moments before a quit
    * is evaluated (and journalled) like any other */
   Q.mode = MODE_OFF;           /* no more frames: VBlanks from here on are not queued */
-  if (S.active && dsc_flush() < 0)
-    dsc_log("shutdown without the rc_client: queued frames not evaluated");
+  if (S.active)
+    dsc_flush();    /* -1 without the rc_client (hand-over): the platform hands it over first */
   S.active = 0;
   if (S.client) {
     /* rcheevos (v12.5.0) raises a pending mastery event while unloading,
