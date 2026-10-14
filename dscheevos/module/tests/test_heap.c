@@ -67,6 +67,9 @@ void* h_realloc(void* v, size_t n)
   return q;
 }
 
+/* heap.c's limit for the high piece: the host's malloc has none */
+void dscm_host_high_end(uint32_t reserved) { (void)reserved; }
+
 /* ---- the session area (DSCM_SESSION on the DS) ---- */
 #define AREA (8u << 20)
 char dscm_host_session[AREA] __attribute__((aligned(32)));

@@ -27,6 +27,8 @@ dscm_heap_t dscm_g_heap;
 /* the host test's session area, HEAP_ZONE_END - DSCM_SESSION bytes (or more) */
 extern char dscm_host_session[];
 #define SESSION   dscm_host_session
+/* the test's sbrk: bytes at the high piece's top the heap must leave (g_high_end) */
+void dscm_host_high_end(uint32_t reserved);
 #else
 #define SESSION   ((char*)DSCM_DATA_ADDR(DSCM_SESSION))
 #endif
@@ -179,6 +181,8 @@ DSCM_COLD const char* heap_load_begin(uint32_t file_size)
     Z.bump = ARENA;
 #ifndef DSCM_HEAP_HOST_TEST
     g_high_end = ADDR(base);   /* the heap stays below the copy (and its gap) */
+#else
+    dscm_host_high_end((uint32_t)(TOP - base));
 #endif
     dscm_g_heap.moved = ADDR(base);
   }
@@ -207,6 +211,8 @@ DSCM_COLD void heap_release_session(void)
     dscm_dc_invalidate(HV(start), len);
     g_high_end = DSCM_HEAP_END;
   }
+#else
+  dscm_host_high_end(0);
 #endif
   Z.moved = Z.moved_end = NULL;
 }
