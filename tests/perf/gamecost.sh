@@ -17,7 +17,7 @@ repo=$here/../..
 # another checkout). Compare these lines before comparing numbers.
 sha() { if [ -f "$1" ]; then shasum "$1" | cut -c1-12; else echo "(missing)"; fi; }
 short() { printf '%s' "$1" | sed "s|^$HOME|~|"; }
-mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0; }
+mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; }  # GNU first: GNU stat -f prints filesystem info
 # warn when a binary is older than the HEAD commit of the submodule it is built from
 stale() { # file submodule-dir
   f=$1; d=$repo/$2; [ -f "$f" ] && [ -e "$d/.git" ] || return 0
