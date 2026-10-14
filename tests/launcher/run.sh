@@ -75,7 +75,7 @@ until lsof -nP -a -p $mock -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1 || [ $i -g
 
 "$RUNNER" $(dsc_runner_flags) --mode dsi --rom "$sd/_nds/nds-bootstrap-release.nds" --arg sd:/_nds/nds-bootstrap-release.nds \
   --bios-dir "$DSI_FILES" --nand "$work/nand.bin" --sd "$sd" --net --frames "$frames" ${SCRIPT:+--script "$SCRIPT"} ${RUNNER_ARGS:-} \
-  --screenshot "$work/screen.ppm" --dump-ram "$work/ram.bin" > "$work/runner.log" 2>&1 || true
+  --screenshot "${SHOT_PATH:-$work/screen.ppm}" --dump-ram "$work/ram.bin" > "$work/runner.log" 2>&1 || true
 grep -v "^\[pc\]" "$work/runner.log" | tail -1
 echo "server saw:"; cat "$work/events.jsonl"
 echo "launcher.log:"; cat "$sd/_nds/dscheevos/launcher.log" 2>/dev/null || true
