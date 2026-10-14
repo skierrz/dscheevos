@@ -675,7 +675,7 @@ static void test_reset_and_progress(void)
   CHECK(p.unlocked == 1 && p.points_unlocked == 5);
   dsc_vblank();
   dsc_vblank();
-  dsc_reset();               /* queued frames dropped, state reset, unlocks kept */
+  dsc_reset();               /* queued frames evaluated first, then the state reset; unlocks kept */
   frames(2);
   dsc_get_progress(&p);
   CHECK(p.unlocked == 1);

@@ -3337,8 +3337,26 @@ static void apply_event(uint8_t ev)
 #endif
 }
 
+/* Idle-side writes to the ring (push_event): in MODE_COPY the VBlank IRQ
+ * writes slot_head too (dsc_vblank_copy), so until ring_unlock it only
+ * counts frames, which drain() then commits behind what idle wrote. */
+static uint32_t ring_lock(void)
+{
+  uint32_t mode = Q.mode;
+  if (mode == MODE_COPY)
+    Q.mode = MODE_QUEUE;
+  return mode;
+}
+
+static void ring_unlock(uint32_t mode)
+{
+  if (mode == MODE_COPY)
+    Q.mode = MODE_COPY;
+}
+
 /* Queue a lifecycle change behind the frames already queued (producer side,
- * idle context). EVENT_RESERVE slots are kept for these. */
+ * idle context, between ring_lock and ring_unlock). EVENT_RESERVE slots are
+ * kept for these. */
 static void push_event(uint8_t ev)
 {
   slot_t* slot;
@@ -3654,26 +3672,30 @@ void dsc_get_stats(dsc_stats_t* stats)
 
 void dsc_reset(void)
 {
+  uint32_t mode;
   if (!S.initialized)
     return;
+  mode = ring_lock();
   /* no stage for the next VBlank (it holds memory from before the reset),
    * then the frames already counted: they come before the reset */
   Q.stage = 0;
   drain();
   sync_restore();
-  S.have_capture = 0;
-  if (S.active) {
-    Q.mode = MODE_COPY;        /* the next frame is copied in the IRQ again, as at the start */
+  if (S.active)
     push_event(QEV_RESET);     /* rc_client_reset once the frames before it are evaluated */
-  }
+  S.have_capture = 0;
+  ring_unlock(S.active ? MODE_COPY : mode);    /* the next frame is copied in the IRQ again, as at the start */
 }
 
 void dsc_hardcore_off(void)
 {
+  uint32_t mode;
   if (!S.initialized)
     return;
+  mode = ring_lock();
   drain();
   push_event(QEV_HARDCORE_OFF);
+  ring_unlock(mode);
 }
 
 /* RetroAchievements adds a warning achievement (ID 101000001 and up) to the
@@ -3716,10 +3738,10 @@ void dsc_shutdown(void)
     return;
   /* the frames still queued: an unlock in the last moments before a quit
    * is evaluated (and journalled) like any other */
+  Q.mode = MODE_OFF;           /* no more frames: VBlanks from here on are not queued */
   if (S.active && dsc_flush() < 0)
     dsc_log("shutdown without the rc_client: queued frames not evaluated");
   S.active = 0;
-  Q.mode = MODE_OFF;
   if (S.client) {
     /* rcheevos (v12.5.0) raises a pending mastery event while unloading,
      * after it has cleared client->game, and crashes. Mastery is pending
