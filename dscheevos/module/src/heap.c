@@ -347,14 +347,6 @@ void* __wrap_realloc(void* p, size_t n)
   return q;
 }
 
-#ifndef DSCM_HEAP_HOST_TEST
-/* Keeps newlib's and lwIP's code where it was before the load-time changes of
- * this file (the hot-code layout decides what the module costs the game
- * through the I-cache; research/optimize/bigset.md). Change it with the map:
- * the addresses of code past heap.o must not move. */
-__asm__(".pushsection .text.__wrap_realloc,\"ax\",%progbits\n .space 68\n .popsection");
-#endif
-
 /* rc_client's only parse of the set: every allocation in it is the parsed
  * response, which rc_client frees (rc_api_destroy_fetch_game_sets_response)
  * once it has built its own game data from it. */

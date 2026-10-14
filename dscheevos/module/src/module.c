@@ -199,7 +199,7 @@ static struct {
   uint32_t last, max, total, none;
 } g_idle __attribute__((aligned(32)));   /* one line, touched every wake */
 
-WAKE_CODE static void idle_frames(uint32_t lines)
+WAKE_INLINE void idle_frames(uint32_t lines)
 {
   uint32_t passed = dscm_irq.frames - g_idle.frame;
   if (passed) {
@@ -226,7 +226,7 @@ void module_vblank_copy(void);
  * frames the game never halted in (repeats). Called with IRQs masked, right
  * before anything that would replace or read that snapshot, so no capture
  * can come between a VBlank and its queueing. */
-WAKE_CODE static void vblank_poll(void)
+WAKE_INLINE void vblank_poll(void)
 {
   uint32_t c = vblank_count(), n = c - dscm_irq.last_vblank;
   if (!n)
@@ -301,13 +301,13 @@ WAKE_CODE static int interrupt_pending(void)
 /* A snapshot when the game halts. Returns with IRQs still masked, and the
  * CPSR to put back: the caller may halt first. */
 /* The game sets its DTCM up before its first frame; the module starts before that. */
-WAKE_CODE static void refresh_dtcm(void)
+WAKE_INLINE void refresh_dtcm(void)
 {
   if (!H.dtcm_fixed)          /* the session gave no DTCM base: read the game's */
     g_dtcm = dscm_dtcm_base();
 }
 
-WAKE_CODE static uint32_t capture(void)
+WAKE_INLINE uint32_t capture(void)
 {
   refresh_dtcm();
   /* VBlanks so far, and their commits, with IRQs on: after a long stretch

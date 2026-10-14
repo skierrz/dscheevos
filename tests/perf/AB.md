@@ -140,6 +140,17 @@ melonDS's cache model (its replacement policy, optimistic timings); the hardware
 (`tests/cpi-lab`) should confirm the ranking. Re-sweep when the hot code changes size a lot
 (say over 1 KB); a change that moves only cold code no longer moves the hot code.
 
+**Layout firewall (Oct 2026, research/optimize/layout.md).** The single pin above still let any
+change to code linked ahead of newlib or the core's own hot functions move them (a 0x118-byte
+load-time addition cost Kirby +12.5k). `module.ld` now gives each hot block its own colour,
+independent of the others' sizes: the core's pointer line (`CACHED_COLOUR`), the wake path
+(`WAKE_COLOUR`), and the hot code (`TEXT_COLOUR`), which is only what `hot.ld` lists (profiled from
+real games by `tests/perf/hotlist.py`); warm code (`warm.ld`) follows, then everything cold. The
+module build fails (`hotcheck`) if a hot address differs from `dscheevos/module/hot-layout.ref`;
+after a deliberate hot-code change, measure this table and run `make -C dscheevos/module
+hot-accept`. `hotlist.py check MAP PROFILES` lists code run in play that isn't in the hot or warm
+lists. Kirby with 0x100 bytes of cold code added: +17,871 -> +17,876.
+
 **For the ratchet below:** before the pin, any change that grew or shrank code ahead of rcheevos
 shifted the layout and moved Kirby's number by up to ±2.5% of a frame, ten times the ratchet.
 With the pin, a change only moves it through what it really runs, or by moving the pinned

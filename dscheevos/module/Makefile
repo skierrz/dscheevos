@@ -8,6 +8,7 @@ PREFIX   := $(DEVKITARM)/bin/arm-none-eabi-
 CC       := $(PREFIX)gcc
 OBJCOPY  := $(PREFIX)objcopy
 SIZE     := $(PREFIX)size
+NM       := $(PREFIX)nm
 RCHEEVOS ?= ../../external/rcheevos
 CORE     := ../core
 LWIP     ?= ../../external/lwip
@@ -40,7 +41,7 @@ CFLAGS   += -DMBEDTLS_PLATFORM_MEMORY
 # fast_strtoul.c: newlib's strtoul without its per-call divisions
 WRAPS    := malloc free calloc realloc rc_api_process_fetch_game_sets_server_response strtoul
 comma    := ,
-LDFLAGS  := $(if $(TEXT_COLOUR),-Wl$(comma)--defsym$(comma)DSCM_TEXT_COLOUR=$(TEXT_COLOUR)) \
+LDFLAGS  := $(if $(CACHED_COLOUR),-Wl$(comma)--defsym$(comma)DSCM_CACHED_COLOUR=$(CACHED_COLOUR)) $(if $(WAKE_COLOUR),-Wl$(comma)--defsym$(comma)DSCM_WAKE_COLOUR=$(WAKE_COLOUR)) $(if $(TEXT_COLOUR),-Wl$(comma)--defsym$(comma)DSCM_TEXT_COLOUR=$(TEXT_COLOUR)) \
             $(if $(DATA_COLOUR),-Wl$(comma)--defsym$(comma)DSCM_DATA_COLOUR=$(DATA_COLOUR)) \
             $(ARCH) -nostartfiles -T $(or $(LDSCRIPT),$(if $(filter 1,$(DATA_MIRROR)),module.ld,module-cached.ld)) -Wl,--use-blx -Wl,--gc-sections -Wl,-Map,$(BUILD)/dscheevos9.map \
             $(foreach w,$(WRAPS),-Wl,--wrap=$(w)) $(EXTRA_LDFLAGS)
@@ -63,8 +64,10 @@ OBJ := $(patsubst %.c,$(BUILD)/%.o,$(notdir $(SRC))) $(patsubst $(RCHEEVOS)/src/
   $(patsubst $(LWIP)/src/%.c,$(BUILD)/lwip/%.o,$(LWIP_SRC)) $(patsubst $(MBEDTLS)/library/%.c,$(BUILD)/tls/%.o,$(TLS_SRC)) \
   $(patsubst %.c,$(BUILD)/net/%.o,$(notdir $(NET_SRC)))
 
-.PHONY: all clean
-all: $(BUILD)/dscheevos9.bin
+# the hot-layout check (below) runs for the default build only: no colour, script or flag overrides
+HOTCHECK ?= $(if $(CACHED_COLOUR)$(WAKE_COLOUR)$(TEXT_COLOUR)$(DATA_COLOUR)$(LDSCRIPT)$(EXTRA_CFLAGS)$(EXTRA_LDFLAGS)$(filter-out file,$(origin DSC_FLAGS))$(filter-out 1,$(DATA_MIRROR)),0,1)
+.PHONY: all clean hotcheck hot-accept
+all: $(BUILD)/dscheevos9.bin $(if $(filter 1,$(HOTCHECK)),hotcheck)
 
 # flags live here: a Makefile change rebuilds everything
 $(OBJ): Makefile
@@ -101,13 +104,30 @@ $(BUILD)/start.o: src/start.s
 	@mkdir -p $(BUILD)
 	$(CC) $(ARCH) -c $< -o $@
 
-$(BUILD)/dscheevos9.elf: $(OBJ) module.ld
+$(BUILD)/dscheevos9.elf: $(OBJ) module.ld module-cached.ld hot.ld warm.ld hot-rodata.ld
 	$(CC) $(LDFLAGS) $(OBJ) -lc -lm -lgcc -o $@
 	$(SIZE) $@
 
 $(BUILD)/dscheevos9.bin: $(BUILD)/dscheevos9.elf
 	$(OBJCOPY) -O binary $< $@
 	@echo "built $@ ($$(stat -c %s $@) bytes)"
+
+# Layout firewall (module.ld, research/optimize/layout.md): the hot code's and hot constants'
+# addresses (the wake block, hot.ld, hot-rodata.ld) must be those in hot-layout.ref. A change
+# to cold or load-time code can't move them; a change that does (hot code, hot.ld, a toolchain
+# or submodule bump) fails here: measure the game cost (tests/perf/gamecost.sh), then
+# `make hot-accept`. Checked for the default build only (HOTCHECK, set above).
+$(BUILD)/hot-layout.txt: $(BUILD)/dscheevos9.elf
+	$(NM) -n $< > $@.nm
+	awk 'NR==FNR { if ($$3=="__hot_end") he=$$1; if ($$3=="__hot_rodata_start") rs=$$1; if ($$3=="__hot_rodata_end") re=$$1; next } \
+	  NF==3 && $$3 !~ /^__hot/ && (($$1>="02d80000" && $$1<he) || ($$1>=rs && $$1<re)) { print $$1, $$3 }' $@.nm $@.nm > $@
+	@rm -f $@.nm
+hotcheck: $(BUILD)/hot-layout.txt
+	@if diff -u hot-layout.ref $< > $(BUILD)/hot-layout.diff; then echo "hotcheck: hot layout unchanged ($$(wc -l < $<) symbols)"; \
+	else head -40 $(BUILD)/hot-layout.diff; echo "hotcheck: FAIL: the hot code or constants moved (diff above, $(BUILD)/hot-layout.diff)."; \
+	  echo "  If the change is meant to touch hot code: measure the game cost, then make -C dscheevos/module hot-accept"; exit 1; fi
+hot-accept: $(BUILD)/hot-layout.txt
+	cp $< hot-layout.ref
 
 -include $(OBJ:.o=.d)
 

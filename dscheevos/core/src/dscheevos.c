@@ -79,6 +79,10 @@
  * place, so a wake fetches few code lines and edits elsewhere don't move them. */
 #define WAKE __attribute__((target("arm"), optimize("O2"), section(".text.wake.core")))
 #define WAKE_SMALL __attribute__((section(".text.wake.core")))
+/* Small helpers of a wake, compiled into their caller (dsc_capture): every
+ * function has its own literal pool, a D-cache line that each wake reads
+ * again after the game evicted it; one caller is one pool. */
+#define WAKE_INL static inline __attribute__((always_inline))
 /* A pointer every function reads: kept with the code, in cached memory. */
 #define CACHED_DATA __attribute__((section(".data.cached")))
 #else
@@ -87,6 +91,7 @@
 #define IRQ_DATA
 #define WAKE
 #define WAKE_SMALL
+#define WAKE_INL static inline
 #define CACHED_DATA
 #endif
 
@@ -805,7 +810,7 @@ typedef struct mem_t {
 } mem_t;
 
 /* Returns which regions are mapped (bits 0, 1) and whether there is a map (bit 2). */
-static WAKE uint32_t mem_open(mem_t* m)
+WAKE_INL uint32_t mem_open(mem_t* m)
 {
   m->base[0] = m->base[1] = NULL;
   m->direct = S.platform.memory_map != NULL;
@@ -1175,7 +1180,7 @@ static int list_sync(void)
   return 0;
 }
 
-static WAKE_SMALL void sync_save(void)
+WAKE_INL void sync_save(void)
 {
   uint32_t i;
   for (i = 0; i < S.sync_count; i++)
@@ -1184,7 +1189,7 @@ static WAKE_SMALL void sync_save(void)
 }
 
 /* Undo an uncommitted capture's chain state. */
-static WAKE_SMALL void sync_restore(void)
+WAKE_INL void sync_restore(void)
 {
   uint32_t i;
   if (!S.sync_dirty)
@@ -2547,7 +2552,7 @@ int dsc_is_active(void)
 
 /* Space for n bytes after the newest snapshot, or at the start of the
  * arena, without reaching the oldest queued one. -1 if there is none. */
-static WAKE int32_t arena_alloc(uint32_t n)
+WAKE_INL int32_t arena_alloc(uint32_t n)
 {
   uint32_t head = S.arena_head, tail;
   if (S.slot_head == S.slot_tail && (!S.has_last || !S.last.size))
@@ -2820,7 +2825,7 @@ static WAKE_SMALL void commit(int staged)
 
 /* The VBlanks the IRQ queued, oldest first, into the ring. Idle time:
  * called before anything that looks at the ring or the stage. */
-static WAKE_SMALL void drain(void)
+WAKE_INL void drain(void)
 {
   uint32_t n = Q.frames;
   while (Q.taken != n) {
@@ -2936,7 +2941,7 @@ HOT void dsc_vblank_copy(void)
   S.slot_head++;    /* publish last */
 }
 
-WAKE_SMALL int dsc_capture(void)
+WAKE int dsc_capture(void)
 {
   const table_t* t;
   slot_t* slot;
