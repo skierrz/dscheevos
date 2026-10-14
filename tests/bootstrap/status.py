@@ -186,7 +186,7 @@ if mh:
           f" whole run {used(hp['low_top'], hp['high_top'])} (+12 KB stacks at the top)")
     print(f"  arena {'in the session area' if hp['arena'] else 'on the heap'}, replies lent {hp['lent']},"
           f" parsed set in the arena {hp['parse_top'] - hp['parse_base']}, on the heap {hp['parse_heap']}, left {hp['load_left']}")
-hdr = struct.unpack_from('<16I', ram, 0xD80000)
+hdr = struct.unpack_from('<24I', ram, 0xD80000)
 # LAB coverage: the BIOS-wait gate's counters, straight from the wake page (dscm_irq at 0xF80000 - 160)
 wk = struct.unpack_from('<16I', ram, 0xF80000 - 160)
 print(f"bw gate: waits {wk[7] & 0xFFFF}, overruns {wk[7] >> 16}, lines {wk[6]}, longest unit {wk[10]} lines, units {wk[11]}, blocked (gate busy) {wk[12]}, stack overflow {wk[14] & 1}, VBlank flag already set at exit {wk[13]}, first unit {(wk[2] >> 16) & 0xFF} lines (overran: {wk[15]}); frames {wk[1]}")
@@ -200,6 +200,12 @@ if md:   # LAB coverage fiber build
         for k in range(8):
             if gp[4 * k + 2]:
                 print(f"bw diag: gap {gp[4*k]:08x} -> {gp[4*k+1]:08x}: {gp[4*k+2]} times, longest {gp[4*k+3]} lines")
+ms = re.search(r'0x([0-9a-f]+)\s+sg_diag\b', mp)
+if ms and hdr[20]:   # LAB busyloop: the spin gate (header word 0x50: its parameters)
+    sd = struct.unpack_from('<4I', ram, int(ms.group(1), 16) & 0x00FFFFFF)
+    sp = struct.unpack_from('<9I', ram, hdr[20] & 0x00FFFFFF)
+    print(f"sg gate: {'patched at %08x' % sp[8] if sp[8] else 'not patched'}, deadline line {sp[7]}, return {sp[6]:08x};"
+          f" fiber entries {sd[0]}, worked {sd[1]} (BIOS-wait gate: {sd[2]}, {sd[3]})")
 print('header magic %08x version %d vblank_count %d' % (hdr[15], hdr[1], hdr[9]))
 
 lst = notices = journal = None

@@ -1070,9 +1070,23 @@ void dscm_yield_point(void);
 #endif
 #define BW_FIRST 100          /* the first unit (nothing measured yet) needs this many lines */
 #define BW_NET_LINES 100      /* the network's once-a-frame pass needs this many */
+#ifdef BW_FIBER
+/* LAB busyloop: which gate entered the fiber (start.s): 0 the BIOS wait, 1 a
+ * patched spin loop (start.s sg_entry; its deadline is sg_line, the VCOUNT
+ * at which the loop can exit: lines left = sg_line - VCOUNT, 0 at sg_line) */
+uint32_t bw_kind;
+uint32_t sg_regs[13];         /* start.s: the game's r2-r12, sp, lr at the spin gate */
+extern const uint32_t sg_line;
+#endif
 static __attribute__((section(".text_cold"), noinline, target("arm"))) uint32_t bw_left(void)
 {
   uint32_t v = REG_VCOUNT;
+#ifdef BW_FIBER
+  if (bw_kind) {
+    uint32_t d = sg_line;
+    return v <= d ? d - v : LINES_PER_FRAME - v + d;
+  }
+#endif
   return v < 192 ? 192 - v : LINES_PER_FRAME - v + 192;
 }
 static __attribute__((section(".text_cold"), noinline)) int bw_step(uint32_t left)
@@ -1257,6 +1271,9 @@ static struct { uint32_t v0, left0, c0, f0, in, gap_v, site, budget, frames0, la
  * longest capture at a wait's start (lines), waits worked, waits with too
  * little time to start */
 uint32_t bw_diag[8];
+/* LAB busyloop (status.py "sg"): fiber entries from the spin gate, of them
+ * worked; the same for the BIOS-wait gate */
+uint32_t sg_diag[4];
 /* LAB diagnostics: gaps between yield checks longer than BW_YIELD_MARGIN, by
  * (start site, end site): up to 8 pairs, each with its count and longest */
 uint32_t bw_gaps[8][4];
@@ -1279,6 +1296,7 @@ static __attribute__((section(".text_cold"), noinline, target("arm"))) int bwf_b
 {
   wake_page_t* const wp = wake_page_arm();
   uint32_t cpsr;
+  sg_diag[bw_kind ? 0 : 2]++;   /* LAB busyloop: fiber entries by gate */
   if (!dscm_irq.on || (BW_STACK_BAD & 1))
     return 0;
   /* a BIOS-wait game: the gate entered on 30 frames in a row before it works
@@ -1302,6 +1320,7 @@ static __attribute__((section(".text_cold"), noinline, target("arm"))) int bwf_b
     return 0;
   }
   BW_WAITS++;
+  sg_diag[bw_kind ? 1 : 3]++;   /* LAB busyloop: entries worked, by gate */
   BWF.f0 = *(volatile uint32_t*)(dscm_dtcm_base() + 0x3FF8) & 1;
   BWF.v0 = REG_VCOUNT;
   BWF.left0 = bw_left();

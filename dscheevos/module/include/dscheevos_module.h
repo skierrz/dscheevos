@@ -405,7 +405,9 @@ typedef struct dscm_header_t {
   volatile uint32_t notify_count;     /* 0x40: unlocks so far; own cache line, cleaned to RAM */
   void* net_ring;                     /* 0x44: dscm_shim.h ring, 0 if none; same line */
   volatile uint32_t cues;             /* 0x48: LED cues for the ARM7 (DSCM_CUE_*); same cache line, cleaned to RAM */
-  uint32_t reserved2[5];
+  uint32_t spin_branch;               /* 0x4C: LAB busyloop: ARM b to the spin gate (sg_entry) */
+  uint32_t spin_param;                /* 0x50: LAB busyloop: the spin gate's parameters (start.s sg_param), 0: no gate */
+  uint32_t reserved2[3];
   /* 0x60: the VBlank IRQ's own state, then its code (module internals) */
 } dscm_header_t;
 

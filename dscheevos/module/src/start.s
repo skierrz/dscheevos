@@ -34,7 +34,13 @@ dscm_net_ring:
 	.global dscm_cues
 dscm_cues:
 	.word 0                     @ 0x48: LED cues for the ARM7 (same cache line)
-	.space 20
+	b	sg_entry                @ 0x4C: LAB busyloop: a patched spin loop lands here (nds-bootstrap's spin table)
+	.ifdef BW_FIBER
+	.word sg_param              @ 0x50: LAB busyloop: the spin gate's parameters, filled by nds-bootstrap (0: no gate)
+	.else
+	.word 0
+	.endif
+	.space 12
 
 @ The wake page (module.c wake_page_t): dscm_irq (frame counting and the
 @ wake's flags), g_idle, H and the re-entry guard, the module region's last
@@ -449,9 +455,13 @@ bw_entry:
 	cmp	r1, #0
 	bne	bw_blocked
 	.ifdef BW_FIBER
+	ldr	r1, =bw_kind                @ LAB busyloop: the fiber hands back to the BIOS wait
+	mov	r0, #0
+	str	r0, [r1]
 	@ LAB: resume the gate's fiber (module.c bw_fiber_main) where it gave
 	@ the last wait back; the game's callee-saved registers, sp and lr wait
 	@ in bw_ctx (module memory) until bw_yield
+bw_resume:
 	ldr	r1, =bw_ctx
 	stmia	r1, {r4-r11}
 	str	sp, [r1, #32]
@@ -474,6 +484,10 @@ bw_yield:                           @ on the fiber: save it, back to the game's 
 	ldmia	r1, {r4-r11}
 	ldr	sp, [r1, #32]
 	ldr	lr, [r1, #36]
+	ldr	r0, =bw_kind
+	ldr	r0, [r0]
+	cmp	r0, #0
+	bne	sg_yield
 	mov	r1, #MIRROR_HI
 	orr	r1, r1, #REGION_END
 	mov	r2, #0
@@ -575,6 +589,106 @@ bw_recover:
 	.arm
 	.align 2
 	.pool
+
+@ LAB (busyloop): the spin gate. nds-bootstrap rewrites one side-effect-free
+@ spin loop of a listed game (title ID and the loop's exact bytes, its spin
+@ table) in place to jump here through header word 0x4C (Thumb: movs r0,
+@ #0x5B; lsls r0, #19; adds r0, #0x4C; bx r0), and copies the loop's own
+@ bytes to sg_code. r0 and r1 are the loop's scratch registers (it loads
+@ both before reading them); every other register is the game's, kept in
+@ sg_regs (module memory) and restored. The guard is taken first, so
+@ sg_regs is never overwritten by a second entry. Same checks, guard, stack
+@ and fiber as the BIOS-wait gate; the fiber's deadline is the line at which
+@ the loop can exit (sg_line: lines left = sg_line - VCOUNT). Then the
+@ game's own loop runs from sg_code until it exits and returns to the
+@ instruction after it, with every register and flag as stock. IRQs stay
+@ on throughout. Nothing of the game's is written; its stack is not used.
+	.global sg_entry
+	.type sg_entry, %function
+sg_entry:
+	.ifdef BW_FIBER
+	mov	r1, #MIRROR_HI
+	orr	r1, r1, #REGION_END
+	sub	r1, r1, #GUARD_BACK - 4     @ guard[1]: the gates' guard
+	mov	r0, #1
+	swpb	r0, r0, [r1]
+	cmp	r0, #0
+	bne	sg_fast                     @ held (the BIOS-wait gate's fiber, or a second entry): stock, nothing saved
+	ldr	r1, =sg_regs
+	stmia	r1, {r2-r12}
+	str	sp, [r1, #44]
+	str	lr, [r1, #48]
+	mrs	r0, cpsr
+	and	r1, r0, #0x1F
+	cmp	r1, #0x1F                   @ SYS: NitroSDK threads
+	bne	sg_stock
+	tst	r0, #0x80
+	bne	sg_stock
+	mov	r0, #0x04000000
+	ldr	r0, [r0, #0x208]            @ REG_IME
+	tst	r0, #1
+	beq	sg_stock
+	mov	r12, #MIRROR_HI
+	orr	r12, r12, #REGION_END
+	sub	r12, r12, #GUARD_BACK
+	ldrb	r0, [r12, #GUARD_TO_REGION]
+	cmp	r0, #8
+	adrhs	r3, 1f
+	bhs	data_region_scan
+1:	mrc	p15, 0, r1, c5, c0, 2
+	mov	r2, r0, lsl #2
+	mov	r1, r1, lsr r2
+	and	r1, r1, #15
+	sub	r1, r1, #1
+	cmp	r1, #3
+	bhs	sg_stock
+	ldr	r1, =bw_kind
+	mov	r0, #1
+	str	r0, [r1]
+	ldr	r1, =sg_regs                @ r4-r11 are the game's again (the checks used r0-r3, r12)
+	ldmia	r1, {r2-r12}
+	b	bw_resume
+sg_yield:                           @ from bw_yield (sp, lr, r4-r11 restored): the rest, then free the guard
+	ldr	r1, =sg_regs
+	ldmia	r1, {r2-r12}
+	mov	r1, #MIRROR_HI
+	orr	r1, r1, #REGION_END
+	mov	r0, #0
+	strb	r0, [r1, #-GUARD_BACK + 4]
+	b	sg_fast
+sg_stock:                           @ a check failed: the game's registers back, the guard freed
+	ldr	r1, =sg_regs
+	ldmia	r1, {r2-r12}
+	mov	r1, #MIRROR_HI
+	orr	r1, r1, #REGION_END
+	mov	r0, #0
+	strb	r0, [r1, #-GUARD_BACK + 4]
+	.endif
+sg_fast:
+	adr	r0, sg_code + 1
+	bx	r0
+	.pool
+	.align 2
+	.global sg_param
+sg_param:                           @ filled by nds-bootstrap at boot (dscheevos_hooks.c patchSpin)
+sg_code:                            @ +0: the game's loop, its own bytes (Thumb), padded with nops (mov r8, r8)
+	.rept 8
+	.hword 0x46C0
+	.endr
+	.thumb
+	bx	pc                          @ +16: the loop fell through (it exited): to ARM, no register or flag touched
+	nop
+	.arm
+	ldr	pc, sg_ret                  @ +20: interworking load: the game's next instruction (Thumb)
+	.global sg_ret
+sg_ret:
+	.word 0                         @ +24: the address after the loop, | 1
+	.global sg_line
+sg_line:
+	.word 0                         @ +28: the line at which the loop exits (the gate's deadline)
+	.global sg_addr
+sg_addr:
+	.word 0                         @ +32: the patched address (status)
 
 @ Init: called once by nds-bootstrap's ARM9 before the game starts, with
 @ the session file in r0. Its stack is tiny, so run on the module stack.
