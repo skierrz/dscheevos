@@ -187,6 +187,9 @@ if mh:
     print(f"  arena {'in the session area' if hp['arena'] else 'on the heap'}, replies lent {hp['lent']},"
           f" parsed set in the arena {hp['parse_top'] - hp['parse_base']}, on the heap {hp['parse_heap']}, left {hp['load_left']}")
 hdr = struct.unpack_from('<16I', ram, 0xD80000)
+# LAB coverage: the BIOS-wait gate's counters, straight from the wake page (dscm_irq at 0xF80000 - 160)
+wk = struct.unpack_from('<16I', ram, 0xF80000 - 160)
+print(f"bw gate: waits {wk[7] & 0xFFFF}, overruns {wk[7] >> 16}, lines {wk[6]}, longest unit {wk[10]} lines, units {wk[11]}, blocked by a parked idle pass {wk[12]}; frames {wk[1]}")
 print('header magic %08x version %d vblank_count %d' % (hdr[15], hdr[1], hdr[9]))
 
 lst = notices = journal = None
