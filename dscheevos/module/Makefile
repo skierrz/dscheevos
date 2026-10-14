@@ -72,6 +72,15 @@ OBJ := $(patsubst %.c,$(BUILD)/%.o,$(notdir $(SRC))) $(patsubst $(RCHEEVOS)/src/
   $(patsubst %.c,$(BUILD)/net/%.o,$(notdir $(NET_SRC)))
 
 # the hot-layout check (below) runs for the default build only: no colour, script or flag overrides
+# LAB coverage: BW=1 builds the BIOS-wait gate with preemptible evaluation (research/optimize/biowait.md):
+# the fiber, rcheevos' yield points, the TLS yield points, the idle path's run-time ownership
+ifeq ($(BW),1)
+TLS_YIELD := 1
+BW_ASFLAGS := -Wa,--defsym,BW_FIBER=1 -Wa,--defsym,TLS_YIELD=1
+RC_YIELD ?= dscm_yield_point
+CFLAGS += -DBW_FIBER -DBW_HALT_CAPTURE -DTLS_YIELD $(if $(RC_YIELD),-DRC_CLIENT_YIELD_HOOK=$(RC_YIELD))
+HOTCHECK := 0
+endif
 HOTCHECK ?= $(if $(CACHED_COLOUR)$(WAKE_COLOUR)$(TEXT_COLOUR)$(DATA_COLOUR)$(LDSCRIPT)$(EXTRA_CFLAGS)$(EXTRA_LDFLAGS)$(filter-out file,$(origin DSC_FLAGS))$(filter-out 1,$(DATA_MIRROR))$(filter command line,$(origin STACK_GAP)),0,1)
 .PHONY: all clean hotcheck hot-accept
 all: $(BUILD)/dscheevos9.bin $(if $(filter 1,$(HOTCHECK)),hotcheck)
@@ -98,9 +107,16 @@ $(BUILD)/rc/%.o: $(RCHEEVOS)/src/%.c
 $(BUILD)/lwip/%.o: $(LWIP)/src/%.c src/net/lwipopts.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -w -c $< -o $@
+# LAB coverage (TLS_YIELD=1, BW_FIBER builds): bignum_core.o's own calls to these reach module.c's
+# yield-point wrappers (the symbol weakened, its code kept as dsc_<f>_real)
+TLS_YIELD_CORE := montmul lt_ct
+# and these calls between mbedtls files go through start.s's yield trampolines (--wrap)
+TLS_YIELD_WRAPS := mbedtls_mpi_mul_mpi mbedtls_mpi_mod_mpi mbedtls_mpi_copy mbedtls_mpi_sub_mpi mbedtls_mpi_add_mpi mbedtls_mpi_shift_r mbedtls_mpi_cmp_mpi mbedtls_mpi_read_binary mbedtls_mpi_write_binary mbedtls_mpi_random mbedtls_mpi_exp_mod mbedtls_md_update mbedtls_md_finish mbedtls_md_hmac_update mbedtls_md_hmac_starts mbedtls_sha256_update mbedtls_asn1_get_tag mbedtls_ssl_read_record mbedtls_cipher_setkey mbedtls_x509_crt_parse_der_nocopy mbedtls_ecp_group_load mbedtls_pk_parse_subpubkey mbedtls_cipher_update mbedtls_aes_crypt_ecb mbedtls_chacha20_update mbedtls_cipher_auth_decrypt_ext mbedtls_cipher_auth_encrypt_ext mbedtls_ecdh_calc_secret mbedtls_ecdh_make_public
+LDFLAGS += $(if $(TLS_YIELD),$(foreach w,$(TLS_YIELD_WRAPS),-Wl$(comma)--wrap=$(w)))
 $(BUILD)/tls/%.o: $(MBEDTLS)/library/%.c $(TLSCONF)/dsc_mbedtls_config.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(if $(filter bignum% ecp% ecdsa ecdh,$*),-marm -O2) -w -c $< -o $@
+	$(if $(and $(TLS_YIELD),$(filter bignum_core,$*)),$(OBJCOPY) $(foreach f,$(TLS_YIELD_CORE),--add-symbol dsc_$(f)_real=.text.mbedtls_mpi_core_$(f):0$(comma)global$(comma)function --weaken-symbol=mbedtls_mpi_core_$(f)) $@)
 $(BUILD)/net/%.o: src/net/%.c src/net/net.h include/dscheevos_module.h include/dscm_shim.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -109,7 +125,7 @@ $(BUILD)/net/cacerts.o: $(TLSCONF)/cacerts.c
 	$(CC) $(CFLAGS) -c $< -o $@
 $(BUILD)/start.o: src/start.s
 	@mkdir -p $(BUILD)
-	$(CC) $(ARCH) -Wa,--defsym,STACK_GAP=$(STACK_GAP) $(EXTRA_ASFLAGS) -c $< -o $@
+	$(CC) $(ARCH) -Wa,--defsym,STACK_GAP=$(STACK_GAP) $(BW_ASFLAGS) $(EXTRA_ASFLAGS) -c $< -o $@
 
 $(BUILD)/dscheevos9.elf: $(OBJ) module.ld module-cached.ld hot.ld warm.ld hot-rodata.ld
 	$(CC) $(LDFLAGS) $(OBJ) -lc -lm -lgcc -o $@
