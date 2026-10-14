@@ -1092,7 +1092,7 @@ __attribute__((section(".text_cold"), noinline, target("arm"))) int module_wait(
 {
   int over = 0;
   wake_page_t* const wp = wake_page_arm();
-  uint32_t v0, c0, left, left0, cpsr;
+  uint32_t v0, c0, left, left0, cpsr, f0;
   if (!dscm_irq.on || (BW_STACK_BAD & 1))
     return 0;
   if (REG_IE & REG_IF & 1)
@@ -1102,6 +1102,7 @@ __attribute__((section(".text_cold"), noinline, target("arm"))) int module_wait(
   if (wake_swap(&H.busy, 1))
     return 0;          /* idle work parked in the idle thread: stock */
   BW_WAITS++;
+  f0 = *(volatile uint32_t*)(dscm_dtcm_base() + 0x3FF8) & 1;   /* set before we start: the stock discard is the game's own */
   v0 = REG_VCOUNT;
   /* the deadline from VCOUNT at entry: the lines elapsed since then are
    * counted against it. (The ARM7's VBlank count can lag the ARM9's VBlank,
@@ -1177,11 +1178,14 @@ __attribute__((section(".text_cold"), noinline, target("arm"))) int module_wait(
   /* LAB: the BIOS's own view: the game's VBlank check flag (DTCM+3FF8 bit 0,
    * read only) already set when the stock wait starts means its discard
    * eats this VBlank */
-  if (*(volatile uint32_t*)(dscm_dtcm_base() + 0x3FF8) & 1)
-    BW_FLAG_SET++;
-  if (vblank_count(WP) != c0 || lines_between(v0, REG_VCOUNT) >= left0
-      || (*(volatile uint32_t*)(dscm_dtcm_base() + 0x3FF8) & 1)) {
-    over = 1;
+  {
+    uint32_t f1 = !f0 && (*(volatile uint32_t*)(dscm_dtcm_base() + 0x3FF8) & 1);
+    if (f1)
+      BW_FLAG_SET++;
+    if (vblank_count(WP) != c0 || lines_between(v0, REG_VCOUNT) >= left0 || f1)
+      over = 1;
+  }
+  if (over) {
     if (!(BW_UNITS == 1 && BW_FIRST_OVER))
       BW_OVERRUNS++;
   }
