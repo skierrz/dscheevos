@@ -19,22 +19,29 @@
 
 #define NMAIN 0x400000u
 #define NIMG 0x404000u
-#define NCAND 5          /* A (reference) and F1, F2, MID, VB */
-static const char* cname[NCAND] = {"A (last capture, today)", "F1 first capture", "F2 second capture", "MID capture (prev count / 2)", "VB at VBlank entry"};
+#define NFILE 5          /* A (reference) and F1, F2, MID, VB: what the log holds */
+#define NCAND 6          /* plus CTRL: A's memory again (a second client; in step mode also resynced like the others) */
+static const char* cname[NCAND] = {"A (last capture, today)", "F1 first capture", "F2 second capture", "MID capture (prev count / 2)", "VB at VBlank entry", "CTRL (A again)"};
 
 typedef struct {
   uint8_t* img;
   uint8_t* touched;
+  uint32_t* tlist;       /* offsets set in touched this frame */
+  uint32_t ntl;
   rc_client_t* client;
-  char events[4096];
+  char events[4096];     /* this frame's achievement unlocks and leaderboard start/fail/submit (with values) */
   size_t nev;
+  char events2[4096];    /* this frame's tracker, progress, challenge and other indicator events */
+  size_t nev2;
   uint32_t digest, dm, dr;
-  char* all;          /* every event, in order, without frame numbers */
+  char rp[256];       /* rich presence message after this frame's do_frame */
+  char* all;          /* every achievement/leaderboard start, fail, submit event, in order, with frame number */
   size_t nall, capall;
 } ctx_t;
 
 static char* set_json;
 static uint32_t frameno;
+static int quiet;      /* ignore events raised by a progress restore */
 
 static uint32_t read_mem(uint32_t address, uint8_t* buffer, uint32_t num_bytes, rc_client_t* client)
 {
@@ -42,12 +49,12 @@ static uint32_t read_mem(uint32_t address, uint8_t* buffer, uint32_t num_bytes, 
   uint32_t i;
   if (address < NMAIN && address + num_bytes <= NMAIN) {
     memcpy(buffer, c->img + address, num_bytes);
-    for (i = 0; i < num_bytes; i++) c->touched[address + i] = 1;
+    for (i = 0; i < num_bytes; i++) if (!c->touched[address + i]) { c->touched[address + i] = 1; c->tlist[c->ntl++] = address + i; }
     return num_bytes;
   }
   if (address >= 0x1000000u && address + num_bytes <= 0x1004000u) {
     memcpy(buffer, c->img + NMAIN + (address - 0x1000000u), num_bytes);
-    for (i = 0; i < num_bytes; i++) c->touched[NMAIN + address - 0x1000000u + i] = 1;
+    for (i = 0; i < num_bytes; i++) { uint32_t o = NMAIN + address - 0x1000000u + i; if (!c->touched[o]) { c->touched[o] = 1; c->tlist[c->ntl++] = o; } }
     return num_bytes;
   }
   return 0;
@@ -83,13 +90,14 @@ static void event(const rc_client_event_t* e, rc_client_t* client)
   ctx_t* c = (ctx_t*)rc_client_get_userdata(client);
   char tmp[160];
   int n = 0;
+  if (quiet) return;
   switch (e->type) {
     case RC_CLIENT_EVENT_ACHIEVEMENT_TRIGGERED:
       n = snprintf(tmp, sizeof tmp, "ach %u;", e->achievement->id); break;
     case RC_CLIENT_EVENT_LEADERBOARD_STARTED:
     case RC_CLIENT_EVENT_LEADERBOARD_FAILED:
     case RC_CLIENT_EVENT_LEADERBOARD_SUBMITTED:
-      n = snprintf(tmp, sizeof tmp, "lb %d %u;", (int)e->type, e->leaderboard->id); break;
+      n = snprintf(tmp, sizeof tmp, "lb %d %u %s;", (int)e->type, e->leaderboard->id, e->leaderboard->tracker_value ? e->leaderboard->tracker_value : ""); break;
     case RC_CLIENT_EVENT_LEADERBOARD_TRACKER_SHOW:
     case RC_CLIENT_EVENT_LEADERBOARD_TRACKER_UPDATE:
       n = snprintf(tmp, sizeof tmp, "trk %d %u %s;", (int)e->type, e->leaderboard_tracker->id, e->leaderboard_tracker->display); break;
@@ -103,12 +111,16 @@ static void event(const rc_client_event_t* e, rc_client_t* client)
     default:
       n = snprintf(tmp, sizeof tmp, "ev %d;", (int)e->type); break;
   }
-  if (n > 0 && c->nev + (size_t)n < sizeof c->events) { memcpy(c->events + c->nev, tmp, (size_t)n); c->nev += (size_t)n; }
   if (n > 0 && (e->type == RC_CLIENT_EVENT_ACHIEVEMENT_TRIGGERED || e->type == RC_CLIENT_EVENT_LEADERBOARD_STARTED ||
       e->type == RC_CLIENT_EVENT_LEADERBOARD_FAILED || e->type == RC_CLIENT_EVENT_LEADERBOARD_SUBMITTED)) {
-    if (c->nall + (size_t)n + 1 > c->capall) { c->capall = c->capall * 2 + 4096; c->all = realloc(c->all, c->capall); }
+    if (c->nev + (size_t)n < sizeof c->events) { memcpy(c->events + c->nev, tmp, (size_t)n); c->nev += (size_t)n; }
+    char fb[24];
+    int fn = snprintf(fb, sizeof fb, "@%u ", frameno);
+    if (c->nall + (size_t)n + (size_t)fn + 1 > c->capall) { c->capall = c->capall * 2 + 4096; c->all = realloc(c->all, c->capall); }
+    memcpy(c->all + c->nall, fb, (size_t)fn); c->nall += (size_t)fn;
     memcpy(c->all + c->nall, tmp, (size_t)n); c->nall += (size_t)n; c->all[c->nall] = 0;
   }
+  else if (n > 0 && c->nev2 + (size_t)n < sizeof c->events2) { memcpy(c->events2 + c->nev2, tmp, (size_t)n); c->nev2 += (size_t)n; }
 }
 
 static uint32_t dg;
@@ -156,11 +168,13 @@ static void explain(const char* name, uint32_t fr, rc_client_t* a, rc_client_t* 
   static int reports;
   const rc_client_subset_info_t *sa = a->game->subsets, *sb = b->game->subsets;
   uint32_t i;
-  if (reports >= 6) return;
+  int lines = 0;
+  if (reports >= 2) return;
   reports++;
   for (; sa && sb; sa = sa->next, sb = sb->next) {
     for (i = 0; i < sa->public_.num_achievements; i++)
-      if (trig_digest(sa->achievements[i].trigger) != trig_digest(sb->achievements[i].trigger)) {
+      if (lines < 4 && trig_digest(sa->achievements[i].trigger) != trig_digest(sb->achievements[i].trigger)) {
+        lines++;
         const rc_condition_t *ca = sa->achievements[i].trigger ? sa->achievements[i].trigger->requirement->conditions : NULL;
         const rc_condition_t *cb = sb->achievements[i].trigger ? sb->achievements[i].trigger->requirement->conditions : NULL;
         fprintf(stderr, "STATE DIFF %s frame %u: achievement %u state %d/%d measured %u/%u; first-core hits:", name, fr, sa->achievements[i].public_.id,
@@ -176,10 +190,23 @@ static void explain(const char* name, uint32_t fr, rc_client_t* a, rc_client_t* 
   }
 }
 
+/* the running value of every leaderboard (measured/tracked), as rc_client holds it */
+static uint32_t lbvalue_digest(rc_client_t* client)
+{
+  const rc_client_subset_info_t* sub;
+  uint32_t i, h = 2166136261u;
+  for (sub = client->game->subsets; sub; sub = sub->next)
+    for (i = 0; i < sub->public_.num_leaderboards; i++) {
+      h = (h ^ (uint32_t)sub->leaderboards[i].value) * 16777619u;
+      h = (h ^ (uint32_t)sub->leaderboards[i].public_.state) * 16777619u;
+    }
+  return h;
+}
+
 static ctx_t* make(void)
 {
   ctx_t* c = calloc(1, sizeof *c);
-  c->img = calloc(1, NIMG); c->touched = calloc(1, NIMG);
+  c->img = calloc(1, NIMG); c->touched = calloc(1, NIMG); c->tlist = malloc(NIMG * sizeof(uint32_t));
   c->client = rc_client_create(read_mem, server);
   rc_client_set_userdata(c->client, c);
   rc_client_set_event_handler(c->client, event);
@@ -194,14 +221,28 @@ static ctx_t* make(void)
 static uint32_t frames_total_v;
 #define frames_total() frames_total_v
 static uint32_t rd32(FILE* f) { uint32_t v; if (fread(&v, 4, 1, f) != 1) return 0xFFFFFFFFu; return v; }
-static int apply(FILE* f, uint8_t* img)
+typedef struct { uint32_t off, len, at; } run_t;
+typedef struct { run_t* r; uint32_t n, cap; uint8_t* data; size_t dn, dcap; } runs_t;
+/* read one run list from the log into rs (offsets, lengths and bytes); -1 at end/short file */
+static int readruns(FILE* f, runs_t* rs)
 {
   uint32_t n = rd32(f), i;
+  if (n == 0xFFFFFFFFu) return -1;
+  rs->n = 0; rs->dn = 0;
   for (i = 0; i < n; i++) {
     uint32_t off = rd32(f), len = rd32(f);
-    if (off == 0xFFFFFFFFu || off + len > NIMG || fread(img + off, 1, len, f) != len) return -1;
+    if (off == 0xFFFFFFFFu || off + len > NIMG) return -1;
+    if (rs->n == rs->cap) { rs->cap = rs->cap * 2 + 1024; rs->r = realloc(rs->r, rs->cap * sizeof(run_t)); }
+    if (rs->dn + len > rs->dcap) { rs->dcap = (rs->dn + len) * 2 + 65536; rs->data = realloc(rs->data, rs->dcap); }
+    if (fread(rs->data + rs->dn, 1, len, f) != len) return -1;
+    rs->r[rs->n].off = off; rs->r[rs->n].len = len; rs->r[rs->n].at = (uint32_t)rs->dn; rs->n++; rs->dn += len;
   }
-  return n == 0xFFFFFFFFu ? -1 : 0;
+  return 0;
+}
+static void applyruns(const runs_t* rs, uint8_t* img)
+{
+  uint32_t i;
+  for (i = 0; i < rs->n; i++) memcpy(img + rs->r[i].off, rs->data + rs->r[i].at, rs->r[i].len);
 }
 
 int main(int argc, char** argv)
@@ -210,11 +251,15 @@ int main(int argc, char** argv)
   long sz;
   char magic[4];
   ctx_t* cx[NCAND];
-  uint8_t* cleanA = malloc(NIMG);
+  static runs_t rs[NFILE];
   int k;
   uint32_t frames = 0, skip = argc > 3 ? (uint32_t)atoi(argv[3]) : 120, seen = 0;
+  int step = argc > 4 && !strcmp(argv[4], "step");
+  size_t pcap = 0;
+  uint8_t* pbuf = NULL;
   uint64_t watched_sum = 0, ncsum = 0;
-  uint32_t ncmax = 0, ncone = 0;
+  uint32_t ncmax = 0, ncone = 0, nocap = 0;
+  uint32_t rpdiff[NCAND] = {0}, lbvdiff[NCAND] = {0}, firstev[NCAND] = {0}, ev2diff[NCAND] = {0}, firststate[NCAND] = {0};
   uint32_t present[NCAND] = {0}, snapdiff[NCAND] = {0}, watchdiff[NCAND] = {0}, statediff[NCAND] = {0}, evdiff[NCAND] = {0};
   uint32_t memdiff[NCAND] = {0}, trigdiff[NCAND] = {0};
   uint32_t maxw[NCAND] = {0}, maxfull[NCAND] = {0}, evcount[NCAND] = {0};
@@ -227,67 +272,114 @@ int main(int argc, char** argv)
   f = fopen(argv[2], "rb");
   if (!f || fread(magic, 1, 4, f) != 4 || memcmp(magic, "COV1", 4)) { fprintf(stderr, "bad log\n"); return 2; }
   for (k = 0; k < NCAND; k++) cx[k] = make();
+  pcap = rc_client_progress_size(cx[0]->client) + 65536; pbuf = malloc(pcap);
+  printf("mode: %s\n", step ? "one-step (every candidate is resynced to A's evaluated state before each frame)" : "free-running (each candidate keeps its own evaluated state)");
   for (;;) {
     uint32_t fr = rd32(f), ncap, i;
     int have[NCAND];
     if (fr == 0xFFFFFFFFu) break;
-    ncap = rd32(f); ncsum += ncap; if (ncap > ncmax) ncmax = ncap; if (ncap == 1) ncone++;
-    if (apply(f, cx[0]->img)) break;
-    memcpy(cleanA, cx[0]->img, NIMG);
-    have[0] = 1;
-    for (k = 1; k < NCAND; k++) {
+    ncap = rd32(f);
+    if (ncap == 0xFFFFFFFFu) break;
+    if (ncap == 0) { nocap++; continue; }   /* no capture in this interval: the module evaluates nothing new */
+    ncsum += ncap; if (ncap > ncmax) ncmax = ncap; if (ncap == 1) ncone++;
+    if (readruns(f, &rs[0])) break;
+    frames_total_v++;
+    for (k = 0; k < NCAND; k++) applyruns(&rs[0], cx[k]->img);   /* every image is A's memory now */
+    have[0] = 1; have[5] = 1;
+    for (k = 1; k < NFILE; k++) {
       int h = fgetc(f);
       have[k] = h == 1;
-      memcpy(cx[k]->img, cleanA, NIMG);
-      if (h == 1 && apply(f, cx[k]->img)) { have[k] = -1; break; }
+      rs[k].n = 0;
+      if (h == 1 && readruns(f, &rs[k])) { have[k] = -1; break; }
     }
-    for (k = 1; k < NCAND; k++) if (have[k] < 0) goto end;
+    for (k = 1; k < NFILE; k++) if (have[k] < 0) goto end;
     frameno++;
-    frames++; frames_total_v = frames;
-    if (frames <= skip)    /* warm-up: every client sees A's memory, so the clients start in the same state */
-      for (k = 1; k < NCAND; k++) memcpy(cx[k]->img, cleanA, NIMG);
+    frames++;
+    if (frames <= skip) for (k = 1; k < NFILE; k++) rs[k].n = 0;   /* warm-up: every client sees A's memory, so they start in the same state */
+    for (k = 1; k < NFILE; k++) applyruns(&rs[k], cx[k]->img);
+    if (step && frames > 1) {   /* every candidate starts the frame from A's evaluated state (one-step comparison) */
+      int r = rc_client_serialize_progress_sized(cx[0]->client, pbuf, pcap);
+      if (r != RC_OK) { fprintf(stderr, "serialize %d\n", r); return 3; }
+      for (k = 1; k < NCAND; k++) {
+        quiet = 1;
+        r = rc_client_deserialize_progress_sized(cx[k]->client, pbuf, pcap);
+        quiet = 0;
+        if (r != RC_OK) { fprintf(stderr, "deserialize %d\n", r); return 3; }
+      }
+    }
     for (k = 0; k < NCAND; k++) {
-      memset(cx[k]->touched, 0, NIMG);
-      cx[k]->nev = 0;
+      for (i = 0; i < cx[k]->ntl; i++) cx[k]->touched[cx[k]->tlist[i]] = 0;
+      cx[k]->ntl = 0;
+      cx[k]->nev = 0; cx[k]->nev2 = 0;
       rc_client_do_frame(cx[k]->client);
-      cx[k]->events[cx[k]->nev] = 0;
+      cx[k]->events[cx[k]->nev] = 0; cx[k]->events2[cx[k]->nev2] = 0;
       cx[k]->digest = digest_of(cx[k]->client); cx[k]->dm = comp[0]; cx[k]->dr = comp[1];
+      cx[k]->rp[0] = 0;
+      if (rc_client_has_rich_presence(cx[k]->client)) rc_client_get_rich_presence_message(cx[k]->client, cx[k]->rp, sizeof cx[k]->rp);
     }
     if (frames <= skip) continue;
     seen++;
-    for (i = 0, k = 0; i < NIMG; i++) watched_sum += cx[0]->touched[i];
+    watched_sum += cx[0]->ntl;
     for (k = 1; k < NCAND; k++) {
-      uint32_t w = 0, full = 0;
+      uint32_t w = 0, full = 0, ri;
       present[k] += have[k] ? 1 : 0;
-      for (i = 0; i < NIMG; i++) {
-        int d = cx[k]->img[i] != cleanA[i];
-        full += d;
-        if (d && (cx[0]->touched[i] || cx[k]->touched[i])) w++;
+      if (k < NFILE) for (ri = 0; ri < rs[k].n; ri++) {
+        uint32_t o = rs[k].r[ri].off, e = o + rs[k].r[ri].len;
+        for (; o < e; o++) {
+          int d = cx[k]->img[o] != cx[0]->img[o];
+          full += d;
+          if (d && (cx[0]->touched[o] || cx[k]->touched[o])) w++;
+        }
       }
       if (full) snapdiff[k]++;
       if (w) watchdiff[k]++;
       sumw[k] += w;
       if (w > maxw[k]) maxw[k] = w;
       if (full > maxfull[k]) maxfull[k] = full;
-      if (cx[k]->digest != cx[0]->digest) statediff[k]++;
+      if (cx[k]->digest != cx[0]->digest) { statediff[k]++; if (!firststate[k]) firststate[k] = fr; }
       if (cx[k]->dm != cx[0]->dm) memdiff[k]++;
       if (cx[k]->dr != cx[0]->dr) { if (!trigdiff[k]) explain(cname[k], fr, cx[0]->client, cx[k]->client); trigdiff[k]++; }
+      if (strcmp(cx[k]->rp, cx[0]->rp)) rpdiff[k]++;
+      if (strcmp(cx[k]->events2, cx[0]->events2)) ev2diff[k]++;
+      if (lbvalue_digest(cx[k]->client) != lbvalue_digest(cx[0]->client)) lbvdiff[k]++;
       if (strcmp(cx[k]->events, cx[0]->events)) {
         evdiff[k]++;
-        fprintf(stderr, "EVENT DIFF %s frame %u: A [%s] vs [%s]\n", cname[k], fr, cx[0]->events, cx[k]->events);
+        if (evdiff[k] <= 3) fprintf(stderr, "EVENT DIFF %s frame %u: A [%.240s] vs [%.240s]\n", cname[k], fr, cx[0]->events, cx[k]->events);
+        if (!firstev[k]) firstev[k] = fr;
       }
+    }
+    for (k = 1; k < NFILE; k++) {   /* undo the candidates' runs: every image is A's memory again */
+      uint32_t ri;
+      for (ri = 0; ri < rs[k].n; ri++) memcpy(cx[k]->img + rs[k].r[ri].off, cx[0]->img + rs[k].r[ri].off, rs[k].r[ri].len);
     }
     if (cx[0]->nev) evcount[0] += 1;
   }
+  /* (the frame loop continues above; candidate runs are undone at the top of the next frame) */
 end:
+  if (getenv("CO_EVENTS")) {   /* every client's full event list, one file each, for copyonce_report.py */
+    static const char* nm[NCAND] = {"A", "F1", "F2", "MID", "VB", "CTRL"};
+    for (k = 0; k < NCAND; k++) {
+      char fn[1024]; FILE* o;
+      snprintf(fn, sizeof fn, "%s.%s.txt", getenv("CO_EVENTS"), nm[k]);
+      o = fopen(fn, "w");
+      if (o) { fputs(cx[k]->all ? cx[k]->all : "", o); fclose(o); }
+    }
+  }
   printf("frames replayed %u (counted %u), mean watched bytes per frame %.0f\n", frames, seen, seen ? (double)watched_sum / seen : 0.0);
+  printf("intervals with no capture (module evaluates nothing new, not replayed): %u; intervals with at least one capture: %u\n", nocap, frames_total());
   printf("captures per interval (intervals with at least one): mean %.1f, max %u, exactly one %u\n", frames_total() ? (double)ncsum / frames_total() : 0.0, ncmax, ncone);
-  printf("events in A (achievement/leaderboard start, fail, submit): %s\n", cx[0]->all ? cx[0]->all : "(none)");
+  for (k = 0; k < NCAND; k++) {
+    const char* a = cx[k]->all ? cx[k]->all : "";
+    size_t ne = 0; const char* q;
+    for (q = a; *q; q++) if (*q == ';') ne++;
+    printf("%s: %zu achievement/leaderboard events (start, fail, submit, unlock); first: %.700s%s\n", cname[k], ne, ne ? a : "(none)", strlen(a) > 700 ? " ..." : "");
+  }
   for (k = 1; k < NCAND; k++)
-    printf("%-30s copy exists %u  full-RAM-differs %u  watched-differs %u (%.2f%% of frames)  max watched bytes %u  mean %.3f  max full bytes %u  state-differs %u  event-frames-differ %u  all events equal at end: %s\n",
+    printf("%-30s copy exists %u  full-RAM-differs %u  watched-differs %u (%.2f%% of frames)  max watched bytes %u  mean %.3f  max full bytes %u  state-differs %u  event-frames-differ %u (first at %u; first state difference at %u)  all events equal at end: %s\n",
            cname[k], present[k], snapdiff[k], watchdiff[k], seen ? 100.0 * watchdiff[k] / seen : 0.0, maxw[k],
-           seen ? (double)sumw[k] / seen : 0.0, maxfull[k], statediff[k], evdiff[k],
+           seen ? (double)sumw[k] / seen : 0.0, maxfull[k], statediff[k], evdiff[k], firstev[k], firststate[k],
            strcmp(cx[k]->all ? cx[k]->all : "", cx[0]->all ? cx[0]->all : "") ? "NO" : "yes");
+  for (k = 1; k < NCAND; k++) printf("  %-30s rich presence differs in %u frames, leaderboard running value/state differs in %u frames, tracker/progress/challenge events differ in %u frames\n", cname[k], rpdiff[k], lbvdiff[k], ev2diff[k]);
   for (k = 1; k < NCAND; k++) printf("  %-30s frames where memref values differ %u, achievement/leaderboard trigger state differs %u\n", cname[k], memdiff[k], trigdiff[k]);
   (void)evcount; (void)maxfull;
   return 0;
