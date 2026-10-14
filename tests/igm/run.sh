@@ -21,8 +21,9 @@ case $game in
 esac
 open1=${OPEN:-4500}
 close1=$((open1 + 300)) open2=$((open1 + 600)) close2=$((open1 + 1500))
-top=$(mktemp -d)
-[ "${KEEP:-0}" = 1 ] && echo "work: $top" || trap 'rm -rf "$top"' EXIT
+. "$here/../lib/workdir.sh"
+top=$(dsc_mkwork dsc-igm-$$)
+[ "${KEEP:-0}" = 1 ] && echo "work: $top" || { trap 'exit 130' INT TERM HUP; trap 'dsc_rmwork "$top"' EXIT; }
 set=$repo/tests/bootstrap/sets/live.json
 
 tick=${TICK:-}

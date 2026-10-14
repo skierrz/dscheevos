@@ -30,8 +30,10 @@ dumps=${DUMPS:-$out}
 mkdir -p "$dumps"
 [ -z "$script" ] || script=$(cd "$(dirname "$script")" && pwd)/$(basename "$script")
 
-work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
+. "$here/../lib/workdir.sh"
+trap 'exit 130' INT TERM HUP   # so the EXIT trap below also runs when the run is killed
+work=$(dsc_mkwork dsc-idle-p${PORT:-8453})
+trap 'dsc_rmwork "$work"' EXIT
 args="--profile --profile-frames $frames --script-from-game --profile-log $work/prof.csv"
 [ "${CACHE_MODEL:-1}" = 0 ] || args="$args --cache-model-from-game"
 PORT=${PORT:-8453} ENABLED=0 ROM=$rom WORK=$work SCRIPT=$script RUNNER_ARGS="$args ${EXTRA_ARGS:-}" \

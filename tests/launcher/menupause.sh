@@ -10,10 +10,13 @@ set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 set=${1:-$here/../bootstrap/sets/live.json}
 open=${MENU_AT:-3000} hold=${MENU_FRAMES:-600} frames=$((${MENU_AT:-3000} + ${MENU_FRAMES:-600} + 1500))
-s=$(mktemp); trap 'rm -f "$s"' EXIT
+. "$here/../lib/workdir.sh"
+trap 'exit 130' INT TERM HUP   # so the EXIT trap below also runs when the run is killed
+w=$(dsc_mkwork dsc-mp-$$); trap 'dsc_rmwork "$w"' EXIT
+s=$w/script.txt
 printf '%d 0x284 20\n%d 0x2 5\n' "$open" $((open + hold)) > "$s"   # L+Down+Select opens, B closes
 counts() { sed -n "s/^{'active'.*'snapshotted': \([0-9]*\).*'dropped': \([0-9]*\), 'missed': \([0-9]*\).*/\1 \2 \3/p" "$1"; }
-a=$(mktemp); b=$(mktemp); trap 'rm -f "$s" "$a" "$b"' EXIT
+a=$w/a.out b=$w/b.out
 "$here/run.sh" "$set" "$frames" > "$a" 2>&1 || true
 SCRIPT=$s "$here/run.sh" "$set" "$frames" > "$b" 2>&1 || true
 set -- $(counts "$a") $(counts "$b")

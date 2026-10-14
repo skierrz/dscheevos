@@ -12,7 +12,7 @@ RA_USER=name RA_PASSWORD=... tests/real/run.sh --expect 12345
 - Spectator mode by default (`SPECTATOR = 1`): the game evaluates and shows unlocks but nothing is sent. `LIVE_UNLOCKS=1` sends unlocks for real.
 - Optional: `HARDCORE` (default 1), `FRAMES` (default 6000, 2400 for `--check`), `SCRIPT`, `WORK`, `RUNNER_ARGS`. Extra arguments go to `tests/bootstrap/status.py`. A `SCRIPT`'s frames count from the game's first `OS_Halt` (the runner's `--script-from-game`), so how long the launcher spends on the network doesn't shift the input.
 
-The work directory holds the token in its `dscheevos.ini` and a 450-650 MB SD image. Without `WORK` it is a `mktemp -d` that the script deletes on exit; with `WORK` it is kept, so delete it when done.
+The work directory holds the token in its `dscheevos.ini` and a 450-650 MB SD image. Without `WORK` it is a private dir under `DSC_WORK` (default `~/Developer/DScheevos/.work`, mode 700, see tests/lib/workdir.sh) that the script deletes on exit; with `WORK` it is kept, so delete it when done.
 
 ## Bench run on the test account (owner)
 

@@ -26,9 +26,11 @@ here=$(cd "$(dirname "$0")" && pwd)
 repo=$here/../..
 check=0
 if [ "${1:-}" = "--check" ]; then check=1; shift; fi
-work=${WORK:-$(mktemp -d)}
+. "$here/../lib/workdir.sh"
+work=${WORK:-$(dsc_mkwork dsc-real-$$)}
 [ -n "${WORK:-}" ] || tmpwork=$work   # no WORK: delete the files on exit
-trap '[ -z "${tmpwork:-}" ] || rm -rf "$tmpwork"' EXIT
+trap 'exit 130' INT TERM HUP   # so the EXIT trap below also runs when the run is killed
+trap '[ -z "${tmpwork:-}" ] || dsc_rmwork "$tmpwork"' EXIT
 sd=$work/sd
 mkdir -p "$sd/_nds/dscheevos" "$sd/games"
 

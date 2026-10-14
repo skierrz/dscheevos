@@ -2,6 +2,9 @@
 /build/
 /out/
 
+# Private test work dirs (tests/lib/workdir.sh); normally outside the repo, ignored if DSC_WORK points in
+/.work/
+
 # Private files: BIOS, firmware and NAND dumps, game dumps and saves. Keep them
 # outside the repo (DSI_FILES, ROM); these patterns catch a stray copy.
 biosnds7.bin

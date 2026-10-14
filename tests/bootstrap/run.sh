@@ -13,11 +13,13 @@ set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$here/../..
 hash=$1 set=$2 frames=$3; shift 3
-work=${WORK:-$(mktemp -d)}
+. "$here/../lib/workdir.sh"
+work=${WORK:-$(dsc_mkwork dsc-bs-$$)}
 sd=$work/sd
 # no WORK: delete the files on exit, with the runner's SD image (<sd>.img, .img.idx)
 if [ -z "${WORK:-}" ]; then
-  trap 'rm -rf "$work" || true; rm -f "$work.img" "$work.img.idx" || true' EXIT
+  trap 'exit 130' INT TERM HUP   # so the EXIT trap below also runs when the run is killed
+  trap 'dsc_rmwork "$work" || true' EXIT
 fi
 mkdir -p "$sd/_nds/dscheevos" "$sd/games"
 cp "$ROM" "$sd/games/game.nds"

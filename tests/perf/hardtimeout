@@ -4,21 +4,41 @@
 # and its emulator keeps running, so the next run in that emu-lock slot talks to a stale server
 # (tests/launcher/run.sh now refuses a busy port). This puts the command in its own process group
 # and, at the limit, sends TERM then KILL to the group. Exit status: the command's, or 124 on timeout.
+# It also removes the work dirs the command made with tests/lib/workdir.sh (listed in DSC_WORK_LIST),
+# since a SIGKILLed script runs no EXIT trap; they hold SD images and session files with the RA token.
 # Use it inside emu-lock: emu-lock -l label tests/perf/hardtimeout 900 tests/perf/gamecost.sh ...
 use strict;
 use POSIX qw(setpgid :sys_wait_h);
+use File::Path qw(remove_tree);
 my $secs = shift @ARGV;
 die "usage: hardtimeout SECONDS command...\n" unless defined $secs && $secs =~ /^\d+$/ && @ARGV;
+my $root = $ENV{DSC_WORK} // "$ENV{HOME}/Developer/DScheevos/.work";
+my $list;
+if (!defined $ENV{DSC_WORK_LIST}) {
+    mkdir $root, 0700; chmod 0700, $root;
+    $list = "$root/.list.$$";
+    $ENV{DSC_WORK_LIST} = $list;
+}
+sub sweep {   # remove the listed work dirs (only below the work root) and their runner .img files
+    return unless defined $list && open(my $fh, '<', $list);
+    while (my $d = <$fh>) {
+        chomp $d;
+        next unless $d =~ m{^\Q$root\E/[^/]+$} && $d !~ /\.\./;
+        remove_tree($d); unlink "$d.img", "$d.img.idx";
+    }
+    close $fh; unlink $list;
+}
 my $pid = fork() // die "fork: $!\n";
 if ($pid == 0) { setpgid(0, 0); exec @ARGV or die "exec $ARGV[0]: $!\n"; }
 setpgid($pid, $pid);
 my $timed_out = 0;
 local $SIG{ALRM} = sub { $timed_out = 1; kill 'TERM', -$pid; sleep 5; kill 'KILL', -$pid; };
-for my $s (qw(INT TERM HUP)) { $SIG{$s} = sub { kill 'TERM', -$pid; sleep 2; kill 'KILL', -$pid; exit 130; }; }
+for my $s (qw(INT TERM HUP)) { $SIG{$s} = sub { kill 'TERM', -$pid; sleep 2; kill 'KILL', -$pid; sweep(); exit 130; }; }
 alarm $secs;
 waitpid($pid, 0);
 my $st = $?;
 alarm 0;
 kill 'KILL', -$pid;   # anything the command left running in its group (a background mock server)
+sweep();
 if ($timed_out) { print STDERR "hardtimeout: killed after $secs s: @ARGV\n"; exit 124; }
 exit($st & 127 ? 128 + ($st & 127) : $st >> 8);

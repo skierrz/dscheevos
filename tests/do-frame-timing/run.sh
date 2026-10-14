@@ -6,7 +6,10 @@
 #   ./run.sh [out/timing-*.nds ...]
 set -e
 : "${MELONDS_HEADLESS:?set MELONDS_HEADLESS}" "${DSI_FILES:?set DSI_FILES}"
-work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
+here=$(cd "$(dirname "$0")" && pwd)
+. "$here/../lib/workdir.sh"
+trap 'exit 130' INT TERM HUP   # so the EXIT trap below also runs when the run is killed
+work=$(dsc_mkwork dsc-ft-$$); trap 'dsc_rmwork "$work"' EXIT
 roms=("$@"); [ ${#roms[@]} -eq 0 ] && roms=(out/timing-*.nds)
 for rom in "${roms[@]}"; do
   modes="dsi"; [[ $rom == *-67.nds ]] && modes="ds dsi"

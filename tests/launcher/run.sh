@@ -29,9 +29,11 @@ repo=$here/../..
 set=$1 frames=$2; shift 2
 port=${PORT:-8443}
 module=${MODULE:-$repo/dscheevos/module/build}
-# temp names carry the port (emu-lock gives each slot its own): parallel runs never share a folder,
-# and a generic cleanup of $TMPDIR/tmp.* can't delete a running test's SD card
-work=${WORK:-$(mktemp -d "${TMPDIR:-/tmp}/dsc-run-p$port.XXXXXX")}
+# work dirs live in a private directory (tests/lib/workdir.sh), not in $TMPDIR, and their names carry
+# the port (emu-lock gives each slot its own): parallel runs never share a folder, and a generic
+# cleanup of $TMPDIR/tmp.* can't delete a running test's SD card
+. "$here/../lib/workdir.sh"
+work=${WORK:-$(dsc_mkwork "dsc-run-p$port")}
 [ -n "${WORK:-}" ] || tmpwork=$work   # no WORK: delete the files on exit
 sd=$work/sd
 mkdir -p "$sd/_nds/dscheevos" "$sd/games" "$work/tls"
@@ -64,7 +66,8 @@ fi
 python3 "$repo/tools/mock-ra-server/server.py" --bind 0.0.0.0 --port "$port" --set "$set" --log "$work/events.jsonl" \
   --tls-cert "$work/tls/server.pem" --tls-key "$work/tls/server.key" ${MOCK_ARGS:-} > "$work/mock.log" 2>&1 &
 mock=$!
-trap 'kill $mock 2>/dev/null; wait $mock 2>/dev/null || true; [ -z "${tmpwork:-}" ] || rm -rf "$tmpwork"' EXIT
+trap 'exit 130' INT TERM HUP   # so the EXIT trap below also runs when the run is killed
+trap 'kill $mock 2>/dev/null; wait $mock 2>/dev/null || true; [ -z "${tmpwork:-}" ] || dsc_rmwork "$tmpwork"' EXIT
 # wait until it listens: loading a big set takes it seconds, and the launcher's
 # first request comes sooner than that in an unthrottled emulator
 i=0

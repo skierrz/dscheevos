@@ -32,8 +32,9 @@ esac
 [ -f "$rom" ] || { echo "no ROM: $rom"; exit 2; }
 [ -z "$script" ] || script=$(cd "$(dirname "$script")" && pwd)/$(basename "$script")
 
-top=$(mktemp -d "${TMPDIR:-/tmp}/dsc-ab-p${PORT:-8453}.XXXXXX")   # per slot (PORT), see run.sh
-[ "${KEEP:-0}" = 1 ] || trap 'rm -rf "$top"' EXIT
+. "$here/../lib/workdir.sh"
+top=$(dsc_mkwork "dsc-ab-p${PORT:-8453}")   # per slot (PORT), see run.sh
+[ "${KEEP:-0}" = 1 ] || { trap 'exit 130' INT TERM HUP; trap 'dsc_rmwork "$top"' EXIT; }
 set=${SET:-}
 if [ -z "$set" ]; then
   set=$top/typical.json

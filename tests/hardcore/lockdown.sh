@@ -26,6 +26,7 @@
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$here/../..
+. "$here/../lib/workdir.sh"
 mode=${MODE:-hc}
 set_json=$repo/tests/bootstrap/sets/live.json
 
@@ -105,7 +106,7 @@ lboot() {  # lboot WORK FRAMES [SD_SETUP step]: the launcher flow (presses A now
 server_mode() { grep -o '"event": "startsession"[^}]*' "$1/out.txt" | grep -o 'hardcore": [a-z]*' | head -1; }
 
 for c in "$@"; do
-  w=$(mktemp -d)
+  w=$(dsc_mkwork dsc-lock-$$)
   case "$c" in
   ips|bin|widecheat)
     boot "$w" 1800 "setup-$c"
@@ -154,5 +155,5 @@ for c in "$@"; do
     echo "$c ($mode): module $(grep -m1 -E '^speed-ups|module not loaded' "$w/out.txt" || echo 'no status'); $(grep -m1 -o 'speed-ups 0x[0-9a-f]*' "$w/out.txt" | sed 's/^/journal /')" ;;
   *) echo "unknown case $c" ;;
   esac
-  [ -n "${KEEP:-}" ] && echo "  kept $w" || rm -rf "$w"
+  [ -n "${KEEP:-}" ] && echo "  kept $w" || dsc_rmwork "$w"
 done

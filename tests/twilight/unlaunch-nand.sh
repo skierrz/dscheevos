@@ -23,7 +23,9 @@ here=$(cd "$(dirname "$0")" && pwd)
 repo=$here/../..
 out=$1
 src=${MELONDS_SRC:-$repo/tools/melonDS}
-work=${WORK:-$(mktemp -d)}
+. "$here/../lib/workdir.sh"
+work=${WORK:-$(dsc_mkwork dsc-un-$$)}
+[ -n "${WORK:-}" ] || trap 'dsc_rmwork "$work"' EXIT   # no WORK: delete on exit
 cache=${UNLAUNCH_CACHE:-$HOME/.cache/dscheevos}
 mkdir -p "$work" "$cache"
 bios7i=$DSI_FILES/biosdsi7.bin

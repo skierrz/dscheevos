@@ -16,7 +16,7 @@
 #   BOOT       direct (default): the runner boots sd:/BOOT.NDS directly, like Unlaunch does.
 #              unlaunch: cold boot through the DSi boot ROM and the NAND in UNLAUNCH_NAND, a copy
 #              with Unlaunch installed and its NO BUTTON option set to sdmc:/BOOT.NDS (see README.md)
-#   WORK       dir to keep the SD folder, logs, screenshots and RAM dump (default: mktemp)
+#   WORK       dir to keep the SD folder, logs, screenshots and RAM dump (default: a private dir under DSC_WORK, deleted on exit)
 #   PORT       mock server port (default 8443)
 #   HASH       only serve the set for this ROM hash (checks the launcher hashed the game TWiLight picked)
 #   PRESS_A    frame at which A is pressed in the TWiLight menu (default 1100)
@@ -29,7 +29,8 @@ here=$(cd "$(dirname "$0")" && pwd)
 repo=$here/../..
 set=$1 frames=$2; shift 2
 port=${PORT:-8443}
-work=${WORK:-$(mktemp -d)}
+. "$here/../lib/workdir.sh"
+work=${WORK:-$(dsc_mkwork "dsc-tw-p$port")}
 [ -n "${WORK:-}" ] || tmpwork=$work   # no WORK: delete the files on exit
 press_a=${PRESS_A:-1100}
 case ${BOOT:-direct} in
@@ -89,7 +90,8 @@ topng() { python3 -c 'import sys; from PIL import Image; Image.open(sys.argv[1])
 
 # One emulator run from a fresh copy of the SD, with its own mock server.
 mock=
-trap '[ -z "$mock" ] || kill $mock 2>/dev/null; [ -z "${tmpwork:-}" ] || rm -rf "$tmpwork"' EXIT
+trap 'exit 130' INT TERM HUP   # so the EXIT trap below also runs when the run is killed
+trap '[ -z "$mock" ] || kill $mock 2>/dev/null; [ -z "${tmpwork:-}" ] || dsc_rmwork "$tmpwork"' EXIT
 run() { # run NAME FRAMES
   d=$work/$1
   rm -rf "$d" && mkdir -p "$d" && cp -r "$sd0" "$d/sd"
