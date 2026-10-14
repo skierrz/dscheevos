@@ -448,6 +448,84 @@ bw_entry:
 	sub	r12, r12, #4
 	cmp	r1, #0
 	bne	bw_blocked
+	.ifdef BW_FIBER
+	@ LAB: resume the gate's fiber (module.c bw_fiber_main) where it gave
+	@ the last wait back; the game's callee-saved registers, sp and lr wait
+	@ in bw_ctx (module memory) until bw_yield
+	ldr	r1, =bw_ctx
+	stmia	r1, {r4-r11}
+	str	sp, [r1, #32]
+	str	lr, [r1, #36]
+	ldr	r0, [r1, #40]
+	cmp	r0, #0
+	beq	2f
+	mov	sp, r0
+	pop	{r4-r11, lr}
+	bx	lr                          @ back into bw_yield's caller, on the fiber
+2:	ldr	sp, =__irq_stack_top        @ first entry: start the fiber on the gate's stack
+	ldr	r1, =bw_fiber_main
+	bx	r1
+	.global bw_yield
+	.type bw_yield, %function
+bw_yield:                           @ on the fiber: save it, back to the game's stock wait
+	push	{r4-r11, lr}
+	ldr	r1, =bw_ctx
+	str	sp, [r1, #40]
+	ldmia	r1, {r4-r11}
+	ldr	sp, [r1, #32]
+	ldr	lr, [r1, #36]
+	mov	r1, #MIRROR_HI
+	orr	r1, r1, #REGION_END
+	mov	r2, #0
+	strb	r2, [r1, #-GUARD_BACK + 4]
+	b	bw_stock
+	.ifdef TLS_YIELD
+	@ LAB: yield points on calls between mbedtls files (Makefile TLS_YIELD_WRAPS,
+	@ linked with --wrap): every argument register, the stack arguments and
+	@ the return go through untouched; only a possible pause before the call
+	.macro BW_WRAP name
+	.global __wrap_\name
+	.type __wrap_\name, %function
+__wrap_\name:
+	push	{r0-r3, r12, lr}
+	ldr	r12, =dscm_yield_point
+	blx	r12
+	pop	{r0-r3, r12, lr}
+	ldr	r12, =__real_\name
+	bx	r12
+	.endm
+	BW_WRAP mbedtls_mpi_mul_mpi
+	BW_WRAP mbedtls_mpi_mod_mpi
+	BW_WRAP mbedtls_mpi_copy
+	BW_WRAP mbedtls_mpi_sub_mpi
+	BW_WRAP mbedtls_mpi_add_mpi
+	BW_WRAP mbedtls_mpi_shift_r
+	BW_WRAP mbedtls_mpi_cmp_mpi
+	BW_WRAP mbedtls_mpi_read_binary
+	BW_WRAP mbedtls_mpi_write_binary
+	BW_WRAP mbedtls_mpi_random
+	BW_WRAP mbedtls_mpi_exp_mod
+	BW_WRAP mbedtls_md_update
+	BW_WRAP mbedtls_md_finish
+	BW_WRAP mbedtls_md_hmac_update
+	BW_WRAP mbedtls_md_hmac_starts
+	BW_WRAP mbedtls_sha256_update
+	BW_WRAP mbedtls_asn1_get_tag
+	BW_WRAP mbedtls_ssl_read_record
+	BW_WRAP mbedtls_cipher_setkey
+	BW_WRAP mbedtls_x509_crt_parse_der_nocopy
+	BW_WRAP mbedtls_ecp_group_load
+	BW_WRAP mbedtls_pk_parse_subpubkey
+	BW_WRAP mbedtls_cipher_update
+	BW_WRAP mbedtls_aes_crypt_ecb
+	BW_WRAP mbedtls_chacha20_update
+	BW_WRAP mbedtls_cipher_auth_decrypt_ext
+	BW_WRAP mbedtls_cipher_auth_encrypt_ext
+	BW_WRAP mbedtls_ecdh_calc_secret
+	BW_WRAP mbedtls_ecdh_make_public
+	.ltorg
+	.endif
+	.else
 	mov	r12, sp
 	ldr	sp, =__irq_stack_top
 	push	{r12, lr}
@@ -471,6 +549,7 @@ bw_entry:
 	bxne	r2
 	.endif
 	b	bw_stock
+	.endif
 bw_blocked:                         @ the gate's guard is held (another thread is in the gate): counted, dscm_irq.reserved2[1]
 	ldr	r0, [r12, #-80]
 	add	r0, r0, #1

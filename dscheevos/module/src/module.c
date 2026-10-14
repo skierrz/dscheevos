@@ -247,6 +247,15 @@ _Static_assert(offsetof(dscm_irq_t, idle_cut_lines) == 32 && offsetof(dscm_irq_t
 #define BW_FIRST_LINES (dscm_irq.in_halt)   /* LAB: the unused byte (clamped to 255) */
 #define BW_FIRST_OVER (dscm_irq.reserved2[4])
 #define BW_FLAG_SET (dscm_irq.reserved2[2])   /* LAB: waits handed to the BIOS with the VBlank flag already set */
+#ifdef BW_FIBER
+static uint32_t bw_last_gate = 0x80000000u;   /* g_frames at the gate's last entry */
+static uint32_t bw_run;                        /* consecutive frames with a gate entry */
+static uint32_t bw_midwork;
+static uint32_t bw_cap_est;
+static uint32_t bw_idle_last, bw_idle_run;     /* idle path: the ARM7's VBlank count at its last wake; frames in a row with one */                    /* lines a capture needs (decaying max) */
+static uint32_t bw_midwork_unused;                    /* the fiber gave a wait back in the middle of its work */
+#endif
+#define BW_UNITS_ALL (dscm_irq.reserved2[4])   /* LAB fiber build: bw_step calls (shown as "first unit overran") */
 _Static_assert(offsetof(wake_page_t, irq) + offsetof(dscm_irq_t, reserved2) + 4 == offsetof(wake_page_t, guard) - 80, "start.s bw_blocked");
 
 /* The ARM7's VBlank count, written behind the data cache. Through the
@@ -962,16 +971,28 @@ WAKE_CODE int module_idle(int idle_loop)
     return 0;
   }
   /* idle work parked elsewhere (dscm_idle_step): the stock halt */
-#ifdef BW_HALT_CAPTURE
-  /* LAB coverage build: the whole idle wake runs masked (vblank_poll, the
-   * capture, the halt), so it can never be preempted holding H.busy or the
-   * guard: in a BIOS-wait game the idle thread may never run again */
-  uint32_t bw_cpsr0 = wake_irq_off();
+#if defined(BW_FIBER)
+  /* LAB coverage: the idle path only captures (masked from start to halt,
+   * so it can never be preempted holding H.busy or the guard: in a
+   * BIOS-wait game the idle thread may stop running for good, e.g. when a
+   * load ends) until the game has shown it is an OS_Halt game: an idle wake
+   * in each of 600 frames in a row with no BIOS-wait gate entry (a gate
+   * entry starts the count again). Then it is perf's. */
+  uint32_t bw_now = vblank_count(WP);
+  if (bw_now != bw_idle_last) {
+    bw_idle_run = bw_now - bw_idle_last <= 2u ? bw_idle_run + 1 : 0;
+    bw_idle_last = bw_now;
+  }
+  const int bw_cap = bw_idle_run < 600u;
+#elif defined(BW_HALT_CAPTURE)
+  const int bw_cap = 1;
+#else
+  const int bw_cap = 0;
 #endif
+  uint32_t bw_cpsr0 = bw_cap ? wake_irq_off() : 0;
   if (wake_swap(&H.busy, 1)) {
-#ifdef BW_HALT_CAPTURE
-    wake_irq_restore(bw_cpsr0);
-#endif
+    if (bw_cap)
+      wake_irq_restore(bw_cpsr0);
     return 0;
   }
   H.halts_idle++;
@@ -994,14 +1015,10 @@ WAKE_CODE int module_idle(int idle_loop)
    * pass would do on such a wake is skipped: dsc_idle() would find nothing
    * (dsc_work_pending), and the network gets a pass only when busy or once
    * a frame. */
-#ifdef BW_HALT_CAPTURE
-  /* LAB coverage build: the idle path only captures; all work runs in the
-   * BIOS-wait gate (which a parked idle-path pass would block forever in a
+  /* LAB coverage (bw_cap): the idle path only captures; all work runs in
+   * the BIOS-wait gate (a parked idle-path pass would block it forever in a
    * game whose idle thread stops running) */
-  if (0) {
-#else
-  if (work_wanted(WP)) {
-#endif
+  if (!bw_cap && work_wanted(WP)) {
     /* Evaluation may take the rest of the frame: copy the memory the game
      * halted with first, so the next VBlank has it even if the copy before
      * the halt below comes too late. */
@@ -1026,12 +1043,7 @@ WAKE_CODE int module_idle(int idle_loop)
     idle_frames(WP, wake_swap(&dscm_irq.idle_open, 0) ? lines_since(start) : 0);
     H.busy = 0;       /* IRQs masked: nothing runs before the halt */
     wake_wfi();
-#ifdef BW_HALT_CAPTURE
-    (void)cpsr;
-    wake_irq_restore(bw_cpsr0);
-#else
-    wake_irq_restore(cpsr);
-#endif
+    wake_irq_restore(bw_cap ? bw_cpsr0 : cpsr);
     return 1;   /* halted here */
   }
 }
@@ -1051,6 +1063,12 @@ WAKE_CODE int module_idle(int idle_loop)
  * If a VBlank comes anyway (an overrun), the stock wait then discards it and
  * the game waits a frame more: counted (BW_OVERRUNS), must stay 0. */
 #define BW_MARGIN 6           /* lines kept free before line 192 */
+#ifdef BW_FIBER
+void dscm_yield_point(void);
+#define BW_YP() dscm_yield_point()
+#else
+#define BW_YP() ((void)0)
+#endif
 #define BW_FIRST 100          /* the first unit (nothing measured yet) needs this many lines */
 #define BW_NET_LINES 100      /* the network's once-a-frame pass needs this many */
 static __attribute__((section(".text_cold"), noinline, target("arm"))) uint32_t bw_left(void)
@@ -1068,20 +1086,31 @@ static __attribute__((section(".text_cold"), noinline)) int bw_step(uint32_t lef
   }
   if (H.requests)
     poll_network();
+  BW_YP();
   if (H.progress_stale)
     update_progress();
+  BW_YP();
   evaluated = dsc_idle_max(1);
+  BW_YP();
   if (evaluated) {
     clean_notices();
     update_cues();
   }
+  BW_YP();
+#ifdef BW_NO_NET
+  /* LAB diagnostic: no network work in the gate */
+  if (0) {
+#else
   if (H.net_started && left >= BW_NET_LINES) {
+#endif
     net_service(millis());
     H.net_busy = net_busy() != 0;
     dscm_g_status.net_state = net_state();
     dscm_g_status.net_detail = net_detail();
+    BW_YP();
     poll_network();
   }
+  BW_YP();
   H.more = dsc_work_pending() != 0;
   if (evaluated)
     publish_stats();        /* always_inline: the idle path's copy is unchanged */
@@ -1205,6 +1234,224 @@ __attribute__((section(".text_cold"), noinline, target("arm"))) int module_wait(
 }
 #undef WP
 #define WP WAKE_PAGE
+
+#ifdef BW_FIBER
+/* ---- LAB (coverage): preemptible evaluation in the BIOS wait ----
+ * The gate's work runs as a coroutine (the "fiber") on the gate's own 4 KB
+ * stack. start.s bw_entry saves the game's r4-r11, sp and lr in bw_ctx and
+ * resumes the fiber where it last stopped; bw_yield saves the fiber and runs
+ * the game's stock wrapper. The fiber gives the wait back at yield points:
+ * rcheevos' (RC_CLIENT_YIELD_HOOK: each achievement, leaderboard, 64
+ * memrefs, the rich presence, the index build) and the core's, whenever the
+ * lines left before line 192 drop under BW_YIELD_MARGIN. A frame's
+ * evaluation can so span several waits: the next wait resumes it after its
+ * own capture. While suspended mid-work it keeps H.busy (no other pass can
+ * start); rcheevos sees one uninterrupted call. */
+#ifndef BW_YIELD_MARGIN
+#define BW_YIELD_MARGIN 6     /* lines: the longest gap between yield points + the way out (measured: BW_GAP_MAX) */
+#endif
+extern void bw_yield(int late);   /* start.s: late (BW_SKIP_LATE builds): the VBlank already came */
+uint32_t bw_ctx[11];          /* start.s: game r4-r11, sp, lr; the fiber's sp (0: not started) */
+static struct { uint32_t v0, left0, c0, f0, in, gap_v, site, budget, frames0, last_el; } BWF;
+/* LAB diagnostics (status.py "bw diag"): longest gap between yield checks
+ * (lines) with the call sites that start and end it (1 = the wait's start),
+ * longest capture at a wait's start (lines), waits worked, waits with too
+ * little time to start */
+uint32_t bw_diag[8];
+/* LAB diagnostics: gaps between yield checks longer than BW_YIELD_MARGIN, by
+ * (start site, end site): up to 8 pairs, each with its count and longest */
+uint32_t bw_gaps[8][4];
+static __attribute__((section(".text_cold"), noinline)) void bw_gap_note(uint32_t from, uint32_t to, uint32_t gap)
+{
+  int i;
+  for (i = 0; i < 8; i++) {
+    if (!bw_gaps[i][2] || (bw_gaps[i][0] == from && bw_gaps[i][1] == to)) {
+      bw_gaps[i][0] = from; bw_gaps[i][1] = to; bw_gaps[i][2]++;
+      if (gap > bw_gaps[i][3]) bw_gaps[i][3] = gap;
+      return;
+    }
+  }
+}
+#define BW_GAP_MAX (dscm_irq.frames_missed)   /* status "longest unit": longest gap between yield checks, lines */
+#define BW_MIDYIELDS (dscm_irq.reserved2[0])  /* status "units": waits given back with work under way */
+#undef WP
+#define WP wp
+static __attribute__((section(".text_cold"), noinline, target("arm"))) int bwf_begin(void)
+{
+  wake_page_t* const wp = wake_page_arm();
+  uint32_t cpsr;
+  if (!dscm_irq.on || (BW_STACK_BAD & 1))
+    return 0;
+  /* a BIOS-wait game: the gate entered on 30 frames in a row before it works
+   * (an OS_Halt game's stray wrapper call must not park the evaluator here) */
+  {
+    uint32_t now = vblank_count(WP);   /* the ARM7's count: g_frames moves only when the module polls */
+    bw_run = now - bw_last_gate <= 2u ? bw_run + (now != bw_last_gate) : 0;
+    bw_last_gate = now;
+    bw_idle_run = 0;     /* a BIOS-wait game (for now): the idle path stays capture-only */
+  }
+  if (bw_run < 30 && !bw_midwork)
+    return 0;
+  if (REG_IE & REG_IF & 1)
+    return 0;          /* a VBlank is already requested: the stock wait returns at once */
+  /* the capture's estimate: the longest of the recent ones (it decays a line
+   * a wait, so one big copy after a load doesn't block waits for good) */
+  if (bw_cap_est)
+    bw_cap_est--;
+  if (bw_left() < BW_YIELD_MARGIN + 2 + bw_cap_est) {
+    bw_diag[5]++;      /* too little time for the capture and a unit: the stock wait */
+    return 0;
+  }
+  BW_WAITS++;
+  BWF.f0 = *(volatile uint32_t*)(dscm_dtcm_base() + 0x3FF8) & 1;
+  BWF.v0 = REG_VCOUNT;
+  BWF.left0 = bw_left();
+  if (dscm_irq.alias_cached == 0xFF)
+    alias_check();
+  BWF.c0 = vblank_count(WP);
+  cpsr = capture(WP);
+  wake_irq_restore(cpsr);
+  idle_frames(WP, 0);
+  BWF.gap_v = REG_VCOUNT;
+  BWF.site = 1;
+  /* the yield points' fast test: lines since v0 against this, and the VBlank count */
+  BWF.budget = BWF.left0 > BW_YIELD_MARGIN ? BWF.left0 - BW_YIELD_MARGIN : 0;
+  BWF.frames0 = g_frames;
+  BWF.last_el = lines_between(BWF.v0, BWF.gap_v);
+  {
+    uint32_t c = lines_between(BWF.v0, BWF.gap_v);
+    if (c > bw_diag[3])
+      bw_diag[3] = c;
+    if (c + 1 > bw_cap_est)
+      bw_cap_est = c + 1;
+  }
+  bw_diag[4]++;
+  BWF.in = 1;
+  return 1;
+}
+static __attribute__((section(".text_cold"), noinline, target("arm"))) uint32_t bwf_left(void)
+{
+  wake_page_t* const wp = wake_page_arm();
+  uint32_t el = lines_between(BWF.v0, REG_VCOUNT);
+  if (vblank_count(WP) != BWF.c0 || (REG_IF & 1))
+    return 0;
+  return el < BWF.left0 ? BWF.left0 - el : 0;
+}
+static uint32_t bw_late;   /* bwf_end: the VBlank this wait was for came while the gate worked */
+static __attribute__((section(".text_cold"), noinline, target("arm"))) void bwf_end(void)
+{
+  wake_page_t* const wp = wake_page_arm();
+  uint32_t lines = lines_since(BWF.v0), f1;
+  BWF.in = 0;
+  BW_LINES += lines;
+  idle_frames(WP, lines);
+  f1 = !BWF.f0 && (*(volatile uint32_t*)(dscm_dtcm_base() + 0x3FF8) & 1);
+  if (f1)
+    BW_FLAG_SET++;
+  if (vblank_count(WP) != BWF.c0 || lines >= BWF.left0 || f1)
+    BW_OVERRUNS++;
+  /* only the game's own VBlank handler having run (its flag set during this
+   * wait) proves the VBlank came: VCOUNT past 192 or the ARM7's count may not */
+  bw_late = f1;
+  {
+    volatile uint32_t* canary = (volatile uint32_t*)DSCM_DATA_ADDR(DSCM_HEAP_END);
+    if (!(BW_STACK_BAD & 2)) {
+      canary[0] = 0xB1057ACCu; canary[1] = 0xB1057ACCu; BW_STACK_BAD = 2;
+    }
+    else if (canary[0] != 0xB1057ACCu || canary[1] != 0xB1057ACCu)
+      BW_STACK_BAD |= 1;
+  }
+}
+/* A yield point: give the wait back if its time is nearly up (or a VBlank
+ * came), and carry on in a later wait. Anywhere on the fiber; elsewhere
+ * (the idle path, init, flush) it returns at once. */
+__attribute__((section(".text_cold"), noinline, target("arm"))) void dscm_yield_point(void)
+{
+  wake_page_t* wp;
+  int32_t el;
+  uint32_t gap;
+  if (!BWF.in)
+    return;
+  /* fast path: one I/O read, a subtract and two compares */
+  el = (int32_t)REG_VCOUNT - (int32_t)BWF.v0;
+  if (el < 0)
+    el += LINES_PER_FRAME;
+  gap = (uint32_t)el - BWF.last_el;
+  BWF.last_el = (uint32_t)el;
+  wp = wake_page_arm();
+  if (gap >= BW_YIELD_MARGIN && gap < LINES_PER_FRAME) {
+    if (gap > BW_GAP_MAX) {
+      BW_GAP_MAX = gap;
+      bw_diag[0] = gap;
+      bw_diag[1] = BWF.site;
+      bw_diag[2] = (uint32_t)__builtin_return_address(0);
+    }
+    bw_gap_note(BWF.site, (uint32_t)__builtin_return_address(0), gap);
+  }
+  BWF.site = (uint32_t)__builtin_return_address(0);
+  if ((uint32_t)el < BWF.budget)
+    return;
+  bwf_end();
+  BW_MIDYIELDS++;
+  bw_midwork = 1;
+  for (;;) {
+    bw_yield(bw_late);
+    bw_late = 0;
+    if (bwf_begin()) {
+      bw_midwork = 0;
+      return;
+    }
+  }
+}
+#ifdef TLS_YIELD
+/* Yield points in the TLS handshake's big-number work (a full handshake's
+ * key exchange steps run 27-37 frames each, research/optimize/biowait.md):
+ * calls between mbedtls files go through start.s's trampolines (--wrap,
+ * Makefile TLS_YIELD_WRAPS); inside bignum_core.o, each Montgomery multiply
+ * (RSA) and each step of the constant-time inversion (ECC, ECDSA) reach
+ * these (the Makefile weakens their symbols, the code stays as dsc_*_real). */
+unsigned dsc_lt_ct_real(const uint32_t* A, const uint32_t* B, size_t limbs);
+/* once per step of the constant-time modular inversion (ECC normalization, ECDSA) */
+unsigned mbedtls_mpi_core_lt_ct(const uint32_t* A, const uint32_t* B, size_t limbs)
+{
+  dscm_yield_point();
+  return dsc_lt_ct_real(A, B, limbs);
+}
+void dsc_montmul_real(uint32_t* X, const uint32_t* A, const uint32_t* B, size_t B_limbs, const uint32_t* N,
+                      size_t AN_limbs, uint32_t mm, uint32_t* T);
+void mbedtls_mpi_core_montmul(uint32_t* X, const uint32_t* A, const uint32_t* B, size_t B_limbs, const uint32_t* N,
+                              size_t AN_limbs, uint32_t mm, uint32_t* T)
+{
+  dscm_yield_point();
+  dsc_montmul_real(X, A, B, B_limbs, N, AN_limbs, mm, T);
+}
+#endif
+__attribute__((section(".text_cold"), noinline, noreturn, target("arm"))) void bw_fiber_main(void)
+{
+  wake_page_t* const wp = wake_page_arm();
+  for (;;) {
+    if (bwf_begin()) {
+      if (!wake_swap(&H.busy, 1)) {
+        for (;;) {
+          uint32_t left = bwf_left();
+          if (left < BW_YIELD_MARGIN + 1 || !work_wanted(WP))
+            break;
+          BW_UNITS_ALL++;
+          if (!bw_step(left) && !H.more)
+            break;
+        }
+        H.busy = 0;
+      }
+      if (BWF.in)
+        bwf_end();
+    }
+    bw_yield(bw_late);
+    bw_late = 0;
+  }
+}
+#undef WP
+#define WP WAKE_PAGE
+#endif
 
 static void alias_check(void)
 {

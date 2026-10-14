@@ -16,6 +16,29 @@ Which rcheevos DScheevos builds, and why. Checked 2026-10-12.
 - `RCHEEVOS_VERSION_STRING` still says 12.5.0, so the user agent says `rcheevos/12.5.0` while we run 9 commits past it.
 - Latest release tag: **v12.5.0**. Upstream `develop` is 3 commits past us: `aed817f` (runtime types made internal), `23bcf47` (project files), `116d018` (a test script).
 
+## Lab patch: yield points (branch `dscheevos-yield`, not on perf; owner ruling B, 2026-10-14)
+
+One commit on top of the pin (754965e): **806fdc0 "Yield points: optional RC_CLIENT_YIELD_HOOK called between units of a
+frame's work"**, 3 files (`src/runtime/rc_internal.h`, `src/client/rc_client.c`, `src/runtime/rc_memref.c`), +29/-2.
+- **What:** a build may define `RC_CLIENT_YIELD_HOOK` as the name of a `void f(void)`. rcheevos then calls it before each
+  active achievement and leaderboard, every 16 memrefs, every 32 modified memrefs, before the rich presence, and every 64
+  entries of rc_client's change-driven index build and comparison tests. The hook must not call into rcheevos or change
+  what it reads; it may suspend the caller (a coroutine switch) and resume it later.
+- **Why:** NitroSDK games that wait for VBlank in the BIOS (20% of the library) give DScheevos time only inside that wait,
+  on the game's main thread, and the work must hand the wait back before the VBlank or the game loses a frame. With yield
+  points a frame's evaluation spreads over several waits (research/optimize/biowait.md in the planning notes).
+- **Identical by construction when off:** undefined, every yield point is `((void)0)`. Same object code at Thumb -Os; at
+  ARM -O2 (how the module builds rc_client.c) two loop compares come out with their operands swapped (`cmp r4,r5; bls`
+  vs `cmp r5,r4; bcs`), same size and meaning; the module's default build keeps its hot layout (hotcheck).
+- **Identical when on (difftest):** `tests/difftest/core.sh` with `YIELD=1` adds a variant built with the hook, in which
+  one yield point in 8 (at most once per evaluation turn, as the console's gate captures once per wait) runs the next
+  trace frame's capture and VBlank from inside the hook, in the middle of `rc_client_do_frame` or the index build. Result
+  on every real set with a real RAM dump: see biowait.md (corpus run 2026-10-14).
+- **Upstream:** DSi-specific; to be raised as an issue/discussion (draft to the owner), not a PR.
+- Tried and dropped: an `rc_client_build_change_index()` to build the index at load. Its second caller stops GCC inlining
+  `rc_client_cd_build` into `rc_client_do_frame` (moves the hot layout), and the yield points in the build already
+  spread the first frame's index build over several waits.
+
 ## The 9 commits between v12.5.0 and our pin
 
 | Commit | What | Evaluation semantics | rc_client behaviour | Hashing | API / request format | DS memory map | We rely on it |
