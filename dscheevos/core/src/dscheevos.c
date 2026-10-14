@@ -3597,7 +3597,7 @@ COLD static void push_event(uint8_t ev)
 /* inline: its loop stays inside dsc_idle, a listed hot function (hot.ld) */
 static inline __attribute__((always_inline)) int owner_pass(uint32_t budget, int cpu)
 {
-  int evaluated = 0;
+  int evaluated = 0, applied = 0;
   uint32_t stop;
 
   CHECK_OWNER(cpu);
@@ -3615,6 +3615,7 @@ static inline __attribute__((always_inline)) int owner_pass(uint32_t budget, int
     next = &S.slots[tail % MAX_SLOTS];
     if (next->event) {
       apply_event(next->event);
+      applied++;
       S.items_out++;
       PUBLISH_BARRIER();
       S.slot_tail = tail + 1;
@@ -3699,7 +3700,11 @@ static inline __attribute__((always_inline)) int owner_pass(uint32_t budget, int
   }
 
   release_tables();
-  if (!evaluated && S.active)
+  /* rcheevos' timers when no frame ran them (rc_client_do_frame does). Not
+   * right after a lifecycle change with its frame still to come: an emulator
+   * applies it and runs that frame at once (a ping due then would find no
+   * frame since the last one and be put off) */
+  if (!evaluated && !applied && S.active)
     rc_client_idle(S.client);
   list_update();
   notices_send();
