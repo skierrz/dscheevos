@@ -404,8 +404,6 @@ static struct state_t {
  * or uncached through the DS's 0x0C000000 mirror. Evaluation reads it for
  * every memory read rcheevos makes, so heavy sets want it cached; light sets
  * want it out of the cache (a capture at every idle wake touches it). */
-static struct state_t* S_view CACHED_DATA = &S_storage;
-#define S (*S_view)
 
 /* What the VBlank IRQ reads and writes with capture_at_halt, once something
  * is captured: nothing else of the core. It counts the VBlank and hands the
@@ -420,7 +418,36 @@ static struct {
   volatile uint32_t frames;    /* VBlanks queued, all time */
   volatile uint32_t sealed;    /* the one of those the stage went to */
   volatile uint32_t taken;     /* frames drain() has committed */
-} Q IRQ_DATA;
+} Q_storage IRQ_DATA;
+
+/* The two pointers every wake follows, in one cached line (.data.cached):
+ * the state's view and Q. The module build gives their fixed address
+ * (DSC_VIEWS_ADDR, module.ld asserts it): the code then builds it from an
+ * immediate and an offset, so wake code reads no literal pool for them (a
+ * pool is a cache line of ours that the game evicts and every wake reads
+ * again, evicting one of the game's). */
+struct dsc_views_t {
+  struct state_t* s;
+  __typeof__(Q_storage)* q;
+};
+struct dsc_views_t dsc_views CACHED_DATA = { &S_storage, &Q_storage };
+#ifdef DSC_VIEWS_ADDR
+/* 0x02D80000 (the module's base) in two instructions that are the same in ARM
+ * and Thumb code, no literal; not volatile, so computed once per function. */
+static inline __attribute__((always_inline)) uintptr_t views_base(void)
+{
+  uintptr_t b;
+  __asm__(".syntax unified\n\tmovs %0, #0xB6\n\tlsls %0, %0, #18" : "=l"(b) : : "cc");
+  return b;
+}
+_Static_assert((DSC_VIEWS_ADDR & 0xFFFF0000u) == 0x02D80000u, "views_base()");
+#define VIEWS (*(struct dsc_views_t*)(views_base() + (DSC_VIEWS_ADDR & 0xFFFFu)))
+#else
+#define VIEWS dsc_views
+#endif
+#define S_view (VIEWS.s)
+#define S (*VIEWS.s)
+#define Q (*VIEWS.q)
 
 /* Hand-over (config.handover): who owns the rc_client. Each word has one
  * writer; on the DS both must be read and written past the ARM9's data
@@ -2843,7 +2870,17 @@ static inline HOT void copy_words(word_t* d, const uint8_t* base, const uint32_t
  * or -1 if it stopped for an interrupt (dsc_capture). Nothing of ours is
  * read but the table: the repeat check (snapshot_same) waits for the frame's
  * commit, once a frame instead of at every capture. */
-static WAKE __attribute__((noinline)) int copy_snapshot(const table_t* t, uint8_t* data, const mem_t* m)
+#if defined(__arm__) && defined(__GNUC__) && !defined(__clang__)
+/* Compiled into dsc_capture (one frame and one literal pool for a wake, not
+ * two); dsc_vblank_copy, which runs only until the first capture, calls the
+ * out-of-line copy below. */
+#define COPY_INL static inline __attribute__((always_inline, target("arm"), optimize("O2")))
+#define COPY_OOL static __attribute__((noinline, target("arm"), optimize("O2")))
+#else
+#define COPY_INL static inline
+#define COPY_OOL static
+#endif
+COPY_INL int copy_snapshot_inl(const table_t* t, uint8_t* data, const mem_t* m)
 {
   word_t* d = (word_t*)data;
   uint32_t i, at = 0;
@@ -2926,6 +2963,11 @@ static WAKE __attribute__((noinline)) int copy_snapshot(const table_t* t, uint8_
   }
   (void)at;
   return 0;
+}
+
+COPY_OOL int copy_snapshot(const table_t* t, uint8_t* data, const mem_t* m)
+{
+  return copy_snapshot_inl(t, data, m);
 }
 
 /* The repeat check: snapshot a holds the same watched bytes and chain
@@ -3300,7 +3342,7 @@ WAKE int dsc_capture(void)
   head = S.slot_head;
   S.capture_frame = Q.count;
   S.capturing = S.platform.interrupt_pending != NULL;
-  same = copy_snapshot(t, slot->data, &m);
+  same = copy_snapshot_inl(t, slot->data, &m);
   chains = same < 0 ? -1 : HAS_CHAINS() ? run_chains(slot->targets, &m, NULL) : 0;
   S.capturing = 0;
   if (chains < 0) {
@@ -3918,7 +3960,7 @@ void dsc_state_view(uint32_t high_byte)
 #endif
 }
 
-WAKE_SMALL void dsc_drain(void)
+WAKE void dsc_drain(void)
 {
   if (S.initialized)
     drain();

@@ -34,6 +34,11 @@ CFLAGS   += -MMD -MP $(EXTRA_CFLAGS)
 DATA_MIRROR ?= 1
 ifeq ($(DATA_MIRROR),1)
 CFLAGS   += -DDSCM_DATA_MIRROR
+# the core's views line (.data.cached) at its fixed address, module.ld asserts it;
+# a CACHED_COLOUR sweep leaves it to the linker
+ifeq ($(CACHED_COLOUR),)
+CFLAGS   += -DDSC_VIEWS_ADDR=0x02D80540u
+endif
 endif
 # mbedTLS's calloc/free set at run time (src/net/https.c: through the cache)
 CFLAGS   += -DMBEDTLS_PLATFORM_MEMORY
@@ -41,7 +46,9 @@ CFLAGS   += -DMBEDTLS_PLATFORM_MEMORY
 # fast_strtoul.c: newlib's strtoul without its per-call divisions
 WRAPS    := malloc free calloc realloc rc_api_process_fetch_game_sets_server_response strtoul
 comma    := ,
-LDFLAGS  := $(if $(CACHED_COLOUR),-Wl$(comma)--defsym$(comma)DSCM_CACHED_COLOUR=$(CACHED_COLOUR)) $(if $(WAKE_COLOUR),-Wl$(comma)--defsym$(comma)DSCM_WAKE_COLOUR=$(WAKE_COLOUR)) $(if $(TEXT_COLOUR),-Wl$(comma)--defsym$(comma)DSCM_TEXT_COLOUR=$(TEXT_COLOUR)) \
+# the idle stack's top, this far below the module region's end (start.s, module.ld)
+STACK_GAP ?= 0x280
+LDFLAGS  := -Wl$(comma)--defsym$(comma)DSCM_STACK_GAP=$(STACK_GAP) $(if $(CACHED_COLOUR),-Wl$(comma)--defsym$(comma)DSCM_CACHED_COLOUR=$(CACHED_COLOUR)) $(if $(WAKE_COLOUR),-Wl$(comma)--defsym$(comma)DSCM_WAKE_COLOUR=$(WAKE_COLOUR)) $(if $(TEXT_COLOUR),-Wl$(comma)--defsym$(comma)DSCM_TEXT_COLOUR=$(TEXT_COLOUR)) \
             $(if $(DATA_COLOUR),-Wl$(comma)--defsym$(comma)DSCM_DATA_COLOUR=$(DATA_COLOUR)) \
             $(ARCH) -nostartfiles -T $(or $(LDSCRIPT),$(if $(filter 1,$(DATA_MIRROR)),module.ld,module-cached.ld)) -Wl,--use-blx -Wl,--gc-sections -Wl,-Map,$(BUILD)/dscheevos9.map \
             $(foreach w,$(WRAPS),-Wl,--wrap=$(w)) $(EXTRA_LDFLAGS)
@@ -65,7 +72,7 @@ OBJ := $(patsubst %.c,$(BUILD)/%.o,$(notdir $(SRC))) $(patsubst $(RCHEEVOS)/src/
   $(patsubst %.c,$(BUILD)/net/%.o,$(notdir $(NET_SRC)))
 
 # the hot-layout check (below) runs for the default build only: no colour, script or flag overrides
-HOTCHECK ?= $(if $(CACHED_COLOUR)$(WAKE_COLOUR)$(TEXT_COLOUR)$(DATA_COLOUR)$(LDSCRIPT)$(EXTRA_CFLAGS)$(EXTRA_LDFLAGS)$(filter-out file,$(origin DSC_FLAGS))$(filter-out 1,$(DATA_MIRROR)),0,1)
+HOTCHECK ?= $(if $(CACHED_COLOUR)$(WAKE_COLOUR)$(TEXT_COLOUR)$(DATA_COLOUR)$(LDSCRIPT)$(EXTRA_CFLAGS)$(EXTRA_LDFLAGS)$(filter-out file,$(origin DSC_FLAGS))$(filter-out 1,$(DATA_MIRROR))$(filter command line,$(origin STACK_GAP)),0,1)
 .PHONY: all clean hotcheck hot-accept
 all: $(BUILD)/dscheevos9.bin $(if $(filter 1,$(HOTCHECK)),hotcheck)
 
@@ -102,7 +109,7 @@ $(BUILD)/net/cacerts.o: $(TLSCONF)/cacerts.c
 	$(CC) $(CFLAGS) -c $< -o $@
 $(BUILD)/start.o: src/start.s
 	@mkdir -p $(BUILD)
-	$(CC) $(ARCH) -c $< -o $@
+	$(CC) $(ARCH) -Wa,--defsym,STACK_GAP=$(STACK_GAP) -c $< -o $@
 
 $(BUILD)/dscheevos9.elf: $(OBJ) module.ld module-cached.ld hot.ld warm.ld hot-rodata.ld
 	$(CC) $(LDFLAGS) $(OBJ) -lc -lm -lgcc -o $@

@@ -36,36 +36,30 @@ dscm_cues:
 	.word 0                     @ 0x48: LED cues for the ARM7 (same cache line)
 	.space 20
 
-@ dscm_irq (struct dscm_irq_t in module.c, which checks these offsets):
-@ frame counting and the wake's guard bytes, read and written by the idle
-@ thread only (nothing of ours runs in the game's interrupts).
-	.equ	IRQ_LAST, 0
-	.equ	IRQ_FRAMES, 4
-	.equ	IRQ_ON, 8
-	.equ	IRQ_DATA_REGION, 9
-	.equ	IRQ_IN_HALT, 10
-	.equ	IRQ_ALIAS_CACHED, 11
-	.equ	IRQ_IDLE_OPEN, 12
-	.equ	IRQ_IDLE_START, 16
-	.equ	IRQ_TIMED, 20
-	.equ	IRQ_LINES_TOTAL, 24
-	.equ	IRQ_LINES_LAST, 28
-	.equ	IRQ_LINES_MAX, 30
-	.equ	IRQ_IDLE_CUT_LINES, 32
-	.equ	IRQ_IDLE_CUT, 36
-	.equ	IRQ_MISSED, 40
-	@ module.c's H (dscm_h): what reset_entry writes when the data view is read-only
+@ The wake page (module.c wake_page_t): dscm_irq (frame counting and the
+@ wake's flags), g_idle, H and the re-entry guard, the module region's last
+@ WAKE_PAGE bytes, read and written through the 0x0C000000 mirror (uncached on
+@ most games: no cache line at all) from a base built from immediates, so a
+@ wake reads no literal pool (a D-cache line of ours, evicting one of the
+@ game's, every wake). The idle stack starts below it, so no cached stack
+@ line ever holds its bytes (module.ld checks __stack_top).
+	.equ	WAKE_PAGE, 160              @ sizeof(wake_page_t)
+	.equ	PAGE_IRQ, 0                 @ offsetof(wake_page_t, irq): dscm_irq_t
+	.equ	PAGE_H, 96                  @ offsetof(wake_page_t, h)
+	.equ	PAGE_GUARD, 128             @ offsetof(wake_page_t, guard)
+	.equ	IRQ_DATA_REGION, 9          @ dscm_irq_t.data_region
+	@ module.c's H: what reset_entry writes when the data view is read-only
 	.equ	H_RESET_PENDING, 14
 	.equ	H_BUSY, 28
-	@ (its own section: module.ld puts it with the uncached data,
-	@ module-cached.ld next to the code)
-	.section .data.wake, "aw"
-	.balign	32
-	.global dscm_irq
-dscm_irq:
-	.space	9
-	.byte	0xFF                @ data_region: not known yet (data_region_scan)
-	.space	54
+	.equ	MIRROR_HI, 0x0C000000
+	.equ	REGION_END, 0x00F80000      @ with MIRROR_HI: 0x0CF80000, the region's end, mirror view
+	.equ	GUARD_BACK, WAKE_PAGE - PAGE_GUARD   @ the guard: this far below the region's end
+	@ from the guard to data_region (negative)
+	.equ	GUARD_TO_REGION, PAGE_IRQ + IRQ_DATA_REGION - PAGE_GUARD
+	.equ	STACK_TOP_HI, 0x02F80000    @ the region's end, main-RAM view
+@ STACK_GAP (Makefile, >= WAKE_PAGE): the idle stack's top is that far below
+@ the region's end; the gap's size sets which D-cache sets the wake's few
+@ stack lines use.
 
 	.section .header, "ax"
 
@@ -111,8 +105,11 @@ halt_entry:
 	@ window and froze). Then this wake is the stock halt: nothing of ours
 	@ runs. CP15 is only read: the data access permissions (c5) of the
 	@ region holding dscm_irq (found once from c6, data_region_scan).
-	ldr	r12, =dscm_irq + IRQ_IN_HALT
-	ldrb	r0, [r12, #IRQ_DATA_REGION - IRQ_IN_HALT]
+	@ r12 = the guard (wake page), from immediates: no literal pool.
+	mov	r12, #MIRROR_HI
+	orr	r12, r12, #REGION_END
+	sub	r12, r12, #GUARD_BACK
+	ldrb	r0, [r12, #GUARD_TO_REGION]
 	cmp	r0, #8
 	adrhs	r3, 1f
 	bhs	data_region_scan            @ r0 = the region, 8 if none (then nothing is writable)
@@ -123,7 +120,7 @@ halt_entry:
 	sub	r1, r1, #1
 	cmp	r1, #3                      @ 1, 2, 3: privileged read/write
 	bhs	2f
-	@ in_halt: a byte in the line every wake uses. Test and set in one step:
+	@ the guard: test and set in one step:
 	@ a thread that preempts us between a read and a write would otherwise
 	@ also take the module stack.
 	mov	r0, #1
@@ -146,24 +143,27 @@ halt_entry:
 	tst	lr, #1
 	bne	4f
 	ldr	r1, [r3]
-	ldr	r2, =0xEAFFFFFD
+	mvn	r2, #0x15000000             @ 0xEAFFFFFF
+	bic	r2, r2, #2                  @ 0xEAFFFFFD: ARM "b .-4" (no literal pool)
 	b	5f
 4:	ldrh	r1, [r3]
-	ldr	r2, =0xE7FC
+	mov	r2, #0xE700
+	orr	r2, r2, #0xFC               @ 0xE7FC: Thumb "b .-4"
 5:	cmp	r12, #2
 	mcreq	p15, 0, r3, c7, c14, 1      @ clean and invalidate the mirror's line
 	cmp	r1, r2
 	moveq	r0, #1
 	mov	r12, sp
-	ldr	sp, =__stack_top
+	mov	sp, #STACK_TOP_HI
+	sub	sp, sp, #STACK_GAP          @ = __stack_top (module.ld)
 	push	{r12, lr}
-	ldr	r1, =module_idle
-	blx	r1
+	bl	module_idle                 @ ARM code (.text.wake)
 	pop	{r12, lr}
 	mov	sp, r12
-	ldr	r1, =dscm_irq
+	mov	r1, #MIRROR_HI
+	orr	r1, r1, #REGION_END
 	mov	r2, #0
-	strb	r2, [r1, #IRQ_IN_HALT]
+	strb	r2, [r1, #-GUARD_BACK]
 	cmp	r0, #0
 	bxne	lr
 2:	mov	r0, #0
@@ -369,8 +369,10 @@ flush_entry:
 	push	{r4, lr}
 	@ the data view must be writable now, as halt_entry checks it; if not, a
 	@ later safe point writes the journal
-	ldr	r12, =dscm_irq + IRQ_IN_HALT
-	ldrb	r0, [r12, #IRQ_DATA_REGION - IRQ_IN_HALT]
+	mov	r12, #MIRROR_HI
+	orr	r12, r12, #REGION_END
+	sub	r12, r12, #GUARD_BACK
+	ldrb	r0, [r12, #GUARD_TO_REGION]
 	cmp	r0, #8
 	adrhs	r3, 1f
 	bhs	data_region_scan
@@ -381,7 +383,6 @@ flush_entry:
 	sub	r1, r1, #1
 	cmp	r1, #3
 	bhs	9f
-	ldr	r12, =dscm_irq + IRQ_IN_HALT
 	mov	r0, #1
 	swpb	r1, r0, [r12]
 	cmp	r1, #0
@@ -393,9 +394,10 @@ flush_entry:
 	blx	r1
 	pop	{r4, r5}
 	mov	sp, r4
-	ldr	r1, =dscm_irq
+	mov	r1, #MIRROR_HI
+	orr	r1, r1, #REGION_END
 	mov	r2, #0
-	strb	r2, [r1, #IRQ_IN_HALT]
+	strb	r2, [r1, #-GUARD_BACK]
 9:	pop	{r4, lr}
 	bx	lr
 
@@ -405,6 +407,21 @@ flush_entry:
 	.type init_entry, %function
 init_entry:
 	push	{r4, lr}
+	mov	r1, #MIRROR_HI               @ the wake page starts zeroed (that RAM was never ours)
+	orr	r1, r1, #REGION_END
+	mov	r2, #0
+	mov	r3, #WAKE_PAGE / 4
+1:	str	r2, [r1, #-4]!
+	tst	r1, #31
+	mcreq	p15, 0, r1, c7, c14, 1      @ each line to RAM, if the MPU caches the mirror now (the game's may not)
+	subs	r3, r3, #1
+	bne	1b
+	mcr	p15, 0, r2, c7, c10, 4      @ drain write buffer
+	mov	r2, #0xFF                   @ data_region: not known yet (data_region_scan)
+	strb	r2, [r1, #PAGE_IRQ + IRQ_DATA_REGION]
+	mcr	p15, 0, r1, c7, c14, 1
+	mov	r2, #0
+	mcr	p15, 0, r2, c7, c10, 4
 	mov	r4, sp
 	ldr	sp, =__stack_top
 	push	{r4, r5}
@@ -417,7 +434,7 @@ init_entry:
 
 @ Reset: called from nds-bootstrap's reset path with IRQs off. The game's
 @ threads are gone, so work that was preempted will never resume: clear
-@ the re-entry guards (in_halt, H.busy) and ask for the achievement reset,
+@ the re-entry guards (the guard, H.busy) and ask for the achievement reset,
 @ which happens in idle time (H.reset_pending). The game's MPU may make the
 @ data view read-only right now (CTRDG, see halt_entry), so the three
 @ writes go to the same RAM through the 0x02000000 view (main RAM, always
@@ -426,8 +443,10 @@ init_entry:
 	.global reset_entry
 	.type reset_entry, %function
 reset_entry:
-	ldr	r0, =dscm_irq
-	ldr	r1, =dscm_h
+	mov	r0, #MIRROR_HI               @ r0: the guard, r1: H (wake page, mirror view)
+	orr	r0, r0, #REGION_END
+	sub	r0, r0, #GUARD_BACK
+	sub	r1, r0, #PAGE_GUARD - PAGE_H
 	mcr	p15, 0, r0, c7, c14, 1      @ clean and drop: a cached data view (SDK5) may hold them dirty
 	mcr	p15, 0, r1, c7, c14, 1
 	mov	r2, #0
@@ -436,7 +455,7 @@ reset_entry:
 	orr	r0, r0, #0x02000000
 	bic	r1, r1, #0x0F000000
 	orr	r1, r1, #0x02000000
-	strb	r2, [r0, #IRQ_IN_HALT]
+	strb	r2, [r0]
 	str	r2, [r1, #H_BUSY]
 	mov	r2, #1
 	strb	r2, [r1, #H_RESET_PENDING]
@@ -447,7 +466,7 @@ reset_entry:
 	bx	lr
 
 @ The protection region holding dscm_irq (the highest enabled one), from
-@ CP15 c6, for halt_entry and flush_entry (r12 = dscm_irq + IRQ_IN_HALT,
+@ CP15 c6, for halt_entry and flush_entry (r12 = the guard, in the wake page,
 @ return address in r3, uses r0-r2). Kept in dscm_irq once it is writable,
 @ so this runs on the first wakes only. Returns r0 = the region, 8 if none.
 	.macro	DATA_REGION n
@@ -490,7 +509,7 @@ data_region_scan:
 	and	r1, r1, #15
 	sub	r1, r1, #1
 	cmp	r1, #3
-	strblo	r0, [r12, #IRQ_DATA_REGION - IRQ_IN_HALT]
+	strblo	r0, [r12, #GUARD_TO_REGION]
 	mov	pc, r3
 	.pool
 	.popsection

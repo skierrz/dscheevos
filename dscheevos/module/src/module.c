@@ -71,7 +71,7 @@ static int g_initialized;
  * thread wakes 20-40 times a frame, and each line we touch there is a line
  * of the game's own evicted from the data cache. Most wakes need only the
  * snapshot and the halt (see module_idle). */
-struct {
+typedef struct wake_h_t {
   uint32_t pass_frame;           /* g_frames at the last full pass */
   uint32_t halts_idle, halts_other;  /* copied to the status once a frame */
   uint16_t requests;             /* requests queued or in flight (http_send .. poll_network) */
@@ -84,9 +84,9 @@ struct {
   uint32_t dtcm;                 /* the game's DTCM base, once known */
   uint32_t capture_cpsr;         /* CPSR with IRQs on, from the caller of capture() */
   volatile uint32_t busy;        /* idle work running (maybe parked): dscm_lock */
-} H __asm__("dscm_h") __attribute__((aligned(32)));   /* start.s (reset_entry) writes two fields */
-_Static_assert(sizeof(H) == 32, "H: one cache line");
-_Static_assert(__builtin_offsetof(__typeof__(H), reset_pending) == 14 && __builtin_offsetof(__typeof__(H), busy) == 28, "H: start.s H_RESET_PENDING, H_BUSY");
+} wake_h_t;
+_Static_assert(sizeof(wake_h_t) == 32, "H: one cache line");
+_Static_assert(offsetof(wake_h_t, reset_pending) == 14 && offsetof(wake_h_t, busy) == 28, "H: start.s H_RESET_PENDING, H_BUSY (reset_entry writes them)");
 #define g_dtcm (H.dtcm)
 
 extern uint32_t dscm_vblank_count_read(void);  /* start.s */
@@ -101,7 +101,7 @@ extern void dscm_dc_drain(void);               /* start.s */
 
 /* Whether the game's protection unit makes addr data-cacheable. Regions
  * 0-7, the highest number wins; outside every region nothing is cached. */
-static int mpu_dcacheable(uint32_t addr)
+__attribute__((section(".text_cold"), noinline)) static int mpu_dcacheable(uint32_t addr)
 {
   uint32_t r[10];
   int i;
@@ -117,6 +117,9 @@ static int mpu_dcacheable(uint32_t addr)
   }
   return 0;
 }
+
+/* Once, at the first idle wake (out of line: the wake reads no pool for it). */
+__attribute__((section(".text_cold"), noinline)) static void alias_check(void);
 
 /* journal_sync for a game whose mirror is cached: write the lines to RAM. */
 static void journal_sync_clean(const void* addr, uint32_t len)
@@ -153,7 +156,7 @@ typedef struct dscm_irq_t {
   volatile uint32_t frames;      /* VBlanks since init */
   uint8_t on;                    /* initialized and active */
   uint8_t data_region;           /* the game's MPU region holding the module's data, 0xFF until known (start.s, data_region_scan) */
-  volatile uint8_t in_halt;      /* halt_entry's idle work is running (start.s) */
+  volatile uint8_t in_halt;      /* unused (was the re-entry guard; start.s GUARD_* now) */
   uint8_t alias_cached;          /* diagnostics: the game's MPU caches the 0x0C000000 mirror (SDK5) */
   volatile uint32_t idle_open;
   volatile uint32_t idle_start;
@@ -167,7 +170,61 @@ typedef struct dscm_irq_t {
   uint32_t frames_missed;
   uint32_t reserved2[5];
 } dscm_irq_t;
-extern dscm_irq_t dscm_irq;
+/* Idle lines per frame, from the idle thread, with IRQs masked: at each
+ * pass's start and end it closes the frames that ended since (VBlanks
+ * counted by the IRQ). Lines a pass added belong to the frame it ran in,
+ * and so does a cut (the IRQ counts it at that frame's end); frames since
+ * then had no pass. "Ran": a pass started or ended in the frame. */
+typedef struct wake_idle_t {
+  uint32_t frame;                /* the frame being added up (dscm_irq.frames then) */
+  uint32_t lines;                /* its lines so far */
+  uint32_t cut_seen;             /* dscm_irq.idle_cut_lines already counted */
+  uint32_t ran;
+  uint32_t last, max, total, none;
+} wake_idle_t;
+_Static_assert(sizeof(wake_idle_t) == 32, "g_idle: one cache line");
+
+/* The wake page: what every idle wake reads and writes (dscm_irq, g_idle, H)
+ * and start.s's re-entry guard, at a fixed address, the module region's last
+ * 160 bytes, through the uncached 0x0C000000 mirror (the idle stack starts
+ * below it, module.ld). Code reaches it from a base built from immediates
+ * (wake_page()), so a wake reads no literal pool for it: a pool is a cache
+ * line of ours, read again after the game evicted it, evicting one of the
+ * game's, at every wake. (On SDK5 games the mirror is cached: as before, the
+ * lines are then cached ones.) Zeroed by init_entry (start.s). */
+typedef struct wake_page_t {
+  dscm_irq_t irq;                /* 64 */
+  wake_idle_t idle;              /* 32 */
+  wake_h_t h;                    /* 32 */
+  volatile uint32_t guard[8];    /* start.s GUARD_*: the re-entry guard */
+} wake_page_t;
+_Static_assert(sizeof(wake_page_t) == 160 && offsetof(wake_page_t, h) == 96 && offsetof(wake_page_t, guard) == 128, "wake page: start.s WAKE_PAGE, module.ld __stack_top");
+/* 0x0CF80000 (the region's end, mirror view) in four instructions that are
+ * the same in ARM and Thumb code (unified syntax: GCC switches inline asm to
+ * divided and back), no literal; not volatile, so the compiler
+ * computes it once per function. */
+static inline __attribute__((always_inline)) uintptr_t wake_end(void)
+{
+  uintptr_t b;
+  __asm__(".syntax unified\n\tmovs %0, #0xCF\n\tlsls %0, %0, #4\n\tadds %0, %0, #8\n\tlsls %0, %0, #16" : "=l"(b) : : "cc");
+  return b;
+}
+_Static_assert(DSCM_BASE == 0x02D80000u && DSCM_SIZE == 0x00200000u, "wake_end(), wake_page_arm() and vblank_count() build these addresses from immediates");
+#define WAKE_PAGE ((wake_page_t*)(wake_end() - sizeof(wake_page_t)))
+/* Wake code (ARM) builds the base once per call in two instructions and hands
+ * the page to its inline helpers (wp); everything else uses WAKE_PAGE. WP is
+ * what the names below go through: WAKE_PAGE, or wp inside wake code. */
+WAKE_INLINE wake_page_t* wake_page_arm(void)
+{
+  uintptr_t b;
+  __asm__(".syntax unified\n\tmov %0, #0x0C000000\n\torr %0, %0, #0x00F80000" : "=r"(b));
+  return (wake_page_t*)(b - sizeof(wake_page_t));
+}
+#define WP WAKE_PAGE
+#define dscm_irq (WP->irq)
+#define g_idle (WP->idle)
+#define H (WP->h)
+
 /* the offsets start.s uses */
 _Static_assert(sizeof(dscm_irq_t) == 64, "dscm_irq: two cache lines");
 _Static_assert(offsetof(dscm_irq_t, on) == 8 && offsetof(dscm_irq_t, data_region) == 9 && offsetof(dscm_irq_t, in_halt) == 10 && offsetof(dscm_irq_t, alias_cached) == 11 && offsetof(dscm_irq_t, idle_open) == 12, "dscm_irq");
@@ -180,27 +237,28 @@ _Static_assert(offsetof(dscm_irq_t, idle_cut_lines) == 32 && offsetof(dscm_irq_t
  * 0x0C000000 mirror when the game's MPU leaves it uncached (no line filled),
  * else drop the header line and read it through the cache (start.s). */
 extern uint32_t dscm_vblank_count_read(void);
-WAKE_INLINE uint32_t vblank_count(void)
+#undef WP
+#define WP wp
+WAKE_INLINE uint32_t vblank_count(wake_page_t* wp)
 {
   if (dscm_irq.alias_cached == 0)   /* 0xFF until the game's MPU is read */
-    return *(volatile uint32_t*)DSCM_UNCACHED(&((volatile dscm_header_t*)DSCM_BASE)->vblank_count);
+  {
+    /* the header's mirror view, 0x0CD80000, from immediates (ARM code only:
+     * vblank_count is wake code) */
+    uintptr_t h;
+    __asm__(".syntax unified\n\tmov %0, #0x0C000000\n\torr %0, %0, #0x00D80000" : "=r"(h));
+    return *(volatile uint32_t*)(h + offsetof(dscm_header_t, vblank_count));
+  }
   return dscm_vblank_count_read();
 }
+#undef WP
+#define WP WAKE_PAGE
 
-/* Idle lines per frame, from the idle thread, with IRQs masked: at each
- * pass's start and end it closes the frames that ended since (VBlanks
- * counted by the IRQ). Lines a pass added belong to the frame it ran in,
- * and so does a cut (the IRQ counts it at that frame's end); frames since
- * then had no pass. "Ran": a pass started or ended in the frame. */
-static struct {
-  uint32_t frame;                /* the frame being added up (dscm_irq.frames then) */
-  uint32_t lines;                /* its lines so far */
-  uint32_t cut_seen;             /* dscm_irq.idle_cut_lines already counted */
-  uint32_t ran;
-  uint32_t last, max, total, none;
-} g_idle __attribute__((aligned(32)));   /* one line, touched every wake */
 
-WAKE_INLINE void idle_frames(uint32_t lines)
+
+#undef WP
+#define WP wp
+WAKE_INLINE void idle_frames(wake_page_t* wp, uint32_t lines)
 {
   uint32_t passed = dscm_irq.frames - g_idle.frame;
   if (passed) {
@@ -219,6 +277,8 @@ WAKE_INLINE void idle_frames(uint32_t lines)
   g_idle.lines += lines;
   g_idle.ran = 1;
 }
+#undef WP
+#define WP WAKE_PAGE
 
 void module_vblank_copy(void);
 
@@ -227,9 +287,11 @@ void module_vblank_copy(void);
  * frames the game never halted in (repeats). Called with IRQs masked, right
  * before anything that would replace or read that snapshot, so no capture
  * can come between a VBlank and its queueing. */
-WAKE_INLINE void vblank_poll(void)
+#undef WP
+#define WP wp
+WAKE_INLINE void vblank_poll(wake_page_t* wp)
 {
-  uint32_t c = vblank_count(), n = c - dscm_irq.last_vblank;
+  uint32_t c = vblank_count(WP), n = c - dscm_irq.last_vblank;
   if (!n)
     return;
   dscm_irq.last_vblank = c;
@@ -246,6 +308,8 @@ WAKE_INLINE void vblank_poll(void)
       module_vblank_copy();          /* nothing captured yet (session start, reset) */
   } while (--n);
 }
+#undef WP
+#define WP WAKE_PAGE
 
 /* used by the stubs in syscalls.c */
 uint32_t dscm_unix_time(void) { return g_boot.unix_time + g_frames / 60; }
@@ -275,11 +339,18 @@ static uint32_t read_memory(uint32_t address, uint8_t* buffer, uint32_t num_byte
 
 /* The same regions as read_memory, for the core's direct snapshot copy
  * (dsc_capture, or a copy in the VBlank IRQ), after g_dtcm is refreshed. */
-static void memory_map(const uint8_t** main_ram, const uint8_t** dtcm)
+/* Wake code: every capture calls it (it sat in the hot region, a code line
+ * away from the rest of the wake). */
+#undef WP
+#define WP wp
+WAKE_CODE static void memory_map(const uint8_t** main_ram, const uint8_t** dtcm)
 {
+  wake_page_t* const wp = wake_page_arm();
   *main_ram = (const uint8_t*)0x02000000u;
   *dtcm = g_dtcm ? (const uint8_t*)g_dtcm : NULL;
 }
+#undef WP
+#define WP WAKE_PAGE
 
 extern uint32_t dscm_irq_off(void);
 extern void dscm_irq_restore(uint32_t cpsr);
@@ -293,10 +364,13 @@ extern void dscm_wfi(void);
 #define REG_IE (*(volatile uint32_t*)0x04000210)
 #define REG_IF (*(volatile uint32_t*)0x04000214)
 #define g_capture_cpsr (H.capture_cpsr)
+#undef WP
+#define WP wp
 WAKE_CODE static int interrupt_pending(void)
 {
+  wake_page_t* const wp = wake_page_arm();
   uint32_t before;
-  if (vblank_count() != dscm_irq.last_vblank)
+  if (vblank_count(WP) != dscm_irq.last_vblank)
     return 1;          /* a VBlank: the copy would be of two frames (vblank_poll queues it next) */
   if (!(REG_IE & REG_IF))
     return 0;
@@ -304,31 +378,41 @@ WAKE_CODE static int interrupt_pending(void)
   wake_irq_restore(g_capture_cpsr);
   wake_irq_off();
   /* a VBlank: the copy would be of two frames (vblank_poll queues it next) */
-  return lines_between(before, REG_VCOUNT) >= 2 || vblank_count() != dscm_irq.last_vblank;
+  return lines_between(before, REG_VCOUNT) >= 2 || vblank_count(WP) != dscm_irq.last_vblank;
 }
+#undef WP
+#define WP WAKE_PAGE
 
 /* A snapshot when the game halts. Returns with IRQs still masked, and the
  * CPSR to put back: the caller may halt first. */
 /* The game sets its DTCM up before its first frame; the module starts before that. */
-WAKE_INLINE void refresh_dtcm(void)
+#undef WP
+#define WP wp
+WAKE_INLINE void refresh_dtcm(wake_page_t* wp)
 {
   if (!H.dtcm_fixed)          /* the session gave no DTCM base: read the game's */
     g_dtcm = dscm_dtcm_base();
 }
+#undef WP
+#define WP WAKE_PAGE
 
-WAKE_INLINE uint32_t capture(void)
+#undef WP
+#define WP wp
+WAKE_INLINE uint32_t capture(wake_page_t* wp)
 {
-  refresh_dtcm();
+  refresh_dtcm(WP);
   /* VBlanks so far, and their commits, with IRQs on: after a long stretch
    * without idle time (a load) that is many frames. The masked poll below
    * then finds at most the VBlank that came meanwhile. */
-  vblank_poll();
+  vblank_poll(WP);
   dsc_drain();
   g_capture_cpsr = wake_irq_off();
-  vblank_poll();
+  vblank_poll(WP);
   dsc_capture();
   return g_capture_cpsr;
 }
+#undef WP
+#define WP WAKE_PAGE
 
 /* g_frames * 1000 / 60, the same value mod 2^32 as the 64-bit product, in
  * 32-bit arithmetic: a 64-bit division costs ~340 instructions in libgcc,
@@ -680,12 +764,13 @@ int module_init(const dscm_boot_t* boot)
 /* A VBlank with nothing captured yet: copy now (vblank_poll, idle time). */
 void module_vblank_copy(void)
 {
-  refresh_dtcm();
+  refresh_dtcm(WP);
   dsc_vblank_copy();
 }
 
 /* Frames queued and not evaluated yet (dropped ones were never queued). */
-static uint32_t backlog(void)
+/* Out of line: its dsc_stats_t would be in module_idle's frame, on every wake. */
+static __attribute__((noinline)) uint32_t backlog(void)
 {
   dsc_stats_t s;
   dsc_get_stats(&s);
@@ -754,10 +839,14 @@ __attribute__((section(".text_cold"), noinline)) void module_flush(void)
 
 /* Work only once a frame or when something is waiting (see module_idle):
  * all of it read from H, one cache line. */
-WAKE_INLINE int work_wanted(void)
+#undef WP
+#define WP wp
+WAKE_INLINE int work_wanted(wake_page_t* wp)
 {
   return g_frames != H.pass_frame || H.more || H.requests || H.net_busy || H.reset_pending || H.progress_stale;
 }
+#undef WP
+#define WP WAKE_PAGE
 
 /* One full pass of idle work, the lock held (H.busy). Evaluation, answers,
  * the network, notices; no snapshot, no halt. It may be parked at any
@@ -769,7 +858,7 @@ static int idle_step_locked(void)
   uint32_t start, end, used;
   int new_frame, evaluated;
 
-  if (!work_wanted())
+  if (!work_wanted(WP))
     return 0;
   new_frame = g_frames != H.pass_frame;
   H.pass_frame = g_frames;
@@ -838,8 +927,11 @@ int dscm_idle_step(void)
  * that pass; idle_cut counts such passes.
  * Returns nonzero when it halted (the caller returns to the game's loop),
  * 0 for the stock halt. */
+#undef WP
+#define WP wp
 WAKE_CODE int module_idle(int idle_loop)
 {
+  wake_page_t* const wp = wake_page_arm();
   uint32_t start;
 
   start = REG_VCOUNT;
@@ -860,9 +952,9 @@ WAKE_CODE int module_idle(int idle_loop)
   /* the game's MPU is set up once it idles: is the 0x0C000000 mirror
    * cached (SDK5)? vblank_count() reads past the cache either way */
   if (dscm_irq.alias_cached == 0xFF)
-    dscm_irq.alias_cached = (uint8_t)mpu_dcacheable((uint32_t)DSCM_UNCACHED(&dscm_g_journal));
-  vblank_poll();
-  idle_frames(0);
+    alias_check();
+  vblank_poll(WP);
+  idle_frames(WP, 0);
   dscm_irq.idle_start = start;
   dscm_irq.idle_open = 1;
 
@@ -875,12 +967,12 @@ WAKE_CODE int module_idle(int idle_loop)
    * pass would do on such a wake is skipped: dsc_idle() would find nothing
    * (dsc_work_pending), and the network gets a pass only when busy or once
    * a frame. */
-  if (work_wanted()) {
+  if (work_wanted(WP)) {
     /* Evaluation may take the rest of the frame: copy the memory the game
      * halted with first, so the next VBlank has it even if the copy before
      * the halt below comes too late. */
     if (backlog())
-      wake_irq_restore(capture());
+      wake_irq_restore(capture(WP));
     idle_step_locked();
   }
   /* Last, the snapshot and the halt, with IRQs masked from one to the
@@ -894,15 +986,22 @@ WAKE_CODE int module_idle(int idle_loop)
    * pass. In melonDS, an idle loop that never halted stalled Kirby Super
    * Star Ultra's streaming for a minute (tests/perf/AB.md). */
   {
-    uint32_t cpsr = capture();
+    uint32_t cpsr = capture(WP);
     start = dscm_irq.idle_start;
     /* else a VBlank came meanwhile and counted the pass */
-    idle_frames(wake_swap(&dscm_irq.idle_open, 0) ? lines_since(start) : 0);
+    idle_frames(WP, wake_swap(&dscm_irq.idle_open, 0) ? lines_since(start) : 0);
     H.busy = 0;       /* IRQs masked: nothing runs before the halt */
     wake_wfi();
     wake_irq_restore(cpsr);
     return 1;   /* halted here */
   }
+}
+#undef WP
+#define WP WAKE_PAGE
+
+static void alias_check(void)
+{
+  dscm_irq.alias_cached = (uint8_t)mpu_dcacheable((uint32_t)DSCM_UNCACHED(&dscm_g_journal));
 }
 
 void module_shutdown(void)

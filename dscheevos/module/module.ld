@@ -20,12 +20,16 @@ MEMORY {
  *   WAKE:   the wake path (.text.wake, .text.wake.core);
  *   TEXT:   the hot and warm code (hot.ld, warm.ld);
  *   DATA:   constants (hot ones first), data and bss.
- * Kirby is flat (+/-0.3k) over most pointer colours and over text 0x000-0x600
- * with wake 0x100; the wake colour is the sensitive one (17.9k-43k). */
+ * Kirby is flat (+/-0.3k) over most pointer colours and over text 0x000-0x600;
+ * the wake colour is the sensitive one. After the wake path lost its literal
+ * pools (research/optimize/shrink.md) it was swept again with STACK_GAP 0x280
+ * (Makefile): Kirby +17.3k-17.5k at 0x4c0 and 0x540, 23k-44k at most other
+ * points of a 0x40 grid (0x4e0, 0x500, 0x520, 0x560 included); 0x540 is the
+ * better of the two for Pokemon Black. Re-sweep after any wake-path change. */
 DSCM_TEXT_COLOUR = DEFINED(DSCM_TEXT_COLOUR) ? DSCM_TEXT_COLOUR : 0x500;
 DSCM_DATA_COLOUR = DEFINED(DSCM_DATA_COLOUR) ? DSCM_DATA_COLOUR : 0;
 DSCM_CACHED_COLOUR = DEFINED(DSCM_CACHED_COLOUR) ? DSCM_CACHED_COLOUR : 0x140;
-DSCM_WAKE_COLOUR = DEFINED(DSCM_WAKE_COLOUR) ? DSCM_WAKE_COLOUR : 0x100;
+DSCM_WAKE_COLOUR = DEFINED(DSCM_WAKE_COLOUR) ? DSCM_WAKE_COLOUR : 0x540;
 /* the hot region's size limit (hot.ld today: 0x9d88) */
 DSCM_HOT_BUDGET = DEFINED(DSCM_HOT_BUDGET) ? DSCM_HOT_BUDGET : 0xB000;
 
@@ -49,7 +53,7 @@ SECTIONS {
   .text   : {
     *(.text.irq) *(.text.entries)
     . = ALIGN(0x400) + DSCM_CACHED_COLOUR - (((ABSOLUTE(.) & 0x3FF) != 0 && (ABSOLUTE(.) & 0x3FF) <= DSCM_CACHED_COLOUR) ? 0x400 : 0);
-    *(.data.cached)
+    KEEP(*(.data.cached))   /* the core reads it by its fixed address (DSC_VIEWS_ADDR), not its symbol */
     . = ALIGN(0x800) + DSCM_WAKE_COLOUR - (((ABSOLUTE(.) & 0x7FF) != 0 && (ABSOLUTE(.) & 0x7FF) <= DSCM_WAKE_COLOUR) ? 0x800 : 0);
     __wake_start = .;
     *(.text.wake) *(.text.wake.core)
@@ -62,6 +66,8 @@ SECTIONS {
     *(.text .text.* .gnu.linkonce.t.*) *(.glue_7) *(.glue_7t) *(.vfp11_veneer) *(.v4_bx)
     *(.text_cold)   /* load-time code added later: last, so it moves nothing above (DSCM_COLD) */
   } > image
+  /* dscheevos.c builds the views line's address from immediates (Makefile DSC_VIEWS_ADDR) */
+  ASSERT(DSCM_CACHED_COLOUR != 0x140 || dsc_views == 0x02D80540, "module.ld: the core's views line (.data.cached) moved: update DSC_VIEWS_ADDR in the Makefile")
   ASSERT(__hot_end - __hot_start <= DSCM_HOT_BUDGET, "module.ld: the hot code is over its budget (DSCM_HOT_BUDGET): trim it or raise the budget and re-measure the game cost")
   .ARM.exidx : { *(.ARM.exidx* .gnu.linkonce.armexidx.*) } > image
   .init_array : { KEEP(*(.init_array*)) } > image
@@ -93,7 +99,10 @@ SECTIONS {
   dscm_g_journal_phys = (dscm_g_journal & 0x00FFFFFF) | 0x02000000;
   /* the idle and init stack stays cached: rcheevos pushes and pops a lot
    * (through the mirror, Kirby's evaluation took 80% longer) */
-  __stack_top = 0x02D80000 + 0x00200000;
+  /* below the wake page (module.c wake_page_t, start.s WAKE_PAGE: the region's last 160 bytes),
+   * DSCM_STACK_GAP below the region's end (Makefile STACK_GAP; start.s gets the same value) */
+  __stack_top = 0x02D80000 + 0x00200000 - DSCM_STACK_GAP;
+  ASSERT(DSCM_STACK_GAP >= 160 && DSCM_STACK_GAP <= 0x1000, "module.ld: STACK_GAP must leave the wake page (160 bytes) above the stack")
   __irq_stack_top = __stack_top - 0x00002000;
   /DISCARD/ : { *(.comment) *(.note*) }
 }

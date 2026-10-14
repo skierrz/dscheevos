@@ -66,7 +66,10 @@ SECTIONS {
   /* the journal's physical address, for the ARM7 (the header's other data
    * pointers are the module's own view, for the ARM9's in-game menu) */
   dscm_g_journal_phys = (dscm_g_journal & 0x00FFFFFF) | 0x02000000;
-  __stack_top = 0x02D80000 + 0x00200000;
+  /* below the wake page (module.c wake_page_t, start.s WAKE_PAGE: the region's last 160 bytes),
+   * DSCM_STACK_GAP below the region's end (Makefile STACK_GAP; start.s gets the same value) */
+  __stack_top = 0x02D80000 + 0x00200000 - DSCM_STACK_GAP;
+  ASSERT(DSCM_STACK_GAP >= 160 && DSCM_STACK_GAP <= 0x1000, "module.ld: STACK_GAP must leave the wake page (160 bytes) above the stack")
   __irq_stack_top = __stack_top - 0x00002000;
   /DISCARD/ : { *(.comment) *(.note*) }
 }
