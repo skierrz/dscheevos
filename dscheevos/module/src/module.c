@@ -1089,18 +1089,19 @@ static __attribute__((section(".text_cold"), noinline)) int bw_step(uint32_t lef
 }
 #undef WP
 #define WP wp
-__attribute__((section(".text_cold"), noinline, target("arm"))) void module_wait(void)
+__attribute__((section(".text_cold"), noinline, target("arm"))) int module_wait(void)
 {
+  int over = 0;
   wake_page_t* const wp = wake_page_arm();
   uint32_t v0, c0, left, cpsr;
   if (!dscm_irq.on || BW_STACK_BAD)
-    return;
+    return 0;
   if (REG_IE & REG_IF & 1)
-    return;            /* a VBlank is already requested: the stock wait returns at once */
+    return 0;          /* a VBlank is already requested: the stock wait returns at once */
   if (bw_left() < BW_MARGIN + 2)
-    return;
+    return 0;
   if (wake_swap(&H.busy, 1))
-    return;            /* idle work parked in the idle thread: stock */
+    return 0;          /* idle work parked in the idle thread: stock */
   BW_WAITS++;
   v0 = REG_VCOUNT;
   if (dscm_irq.alias_cached == 0xFF)
@@ -1166,8 +1167,11 @@ __attribute__((section(".text_cold"), noinline, target("arm"))) void module_wait
     BW_LINES += lines;
     idle_frames(WP, lines);
   }
-  if (vblank_count(WP) != c0 && !(BW_UNITS == 1 && BW_FIRST_OVER))
-    BW_OVERRUNS++;
+  if (vblank_count(WP) != c0) {
+    over = 1;
+    if (!(BW_UNITS == 1 && BW_FIRST_OVER))
+      BW_OVERRUNS++;
+  }
   /* the gate's 4 KB stack: a canary at its bottom (DSCM_HEAP_END), set on the
    * first entry; overwritten = the stack overflowed: stop using the gate */
   {
@@ -1179,6 +1183,7 @@ __attribute__((section(".text_cold"), noinline, target("arm"))) void module_wait
       BW_STACK_BAD = 1;
   }
   H.busy = 0;
+  return over;
 }
 #undef WP
 #define WP WAKE_PAGE

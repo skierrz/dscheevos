@@ -109,7 +109,7 @@ $(BUILD)/net/cacerts.o: $(TLSCONF)/cacerts.c
 	$(CC) $(CFLAGS) -c $< -o $@
 $(BUILD)/start.o: src/start.s
 	@mkdir -p $(BUILD)
-	$(CC) $(ARCH) -Wa,--defsym,STACK_GAP=$(STACK_GAP) -c $< -o $@
+	$(CC) $(ARCH) -Wa,--defsym,STACK_GAP=$(STACK_GAP) $(EXTRA_ASFLAGS) -c $< -o $@
 
 $(BUILD)/dscheevos9.elf: $(OBJ) module.ld module-cached.ld hot.ld warm.ld hot-rodata.ld
 	$(CC) $(LDFLAGS) $(OBJ) -lc -lm -lgcc -o $@

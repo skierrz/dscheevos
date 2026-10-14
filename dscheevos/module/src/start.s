@@ -459,6 +459,17 @@ bw_entry:
 	orr	r1, r1, #REGION_END
 	mov	r2, #0
 	strb	r2, [r1, #-GUARD_BACK + 4]
+	.ifdef BW_RECOVER
+	@ LAB, NEEDS AN OWNER RULING: a VBlank came while the gate worked; the
+	@ stock wrapper would discard it and wait a whole frame more. Instead the
+	@ BIOS's IntrWait without the discard (r0 = 0, r1 = VBlank): it returns
+	@ at once (the game's handler already set the flag) and clears the flag
+	@ and sets IME as the stock wait would have at that VBlank, late by the
+	@ overrun.
+	cmp	r0, #0
+	adrne	r2, bw_recover + 1
+	bxne	r2
+	.endif
 	b	bw_stock
 bw_blocked:                         @ the gate's guard is held (another thread is in the gate): counted, dscm_irq.reserved2[1]
 	ldr	r0, [r12, #-80]
@@ -473,6 +484,15 @@ bw_wrapper:                         @ the game's wrapper, unchanged
 	movs	r2, #0
 	svc	5
 	bx	lr
+	.ifdef BW_RECOVER
+	.type bw_recover, %function
+bw_recover:
+	movs	r0, #0
+	movs	r1, #1
+	movs	r2, #0
+	svc	4
+	bx	lr
+	.endif
 	.arm
 	.align 2
 	.pool
