@@ -197,6 +197,15 @@ void dsc_get_stats(dsc_stats_t* stats);
  * (rcheevos' timers) always does. */
 int dsc_work_pending(void);
 
+/* Commit the VBlanks queued so far (dsc_vblank_queue) into the frame ring,
+ * as dsc_capture and dsc_idle do first. Lets the platform do that work with
+ * interrupts enabled before a capture that runs with them masked. */
+void dsc_drain(void);
+
+/* DS: before dsc_init, which view of RAM the core's own state is used
+ * through: 0x02000000 (cached) or 0x0C000000 (the mirror). No-op elsewhere. */
+void dsc_state_view(uint32_t high_byte);
+
 /* The game was reset: drop queued frames and reset achievement state, as
  * an emulator does on reset. Call from idle context, not from an IRQ. */
 void dsc_reset(void);

@@ -36,7 +36,7 @@ static void vblank_irq(void)
 	frame++;
 	/* as the ARM7 VBlank hook does: straight to RAM; the module reads it past the cache */
 	((volatile dscm_header_t*)DSCM_UNCACHED(hdr))->vblank_count++;
-	((void (*)(void))hdr->vblank)();
+	/* no call: the module reads the count when the game idles */
 }
 
 static u32 ra(volatile const void* p) { return (u32)p - 0x02000000; }

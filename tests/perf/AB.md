@@ -162,6 +162,21 @@ against the 1% target rather than the ratchet; Kirby repeats within ~0.2k. Lag A
 intervals, `emu-lock -x`): Kirby 884 off / 877 on, Pokemon Platinum 38 / 38. Platinum's game cost
 can't run until its set fits the session area (311 KB reply, 256 KB area: WORKLIST blocker).
 
+### Data through the mirror (opt-gamecost, Oct 2026)
+
+Runner changes first (they move earlier numbers slightly): the 0x0C000000 mirror has main-RAM timing
+(melonDS charged it as unmapped, 1 cycle); the module's range is its whole 2 MB region; new columns
+`masked, masked_pend, masked_pend_max` (module cycles with CPSR.I set, the part with a game IRQ waiting,
+the longest such wait), printed by `gamecost.py` with a CPI-normalized cost ("at equal work": MKDS's
+game does up to 1.8% more or less work between runs, +-7k cycles of noise in the raw delta).
+
+Nothing of DScheevos runs in the game's interrupts any more (no IPC sync 0xA; the idle thread polls the
+ARM7's VBlank count). The module's data goes through the uncached 0x0C000000 mirror (statics always; heap,
+arena and the core's state for sets whose reply is <= 64 KB). Kirby (1500 intervals): +55.4k -> +20.9k
+(4.95% -> 1.86% of a frame; shadow D 47.2k -> 14.6k, I 11.7k -> 13.6k, +-5k by layout); MKDS keeps its heap
+cached (shadow ~12-13k either way); Pokemon Black (8000-9500) keeps it cached too. Details, dropped ideas and
+the floor: research/optimize/opt-gamecost.md in the planning folder.
+
 ### Proposed gate
 
 1. Lag intervals equal off vs on (the existing A/B rule).

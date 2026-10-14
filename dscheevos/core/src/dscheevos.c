@@ -65,10 +65,20 @@
  * own VBlank code and data, so the IRQ touches few cache lines. */
 #define IRQ_TEXT __attribute__((target("arm"), optimize("O2"), section(".text.irq")))
 #define IRQ_DATA __attribute__((aligned(32), section(".data.irq")))
+/* What every idle wake runs (the snapshot copy and its bookkeeping): one
+ * section, which the module's linker script keeps contiguous and in a fixed
+ * place, so a wake fetches few code lines and edits elsewhere don't move them. */
+#define WAKE __attribute__((target("arm"), optimize("O2"), section(".text.wake.core")))
+#define WAKE_SMALL __attribute__((section(".text.wake.core")))
+/* A pointer every function reads: kept with the code, in cached memory. */
+#define CACHED_DATA __attribute__((section(".data.cached")))
 #else
 #define HOT
 #define IRQ_TEXT
 #define IRQ_DATA
+#define WAKE
+#define WAKE_SMALL
+#define CACHED_DATA
 #endif
 
 /* Readers (in-game menu, ARM7) may look at any time: a count or head is
@@ -208,7 +218,7 @@ typedef struct http_pending_t {
   int32_t journal_score;      /* leaderboard entries only */
 } http_pending_t;
 
-static struct {
+static struct state_t {
   int initialized;
   dsc_platform_t platform;
   dsc_config_t config;
@@ -281,7 +291,13 @@ static struct {
   uint8_t* shadow[MAX_SLOTS];  /* per slot: the snapshot as the old code took it */
   uint32_t shadow_size[MAX_SLOTS];
 #endif
-} S;
+} S_storage;
+/* The state through the view the platform picked (dsc_state_view): cached,
+ * or uncached through the DS's 0x0C000000 mirror. Evaluation reads it for
+ * every memory read rcheevos makes, so heavy sets want it cached; light sets
+ * want it out of the cache (a capture at every idle wake touches it). */
+static struct state_t* S_view CACHED_DATA = &S_storage;
+#define S (*S_view)
 
 /* What the VBlank IRQ reads and writes with capture_at_halt, once something
  * is captured: nothing else of the core. It counts the VBlank and hands the
@@ -390,6 +406,11 @@ typedef struct word_info_t {
  * Then where each of the set's direct reads (S.seq) lands (seq_of).
  * Returns 0, or -1 if out of memory (the caller frees what it allocated). */
 static uint16_t seq_of(const table_t* t, uint32_t address, uint32_t n);
+
+/* dsc_capture copies with interrupts masked, polling every POLL_WORDS words
+ * or chain steps (stop_now) */
+#define POLL_WORDS 8
+
 static int build_program(table_t* t)
 {
   word_info_t* w;
@@ -746,7 +767,7 @@ typedef struct mem_t {
 } mem_t;
 
 /* Returns which regions are mapped (bits 0, 1) and whether there is a map (bit 2). */
-static HOT uint32_t mem_open(mem_t* m)
+static WAKE uint32_t mem_open(mem_t* m)
 {
   m->base[0] = m->base[1] = NULL;
   m->direct = S.platform.memory_map != NULL;
@@ -804,7 +825,6 @@ static inline HOT uint32_t peek(const mem_t* m, uint32_t address, uint32_t n, ui
  * steps the platform lets any waiting interrupt run. It stops if the
  * platform says game code may have run, or a VBlank came (the copy would be
  * of two frames). */
-#define POLL_WORDS 16
 static inline HOT int stop_now(void)
 {
   return S.capturing && (S.platform.interrupt_pending() || Q.count != S.capture_frame);
@@ -961,7 +981,7 @@ static HOT target_t* run_leaves_slow(const leaf_t* l, const uint32_t* count, tar
  * Every target slot is written: leaves first, then the other steps'. With
  * prev (the newest queued snapshot's targets), returns 1 if every target
  * is the same as there, else 0; -1 if it stopped for an interrupt. */
-static HOT __attribute__((noinline)) int run_chains(target_t* targets, const mem_t* m, const target_t* prev)
+static WAKE __attribute__((noinline)) int run_chains(target_t* targets, const mem_t* m, const target_t* prev)
 {
   const chains_t* c = &S.chains;
   const uint8_t* ram = m->direct ? m->base[REGION_MAIN] : NULL;
@@ -1117,7 +1137,7 @@ static int list_sync(void)
   return 0;
 }
 
-static void sync_save(void)
+static WAKE_SMALL void sync_save(void)
 {
   uint32_t i;
   for (i = 0; i < S.sync_count; i++)
@@ -1126,7 +1146,7 @@ static void sync_save(void)
 }
 
 /* Undo an uncommitted capture's chain state. */
-static void sync_restore(void)
+static WAKE_SMALL void sync_restore(void)
 {
   uint32_t i;
   if (!S.sync_dirty)
@@ -1140,7 +1160,7 @@ static void sync_restore(void)
  * copy were read again with the same value (rc_update_memref_value). In
  * the middle of a copy (a VBlank while dsc_capture let an IRQ run) the
  * committed values are the saved ones: the copy puts them back. */
-static HOT void sync_unchanged(void)
+static WAKE void sync_unchanged(void)
 {
   uint32_t i;
   if (S.sync_dirty) {
@@ -2447,7 +2467,7 @@ int dsc_is_active(void)
 
 /* Space for n bytes after the newest snapshot, or at the start of the
  * arena, without reaching the oldest queued one. -1 if there is none. */
-static HOT int32_t arena_alloc(uint32_t n)
+static WAKE int32_t arena_alloc(uint32_t n)
 {
   uint32_t head = S.arena_head, tail;
   if (S.slot_head == S.slot_tail && (!S.has_last || !S.last.size))
@@ -2463,7 +2483,7 @@ static HOT int32_t arena_alloc(uint32_t n)
 }
 
 /* Words a..b of two snapshots hold the same watched bytes. */
-static HOT int same_words(const uint8_t* x, const uint8_t* y, const uint32_t* mask, uint32_t a, uint32_t b)
+static WAKE int same_words(const uint8_t* x, const uint8_t* y, const uint32_t* mask, uint32_t a, uint32_t b)
 {
   const word_t* p = (const word_t*)x;
   const word_t* q = (const word_t*)y;
@@ -2489,45 +2509,13 @@ static inline HOT void copy_words(word_t* d, const uint8_t* base, const uint32_t
     *d++ = *(const word_t*)(base + *src++);
 }
 
-/* The same, comparing with the previous snapshot until a watched byte
- * differs (whole words first: the mask is only needed when they differ).
- * Returns 1 if none did. */
-static inline HOT int copy_words_same(word_t* d, const uint8_t* base, const uint32_t* src, uint32_t n,
-                                  const word_t* prev, const uint32_t* mask)
-{
-  for (; n >= 4; n -= 4, src += 4, d += 4, prev += 4, mask += 4) {
-    uint32_t o0 = src[0], o1 = src[1], o2 = src[2], o3 = src[3];
-    uint32_t a = *(const word_t*)(base + o0), b = *(const word_t*)(base + o1);
-    uint32_t c = *(const word_t*)(base + o2), e = *(const word_t*)(base + o3);
-    d[0] = a;
-    d[1] = b;
-    d[2] = c;
-    d[3] = e;
-    if (((a ^ prev[0]) | (b ^ prev[1]) | (c ^ prev[2]) | (e ^ prev[3])) &&
-        (((a ^ prev[0]) & mask[0]) | ((b ^ prev[1]) & mask[1]) | ((c ^ prev[2]) & mask[2]) | ((e ^ prev[3]) & mask[3]))) {
-      copy_words(d + 4, base, src + 4, n - 4);
-      return 0;
-    }
-  }
-  for (; n; n--) {
-    uint32_t v = *(const word_t*)(base + *src++);
-    *d++ = v;
-    if ((v ^ *prev++) & *mask++) {
-      copy_words(d, base, src, n - 1);
-      return 0;
-    }
-  }
-  return 1;
-}
-
-/* Copy the table's words into a snapshot (see build_program). With prev,
- * the newest queued snapshot of the same table, returns 1 if every watched
- * byte is the same as there (the repeat check), else 0; -1 if it stopped
- * for an interrupt (dsc_capture). */
-static HOT __attribute__((noinline)) int copy_snapshot(const table_t* t, uint8_t* data, const mem_t* m, const uint8_t* prev)
+/* Copy the table's words into a snapshot (see build_program). Returns 0,
+ * or -1 if it stopped for an interrupt (dsc_capture). Nothing of ours is
+ * read but the table: the repeat check (snapshot_same) waits for the frame's
+ * commit, once a frame instead of at every capture. */
+static WAKE __attribute__((noinline)) int copy_snapshot(const table_t* t, uint8_t* data, const mem_t* m)
 {
   word_t* d = (word_t*)data;
-  int same = prev != NULL;
   uint32_t i, at = 0;
 
   if (!m->direct) {
@@ -2547,26 +2535,22 @@ static HOT __attribute__((noinline)) int copy_snapshot(const table_t* t, uint8_t
       for (j = 0; j < r->length; j++)
         data[where[j]] = S.scratch[j];
     }
-    return same && same_words(data, prev, t->mask, 0, t->words);
+    return 0;
   }
 
-  /* single words, compared as they are copied */
+  /* single words */
   for (i = 0; i < 2; i++) {
     const uint8_t* base = m->base[i];
     const uint32_t* src = t->single + (i ? t->single_main : 0);
     uint32_t n = i ? t->single_count - t->single_main : t->single_main;
     if (!base) {
       memset((void*)(d + at), 0, n * 4);
-      same = same && same_words(data, prev, t->mask, at, at + n);
     }
     else {
       uint32_t k, c;
       for (k = 0; k < n; k += c) {
         c = n - k < POLL_WORDS ? n - k : POLL_WORDS;
-        if (same)
-          same = copy_words_same(d + at + k, base, src + k, c, (const word_t*)prev + at + k, t->mask + at + k);
-        else
-          copy_words(d + at + k, base, src + k, c);
+        copy_words(d + at + k, base, src + k, c);
         if (stop_now())
           return -1;
       }
@@ -2610,8 +2594,23 @@ static HOT __attribute__((noinline)) int copy_snapshot(const table_t* t, uint8_t
     peek(m, t->fix[i].address, 1, &v);
     data[t->fix[i].at] = (uint8_t)v;
   }
-  return same && same_words(data, prev, t->mask, at, t->words);
+  (void)at;
+  return 0;
 }
+
+/* The repeat check: snapshot a holds the same watched bytes and chain
+ * targets as b (same table and memory map, as the callers check). */
+static WAKE_SMALL int snapshot_same(const slot_t* a, const slot_t* b)
+{
+  const table_t* t = a->table;
+  uint32_t words = t->words * 4;
+  return same_words(a->data, b->data, t->mask, 0, t->words)
+         && memcmp(a->data + words, b->data + words, a->size - words) == 0;
+}
+
+/* Chain targets: only when the set has pointer chains (else 0, as
+ * run_chains returns for no prev). */
+#define HAS_CHAINS() (S.chains.root_count || S.chains.target_count)
 
 #ifdef DSC_CHECK_FAST_STEPS
 static void check_failed(const char* what, uint32_t index)
@@ -2678,7 +2677,7 @@ static int check_repeat(const slot_t* prev, const slot_t* slot, const table_t* t
 
 /* Queue the stage (dsc_capture's snapshot) for evaluation, or count the
  * frame against the newest queued one. Idle time (drain). */
-static void commit(int staged)
+static WAKE_SMALL void commit(int staged)
 {
   slot_t* slot = &S.slots[S.slot_head % MAX_SLOTS];
   slot_t* prev = S.slot_head != S.slot_tail ? &S.slots[(S.slot_head - 1) % MAX_SLOTS] : NULL;
@@ -2696,7 +2695,8 @@ static void commit(int staged)
   if (staged) {
     S.sync_dirty = 0;            /* the chain copies' state is this frame's now */
     S.stats.frames_snapshotted++;
-    if (S.stage_same && prev && S.stage_prev == S.slot_head - 1 && prev->state == SLOT_READY) {
+    if (S.stage_same && prev && S.stage_prev == S.slot_head - 1 && prev->state == SLOT_READY
+        && snapshot_same(slot, prev)) {
       prev->repeats++;
       slot->state = SLOT_FREE;
       S.stats.frames_repeated++;
@@ -2740,7 +2740,7 @@ static void commit(int staged)
 
 /* The VBlanks the IRQ queued, oldest first, into the ring. Idle time:
  * called before anything that looks at the ring or the stage. */
-static void drain(void)
+static WAKE_SMALL void drain(void)
 {
   uint32_t n = Q.frames;
   while (Q.taken != n) {
@@ -2829,9 +2829,11 @@ HOT void dsc_vblank_copy(void)
   slot->size = size;
   slot->data = S.arena + offset;
   slot->targets = (target_t*)(slot->data + t->words * 4);
-  same = copy_snapshot(t, slot->data, &m, prev ? prev->data : NULL);
-  same = run_chains(slot->targets, &m, same ? prev->targets : NULL) && same;
   slot->table = t;
+  copy_snapshot(t, slot->data, &m);
+  if (HAS_CHAINS())
+    run_chains(slot->targets, &m, NULL);
+  same = prev && snapshot_same(slot, prev);
   slot->frame = S.frame_counter;
   S.stats.frames_snapshotted++;
 #ifdef DSC_CHECK_FAST_STEPS
@@ -2854,7 +2856,7 @@ HOT void dsc_vblank_copy(void)
   S.slot_head++;    /* publish last */
 }
 
-int dsc_capture(void)
+WAKE_SMALL int dsc_capture(void)
 {
   const table_t* t;
   slot_t* slot;
@@ -2897,8 +2899,8 @@ int dsc_capture(void)
   head = S.slot_head;
   S.capture_frame = Q.count;
   S.capturing = S.platform.interrupt_pending != NULL;
-  same = copy_snapshot(t, slot->data, &m, prev ? prev->data : NULL);
-  chains = same < 0 ? -1 : run_chains(slot->targets, &m, same ? prev->targets : NULL);
+  same = copy_snapshot(t, slot->data, &m);
+  chains = same < 0 ? -1 : HAS_CHAINS() ? run_chains(slot->targets, &m, NULL) : 0;
   S.capturing = 0;
   if (chains < 0) {
     sync_restore();
@@ -2907,10 +2909,11 @@ int dsc_capture(void)
     S.stats.captures_stopped++;
     return 1;
   }
-  same = chains && same;
+  /* a repeat of prev? decided at the commit (snapshot_same), once a frame */
+  same = prev != NULL;
 #ifdef DSC_CHECK_FAST_STEPS
   check_snapshot(slot, t);
-  if (prev && same != check_repeat(prev, slot, t))
+  if (prev && snapshot_same(slot, prev) != check_repeat(prev, slot, t))
     check_failed("repeat decision", same);
 #endif
   S.stats.captures++;
@@ -3063,6 +3066,21 @@ void dsc_http_done(void* handle, int http_status, const char* body, size_t body_
 int dsc_work_pending(void)
 {
   return S.initialized && (Q.frames != Q.taken || S.slot_tail != S.slot_head || S.http_ready);
+}
+
+void dsc_state_view(uint32_t high_byte)
+{
+#if defined(__arm__)
+  S_view = (struct state_t*)(((uint32_t)&S_storage & 0x00FFFFFFu) | high_byte);
+#else
+  (void)high_byte;
+#endif
+}
+
+WAKE_SMALL void dsc_drain(void)
+{
+  if (S.initialized)
+    drain();
 }
 
 void dsc_get_stats(dsc_stats_t* stats)

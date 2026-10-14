@@ -9,6 +9,10 @@
 #include "util/rc_version.h"
 
 #include <stddef.h>
+
+#ifndef DSCM_HEAP_UNCACHED_MAX
+#define DSCM_HEAP_UNCACHED_MAX (64u * 1024u)   /* bytes of the set reply */
+#endif
 #include <string.h>
 
 #define REG_VCOUNT (*(volatile uint16_t*)0x04000006)
@@ -130,17 +134,18 @@ static inline uint32_t lines_between(uint32_t start, uint32_t end)
 }
 #define lines_since(start) lines_between((start), REG_VCOUNT)
 
-/* What the VBlank IRQ (vblank_entry in start.s) reads and writes: two
- * cache lines in the module header, next to its code; each VBlank touches
- * only the first. publish_stats() copies the counters to the status in idle
- * time. idle_open says an idle pass is being timed: whoever clears it (the
- * pass at its end, or the VBlank IRQ that preempts it) counts its lines, so
- * none are counted twice. */
+/* Frame counting and the wake's flags: two cache lines in the module header,
+ * next to its code. The ARM7 bumps dscm_vblank_count at each VBlank; the idle
+ * thread reads it (vblank_poll) before every snapshot, so nothing of ours runs
+ * in the game's interrupts. publish_stats() copies the counters to the status.
+ * idle_open says an idle pass is being timed: whoever clears it (the pass at
+ * its end, or the poll that finds a VBlank came meanwhile) counts its lines,
+ * so none are counted twice. */
 typedef struct dscm_irq_t {
   uint32_t last_vblank;          /* the ARM7's count at the last call */
   volatile uint32_t frames;      /* VBlanks since init */
   uint8_t on;                    /* initialized and active */
-  volatile uint8_t in_vblank;    /* a copy (dsc_vblank_copy) is running */
+  volatile uint8_t in_vblank;    /* unused (was: a copy in the VBlank IRQ is running) */
   volatile uint8_t in_halt;      /* halt_entry's idle work is running (start.s) */
   uint8_t alias_cached;          /* diagnostics: the game's MPU caches the 0x0C000000 mirror (SDK5) */
   volatile uint32_t idle_open;
@@ -163,6 +168,17 @@ _Static_assert(offsetof(dscm_irq_t, idle_start) == 16 && offsetof(dscm_irq_t, ti
 _Static_assert(offsetof(dscm_irq_t, irq_lines_last) == 28 && offsetof(dscm_irq_t, irq_lines_max) == 30, "dscm_irq");
 _Static_assert(offsetof(dscm_irq_t, idle_cut_lines) == 32 && offsetof(dscm_irq_t, idle_cut) == 36 && offsetof(dscm_irq_t, frames_missed) == 40, "dscm_irq");
 #define g_frames (dscm_irq.frames)
+
+/* The ARM7's VBlank count, written behind the data cache. Through the
+ * 0x0C000000 mirror when the game's MPU leaves it uncached (no line filled),
+ * else drop the header line and read it through the cache (start.s). */
+extern uint32_t dscm_vblank_count_read(void);
+WAKE_INLINE uint32_t vblank_count(void)
+{
+  if (dscm_irq.alias_cached == 0)   /* 0xFF until the game's MPU is read */
+    return *(volatile uint32_t*)DSCM_UNCACHED(&((volatile dscm_header_t*)DSCM_BASE)->vblank_count);
+  return dscm_vblank_count_read();
+}
 
 /* Idle lines per frame, from the idle thread, with IRQs masked: at each
  * pass's start and end it closes the frames that ended since (VBlanks
@@ -195,6 +211,33 @@ WAKE_CODE static void idle_frames(uint32_t lines)
   }
   g_idle.lines += lines;
   g_idle.ran = 1;
+}
+
+void module_vblank_copy(void);
+
+/* The VBlanks since the last call, queued for the core, oldest first: the
+ * first seals the snapshot taken at the last halt before it, the others are
+ * frames the game never halted in (repeats). Called with IRQs masked, right
+ * before anything that would replace or read that snapshot, so no capture
+ * can come between a VBlank and its queueing. */
+WAKE_CODE static void vblank_poll(void)
+{
+  uint32_t c = vblank_count(), n = c - dscm_irq.last_vblank;
+  if (!n)
+    return;
+  dscm_irq.last_vblank = c;
+  dscm_irq.frames += n;
+  dscm_irq.timed_frames += n;        /* frames counted (the IRQ lines stay 0: no IRQ work) */
+  if (dscm_irq.idle_open) {          /* the pass was cut at the VBlank (line 192) */
+    uint32_t start = dscm_irq.idle_start;
+    dscm_irq.idle_open = 0;
+    dscm_irq.idle_cut_lines += start < 192 ? 192 - start : 0;
+    dscm_irq.idle_cut++;
+  }
+  do {
+    if (dsc_vblank_queue())
+      module_vblank_copy();          /* nothing captured yet (session start, reset) */
+  } while (--n);
 }
 
 /* used by the stubs in syscalls.c */
@@ -238,12 +281,15 @@ extern void dscm_wfi(void);
 WAKE_CODE static int interrupt_pending(void)
 {
   uint32_t before;
+  if (vblank_count() != dscm_irq.last_vblank)
+    return 1;          /* a VBlank: the copy would be of two frames (vblank_poll queues it next) */
   if (!(REG_IE & REG_IF))
     return 0;
   before = REG_VCOUNT;
   wake_irq_restore(g_capture_cpsr);
   wake_irq_off();
-  return lines_between(before, REG_VCOUNT) >= 2;
+  /* a VBlank: the copy would be of two frames (vblank_poll queues it next) */
+  return lines_between(before, REG_VCOUNT) >= 2 || vblank_count() != dscm_irq.last_vblank;
 }
 
 /* A snapshot when the game halts. Returns with IRQs still masked, and the
@@ -258,7 +304,13 @@ WAKE_CODE static void refresh_dtcm(void)
 WAKE_CODE static uint32_t capture(void)
 {
   refresh_dtcm();
+  /* VBlanks so far, and their commits, with IRQs on: after a long stretch
+   * without idle time (a load) that is many frames. The masked poll below
+   * then finds at most the VBlank that came meanwhile. */
+  vblank_poll();
+  dsc_drain();
   g_capture_cpsr = wake_irq_off();
+  vblank_poll();
   dsc_capture();
   return g_capture_cpsr;
 }
@@ -399,7 +451,7 @@ static void publish_list(dscm_list_t* list)
 {
   if (list)
     dscm_dc_clean(list, sizeof(dscm_list_t) + list->count * sizeof(dscm_list_entry_t));
-  dscm_publish_list(list);
+  dscm_publish_list(list);   /* the module's view: only the ARM9 menu reads it */
 }
 
 /* Keep RAM current for readers past the cache, after notices change. */
@@ -471,7 +523,21 @@ int module_init(const dscm_boot_t* boot)
    * launcher could measure the console clock's offset */
   if (g_boot.flags & DSCM_BOOT_UTC_KNOWN)
     g_boot.unix_time = dscm_console_to_utc(g_boot.unix_time, g_boot.utc_offset_q);
-  g_session = (const char*)boot;
+  g_session = (const char*)DSCM_DATA_ADDR(boot);   /* the module's view of the session */
+#ifdef DSCM_DATA_MIRROR
+  /* Evaluation reads the set's data, its snapshots and the core's state
+   * uncached in the mirror view (slower: Kirby's rcheevos +23% cycles): only
+   * for sets small enough to afford it (the set reply's size as the cost
+   * proxy); bigger sets keep them cached and pollute the game's D-cache. */
+  {
+    int uncached = boot->preload_length[DSCM_PRELOAD_SET] <= DSCM_HEAP_UNCACHED_MAX;
+    heap_view(uncached);
+    /* the core's state the same way (zeroed above through the mirror;
+     * nothing of the module was ever cached at its 0x02 address) */
+    if (!uncached)
+      dsc_state_view(0x02000000u);
+  }
+#endif
   heap_load_begin(boot->file_size);   /* before the first malloc */
   g_boot.host[sizeof(g_boot.host) - 1] = '\0';
   g_boot.username[sizeof(g_boot.username) - 1] = '\0';
@@ -480,6 +546,7 @@ int module_init(const dscm_boot_t* boot)
   g_dtcm = g_boot.dtcm_base;
   H.dtcm_fixed = g_dtcm != 0;   /* fixed: refresh_dtcm leaves it */
   dscm_irq.last_vblank = dscm_vblank_count_read();
+  dscm_irq.alias_cached = 0xFF;   /* known once the game idles (module_idle) */
   dscm_g_status.hardcore = g_boot.hardcore;
 
   memset(&platform, 0, sizeof(platform));
@@ -577,7 +644,7 @@ int module_init(const dscm_boot_t* boot)
     /* still in the session: nothing writes the arena before the first frame */
     if (g_boot.ca_length && g_boot.ca_offset <= g_boot.file_size && g_boot.ca_length <= g_boot.file_size - g_boot.ca_offset)
       https_add_ca(g_session + g_boot.ca_offset, g_boot.ca_length);
-    dscm_publish_net_ring(ring);
+    dscm_publish_net_ring((void*)DSCM_PHYS(ring));
     dscm_g_status.net_state = DSCM_NET_STATE_CONNECTING;
     H.net_started = 1;
     H.net_busy = 1;           /* the first pass services it */
@@ -589,8 +656,7 @@ int module_init(const dscm_boot_t* boot)
   return dscm_g_status.active ? 0 : -1;
 }
 
-/* The rest of a VBlank that needs a copy in the IRQ (vblank_entry in start.s
- * calls it on the module's IRQ stack). */
+/* A VBlank with nothing captured yet: copy now (vblank_poll, idle time). */
 void module_vblank_copy(void)
 {
   refresh_dtcm();
@@ -611,12 +677,7 @@ static void publish_stats(void)
   /* diagnostics: is the 0x0C000000 mirror cached under the game's MPU (SDK5)?
    * Checked once the game's own MPU setup is in effect. The module doesn't
    * rely on the mirror either way. */
-  static uint8_t mpu_checked;
-  if (!mpu_checked) {
-    mpu_checked = 1;
-    dscm_irq.alias_cached = (uint8_t)mpu_dcacheable((uint32_t)DSCM_UNCACHED(&dscm_g_journal));
-    dscm_g_status.alias_cached = dscm_irq.alias_cached;
-  }
+  dscm_g_status.alias_cached = dscm_irq.alias_cached;
   dsc_stats_t s;
   dsc_get_stats(&s);
   dscm_g_status.frames_snapshotted = s.frames_snapshotted;
@@ -764,13 +825,15 @@ WAKE_CODE int module_idle(int idle_loop)
   if (wake_swap(&H.busy, 1))
     return 0;
   H.halts_idle++;
-  {
-    uint32_t cpsr = wake_irq_off();
-    idle_frames(0);
-    dscm_irq.idle_start = start;
-    dscm_irq.idle_open = 1;
-    wake_irq_restore(cpsr);
-  }
+  /* IRQs stay on: only the idle thread touches these (no IRQ work of ours) */
+  /* the game's MPU is set up once it idles: is the 0x0C000000 mirror
+   * cached (SDK5)? vblank_count() reads past the cache either way */
+  if (dscm_irq.alias_cached == 0xFF)
+    dscm_irq.alias_cached = (uint8_t)mpu_dcacheable((uint32_t)DSCM_UNCACHED(&dscm_g_journal));
+  vblank_poll();
+  idle_frames(0);
+  dscm_irq.idle_start = start;
+  dscm_irq.idle_open = 1;
 
   /* The idle thread wakes at every IRQ, often many times a frame (20-40 in
    * Kirby Super Star Ultra). A full pass runs on the first wake after a
