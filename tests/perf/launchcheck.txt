@@ -1,0 +1,6 @@
+# Games for tests/perf/launchcheck.sh --list: ROM file name | RetroAchievements set id | census input script.
+# Each one failed with achievements on at perf e016988 (research/optimize/freeze.md); Kirby is the control.
+Professor Layton and the Curious Village (USA, Australia).nds|9518|layton.txt
+Peggle Dual Shot (USA).nds|17633|peggle.txt
+Animal Crossing - Wild World (USA) (Rev 1).nds|9594|generic.txt
+Kirby Super Star Ultra (USA).nds|14763|kirby.txt

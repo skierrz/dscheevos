@@ -68,7 +68,7 @@ for mode in ${MODES:-off on}; do
     grep -q "OS_Halt ->" "$work/runner.log" || { echo "FAIL: no module in RAM"; exit 1; }
     echo "server saw $(grep -c '"unlock"' "$work/events.jsonl" || true) unlocks"
     # the module's own counters (frames snapshotted, dropped, evaluated; self-timing)
-    grep "^{'\|^progress\|^self-timing\|^  IRQ \|^  idle " "$work/run.out" || true
+    grep "^{'\|^progress\|^self-timing\|^  IRQ \|^  idle \|^capture at halt" "$work/run.out" || true
   fi
 done
 
