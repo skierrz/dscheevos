@@ -2,7 +2,7 @@
 # Does a game still start and run with achievements on? The same game and input through ab.sh
 # (achievements off, then on) and a pass/fail verdict:
 #   - both runs reach the game's first OS_Halt (else: the game never started, e.g. a launcher crash);
-#   - the on run lags no more than the off run plus max(5, 1% of the intervals) (a hang shows as every
+#   - the on run lags no more than the off run plus max(5, 5% of the intervals) (a hang shows as every
 #     interval lagging: Professor Layton and Peggle froze that way until the module's MPU check);
 #   - the module evaluated frames, or the launcher refused the set as too big for the module and the
 #     game ran without achievements (Animal Crossing: Wild World's 2.4 MB set crashed the launcher).
@@ -51,7 +51,7 @@ def verdict():
     if not on or not on['lag']:
         return 'FAIL', 'with achievements on the game never started'
     (lo, n), (l1, n1) = off['lag'], on['lag']
-    allow = lo + max(5, n // 100)
+    allow = lo + max(5, n // 20)   # runs vary: AC with no achievements lagged 536-557 off, 543-574 on of 1500
     lag = 'lag %d / %d of %d / %d intervals' % (lo, l1, n, n1)
     if l1 > allow:
         return 'FAIL', '%s: more than %d with achievements on (a hang lags every interval)' % (lag, allow)
