@@ -11,7 +11,12 @@
 #include <stddef.h>
 
 #ifndef DSCM_HEAP_UNCACHED_MAX
-#define DSCM_HEAP_UNCACHED_MAX (64u * 1024u)   /* bytes of the set reply */
+/* Bytes of the set reply up to which evaluation runs uncached (see the
+ * policy in module_init). 160 KB: the biggest real sets measured to keep
+ * every frame evaluated uncached (Pokemon Black 155 KB, Mario Kart DS 114 KB;
+ * research/optimize/opt-heavy.md). Bigger sets (Platinum 304 KB, SoulSilver
+ * 598 KB, TWEWY 1 MB) are not measured uncached yet: they stay cached. */
+#define DSCM_HEAP_UNCACHED_MAX (160u * 1024u)
 #endif
 #include <string.h>
 
@@ -528,7 +533,9 @@ int module_init(const dscm_boot_t* boot)
   /* Evaluation reads the set's data, its snapshots and the core's state
    * uncached in the mirror view (slower: Kirby's rcheevos +23% cycles): only
    * for sets small enough to afford it (the set reply's size as the cost
-   * proxy); bigger sets keep them cached and pollute the game's D-cache. */
+   * proxy); bigger sets keep them cached and pollute the game's D-cache
+   * (cached, a heavy set's evaluation touches several times the 4 KB
+   * D-cache each frame: Black lost ~45k game cycles a frame to it). */
   {
     int uncached = boot->preload_length[DSCM_PRELOAD_SET] <= DSCM_HEAP_UNCACHED_MAX;
     heap_view(uncached);
