@@ -24,6 +24,18 @@
  * (or, with --thread, in a second thread, concurrently with rc_client) and
  * hands the results back in result(): the ARM7 protocol, on the host.
  *
+ * Core mode (difftest-run-core, -DDIFFTEST_CORE): the DScheevos core runs the
+ * rc_client instead (dscheevos/core, its snapshot queue, the module's flags),
+ * fed one capture and VBlank per trace frame, and evaluated by two simulated
+ * CPUs that hand the rc_client over every random 1-8 frames (--handover SEED;
+ * stalls of up to 150 frames build a backlog). Resets and the hardcore switch
+ * go through the core's queue (dsc_reset, dsc_hardcore_off); pauses and MENU
+ * frames are a frozen window: the ARM9 takes the rc_client and drains the
+ * queue (dsc_flush), then the paused frames run rc_client_idle. rc_client's
+ * clock is the evaluated frame's own time. The log is the same format, so it
+ * compares with the stock log as is. Not supported: SHORTREAD (the core's
+ * snapshot serves reads) and UNLOAD/LOAD (the core loads once).
+ *
  * changes (patched build with rc_client_set_changed_memory): before each
  * rc_client_do_frame, the exact memory that changed since the previous one (the
  * trace's ranges, short reads starting and ending), except on about one frame in
@@ -45,6 +57,11 @@
 #endif
 
 #include "sha256.h"
+
+#ifdef DIFFTEST_CORE
+#include "dscheevos.h"
+#include "../../dscheevos/module/include/dscheevos_module.h"
+#endif
 
 /* internal state the public API doesn't show (has_hits is not in the progress
  * serialization): the same headers in both trees at the pin */
@@ -182,6 +199,7 @@ static uint32_t RC_CCONV read_memory(uint32_t address, uint8_t* buffer, uint32_t
 static const uint8_t* g_trace;
 static size_t g_trace_size, g_trace_pos;
 static uint32_t g_trace_frames, g_trace_seed;
+static uint16_t g_trace_ranges;     /* ranges the last frame changed */
 
 static uint32_t rd32(void) { uint32_t v; if (g_trace_pos + 4 > g_trace_size) die("trace truncated"); memcpy(&v, g_trace + g_trace_pos, 4); g_trace_pos += 4; return v; }
 static uint16_t rd16(void) { uint16_t v; if (g_trace_pos + 2 > g_trace_size) die("trace truncated"); memcpy(&v, g_trace + g_trace_pos, 2); g_trace_pos += 2; return v; }
@@ -213,6 +231,7 @@ static int trace_next(uint32_t* frame)
   flags = g_trace[g_trace_pos];
   g_trace_pos += 2;
   n = rd16();
+  g_trace_ranges = n;
   for (i = 0; i < n; i++) {
     uint32_t a = rd32();
     uint16_t len = rd16();
@@ -706,6 +725,7 @@ static void load_script(const char* path)
   }
 }
 
+
 /* ------------------------------------------------------------------ main */
 
 static const char* g_hash = "0123456789ABCDEF0123456789ABCDEF";
@@ -773,12 +793,345 @@ static uint32_t count_achievements(const char* json)
   return n;
 }
 
+
+/* ------------------------------------------------------------------ core mode */
+
+#ifdef DIFFTEST_CORE
+static uint32_t g_platform_frame;        /* the trace frame now (the platform's frame count) */
+static uint32_t* g_core_map;             /* core frame number -> trace frame */
+static uint32_t g_core_map_size, g_vblanks;
+static long g_last_F = -1;
+static long g_full_from, g_state_sparse;
+static uint32_t g_frames_done;
+static int g_core_ci;                    /* next harness-only command (FAIL, HITS) to apply */
+static command_t g_life[256];            /* lifecycle commands queued in the core, oldest first */
+static int g_life_head, g_life_tail;
+static dscm_journal_t g_journal;
+static dscm_notices_t g_notices;
+static uint32_t g_ho_rng;
+static int g_ho_want, g_ho_switch_in, g_ho_stall, g_handover;
+static uint32_t g_ho_switches, g_ho_stalls, g_max_backlog;
+static int g_cpu;                        /* which simulated CPU is calling the core */
+static uint32_t g_by_cpu[2];             /* frames evaluated by each */
+static int g_core_fault;                 /* --fault: self-test, resets and the hardcore switch one frame late */
+static int g_changed_since_capture = 1;
+static uint32_t g_lag_frames;
+
+static uint32_t ho_rnd(void) { g_ho_rng ^= g_ho_rng << 13; g_ho_rng ^= g_ho_rng >> 17; g_ho_rng ^= g_ho_rng << 5; return g_ho_rng; }
+
+/* as the module reads: a read must be entirely inside one region */
+static uint32_t core_read(uint32_t address, uint8_t* buffer, uint32_t n)
+{
+  uint32_t main_size = g_main_size < 0x400000u ? g_main_size : 0x400000u;
+  if (address < main_size && n <= main_size - address) { memcpy(buffer, g_main + address, n); return n; }
+  if (address >= DTCM_BASE && address - DTCM_BASE < g_dtcm_size && n <= g_dtcm_size - (address - DTCM_BASE)) {
+    memcpy(buffer, g_dtcm + (address - DTCM_BASE), n);
+    return n;
+  }
+  return 0;
+}
+static void core_map(const uint8_t** main_ram, const uint8_t** dtcm)
+{
+  *main_ram = g_main_size >= 0x400000u ? g_main : NULL;
+  *dtcm = g_dtcm_size == sizeof(g_dtcm) ? g_dtcm : NULL;
+}
+static uint32_t core_millis(void) { return (uint32_t)g_millis; }
+static uint32_t core_unix(void) { return (uint32_t)time(NULL); }
+static uint32_t core_frame(void) { return g_platform_frame; }
+
+/* the stock harness's server, answering into the core */
+static void RC_CCONV core_answer(const rc_api_server_response_t* r, void* handle)
+{
+  dsc_http_done(handle, r->http_status_code, r->body ? r->body : "", r->body_length);
+}
+static void core_http_send(const dsc_http_request_t* req)
+{
+  rc_api_request_t r;
+  memset(&r, 0, sizeof(r));
+  r.url = req->url;
+  r.post_data = req->post_data;
+  r.content_type = req->content_type;
+  server_call(&r, core_answer, req->handle, NULL);
+}
+static void core_event(const dsc_event_t* e)
+{
+  if (e->type == DSC_EVENT_LOGIN_OK)
+    fprintf(g_log, "F load\n");
+  else if (e->type == DSC_EVENT_GAME_LOADED || e->type == DSC_EVENT_GAME_LOAD_FAILED) {
+    g_load_result = e->type == DSC_EVENT_GAME_LOADED ? 0 : -(int)e->id;
+    fprintf(g_log, "L %d", g_load_result);
+    put_str("error", e->type == DSC_EVENT_GAME_LOADED ? NULL : e->detail);
+    fputc('\n', g_log);
+  }
+}
+
+static void write_F(uint32_t f)
+{
+  if (g_last_F != (long)f) {
+    fprintf(g_log, "F %u\n", f);
+    g_last_F = f;
+  }
+}
+
+static void write_C(const command_t* c)
+{
+  fprintf(g_log, "C %s %s %u %u\n", c->cmd, c->a, c->b, c->c);
+}
+
+/* harness-only commands (the fake server's failures, the hit-count seed): in
+ * evaluation order, just before their frame */
+static void core_commands_up_to(uint32_t f, rc_client_t* client)
+{
+  for (; g_core_ci < g_ncmds && g_cmds[g_core_ci].frame <= f; g_core_ci++) {
+    const command_t* c = &g_cmds[g_core_ci];
+    if (!strcmp(c->cmd, "FAIL")) {
+      write_C(c);
+      if (g_fail_count < 8) {
+        snprintf(g_fail[g_fail_count].kind, sizeof(g_fail[0].kind), "%s", c->a);
+        g_fail[g_fail_count].count = (int)c->b;
+        g_fail_count++;
+      }
+    }
+    else if (!strcmp(c->cmd, "HITS")) {
+      write_C(c);
+      hits_near_wrap(client, (uint32_t)strtoul(c->a, NULL, 0));
+    }
+  }
+}
+
+static void hook_rc_event(const void* e, void* client) { event_handler((const rc_client_event_t*)e, (rc_client_t*)client); }
+
+static void hook_frame_begin(uint32_t core_frame)
+{
+  uint32_t f;
+  if (core_frame >= g_core_map_size) die("core frame %u out of range", core_frame);
+  f = g_core_map[core_frame];
+  g_by_cpu[g_cpu]++;
+  g_millis = (uint64_t)f * 1001u / 60u;
+  write_F(f);
+  core_commands_up_to(f, (rc_client_t*)dsc_test_client());
+}
+
+static void state_record(rc_client_t* client, uint32_t f)
+{
+  char h[65];
+  g_frames_done++;
+  if (g_state_sparse > 1 && ((f * 2654435761u) >> 8) % (uint32_t)g_state_sparse != 0)
+    return;
+  state_block(client);
+  hash_hex(g_state, g_state_len, h);
+  fprintf(g_log, "S %s\n", h);
+  if (g_full_from >= 0 && (long)f >= g_full_from) {
+    char* p = g_state;
+    while (*p) {
+      char* e = strchr(p, '\n');
+      if (e) *e = 0;
+      fprintf(g_log, "T %s\n", p);
+      if (!e) break;
+      p = e + 1;
+    }
+  }
+}
+
+static void hook_frame_end(void* client, uint32_t core_frame)
+{
+  state_record((rc_client_t*)client, g_core_map[core_frame]);
+}
+
+static void hook_lifecycle(int what)
+{
+  const command_t* c;
+  if (g_life_tail == g_life_head) die("lifecycle change %d with none queued", what);
+  c = &g_life[g_life_tail++ % 256];
+  g_millis = (uint64_t)c->frame * 1001u / 60u;
+  write_F(c->frame);
+  write_C(c);
+}
+
+/* The two evaluators: the "ARM9" wants the rc_client for a random 1-8 frames,
+ * then gives it back for 1-8; each frame both get a few turns in random
+ * order. Now and then (1 frame in 200) nobody evaluates for up to 150 frames,
+ * so frames queue deep (the ring and arena hold them; nothing may drop). */
+static void core_tick(void)
+{
+  int k;
+  if (!g_handover) {
+    dsc_idle();
+    return;
+  }
+  if (g_ho_stall > 0) { g_ho_stall--; return; }
+  if (ho_rnd() % 200 == 0) { g_ho_stall = 1 + (int)(ho_rnd() % 150); g_ho_stalls++; }
+  if (--g_ho_switch_in <= 0) {
+    g_ho_want = !g_ho_want;
+    dsc_want(g_ho_want);
+    g_ho_switch_in = 1 + (int)(ho_rnd() % 8);
+    g_ho_switches++;
+  }
+  for (k = 1 + (int)(ho_rnd() % 4); k > 0; k--) {
+    if (ho_rnd() % 2) {
+      g_cpu = DSC_OWNER_ARM9;
+      dsc_idle();
+    }
+    else {
+      g_cpu = DSC_OWNER_ARM7;
+      dsc_arm7_step(ho_rnd() % 4);
+      g_cpu = DSC_OWNER_ARM9;
+    }
+  }
+}
+
+/* frozen window (pause, in-game menu): the ARM9 takes the rc_client and drains */
+static void core_freeze(void)
+{
+  int guard = 0;
+  if (g_handover) {
+    dsc_want(1);
+    while (dsc_owner() != DSC_OWNER_ARM9 && guard++ < 16) {
+      dsc_idle();          /* asks */
+      g_cpu = DSC_OWNER_ARM7;
+      dsc_arm7_step(1);    /* grants at its next boundary */
+      g_cpu = DSC_OWNER_ARM9;
+    }
+    g_ho_want = 1;
+    g_ho_stall = 0;
+  }
+  if (dsc_flush() < 0) die("flush without the rc_client");
+}
+
+static int core_main(const char* features, int hardcore, long full_from, long max_frames, long state_sparse, uint32_t ho_seed)
+{
+  dsc_platform_t p;
+  dsc_config_t c;
+  dsc_test_hooks_t hooks;
+  dsc_stats_t st;
+  uint32_t frame;
+  int flags, paused = 0, ci = 0;
+  long frames_seen = 0;
+
+  if (features && features[0]) die("core mode: no --features (the core's own flags are built in)");
+  g_full_from = full_from;
+  g_state_sparse = state_sparse;
+  g_handover = ho_seed != 0;
+  g_ho_rng = ho_seed ? ho_seed : 1;
+  g_core_map_size = g_trace_frames + 16;
+  g_core_map = (uint32_t*)calloc(g_core_map_size, sizeof(uint32_t));
+  for (ci = 0; ci < g_ncmds; ci++)
+    if (!strcmp(g_cmds[ci].cmd, "SHORTREAD") || !strcmp(g_cmds[ci].cmd, "UNLOAD") || !strcmp(g_cmds[ci].cmd, "LOAD"))
+      die("core mode: %s is not supported", g_cmds[ci].cmd);
+  ci = 0;
+
+  memset(&hooks, 0, sizeof(hooks));
+  hooks.rc_event = hook_rc_event;
+  hooks.frame_begin = hook_frame_begin;
+  hooks.frame_end = hook_frame_end;
+  hooks.lifecycle = hook_lifecycle;
+  hooks.sync_replies = 1;
+  dsc_test_set_hooks(&hooks);
+
+  memset(&p, 0, sizeof(p));
+  p.read_memory = core_read;
+  p.millis = core_millis;
+  p.http_send = core_http_send;
+  p.event = core_event;
+  p.unix_time = core_unix;
+  p.journal = &g_journal;
+  p.notices = &g_notices;
+  p.frame = core_frame;
+  p.memory_map = core_map;
+  memset(&c, 0, sizeof(c));
+  c.username = "User";
+  c.token = "ApiToken";
+  c.hardcore = hardcore;
+  c.max_addresses = 4096;                /* the module's settings */
+  c.snapshot_slots = 1024;
+  c.snapshot_bytes = 256u * 1024u;
+  c.capture_at_halt = 1;
+  c.idle_max_frames = 4;
+  c.handover = g_handover;
+  if (dsc_init(&p, &c) != 0) die("dsc_init");
+  if (dsc_begin_session(g_hash) != 0) die("dsc_begin_session");
+  dsc_idle();
+  if (!dsc_is_active()) die("core mode: the game didn't load (%d)", g_load_result);
+  if (g_handover) { g_ho_want = 1; g_ho_switch_in = 1 + (int)(ho_rnd() % 8); }
+
+  while ((flags = trace_next(&frame)) >= 0) {
+    int late = 0;
+    if (max_frames >= 0 && frames_seen >= max_frames) break;
+    frames_seen++;
+    g_platform_frame = frame;
+    for (; ci < g_ncmds && g_cmds[ci].frame <= frame; ci++) {
+      command_t* cmd = &g_cmds[ci];
+      if (!strcmp(cmd->cmd, "RESET") || !strcmp(cmd->cmd, "HARDCORE")) {
+        if (!strcmp(cmd->cmd, "HARDCORE") && atoi(cmd->a) != 0) die("core mode: hardcore only goes off");
+        if (g_life_head - g_life_tail >= 256) die("too many lifecycle changes queued");
+        g_life[g_life_head % 256] = *cmd;
+        g_life[g_life_head % 256].frame = frame + (g_core_fault ? 1 : 0);
+        g_life_head++;
+        if (g_core_fault)
+          late |= !strcmp(cmd->cmd, "RESET") ? 1 : 2;
+        else if (!strcmp(cmd->cmd, "RESET")) dsc_reset(); else dsc_hardcore_off();
+      }
+      else if (!strcmp(cmd->cmd, "PAUSE")) {
+        core_freeze();
+        g_millis = (uint64_t)frame * 1001u / 60u;
+        write_F(frame);
+        write_C(cmd);
+        paused = (int)strtol(cmd->a, NULL, 0);
+      }
+    }
+    if (g_trace_ranges)
+      g_changed_since_capture = 1;
+    if (paused > 0 || (flags & FLAG_MENU)) {
+      /* the game is frozen: nothing captured; rcheevos' timers only */
+      if (paused > 0) paused--;
+      g_millis = (uint64_t)frame * 1001u / 60u;
+      write_F(frame);
+      core_commands_up_to(frame, (rc_client_t*)dsc_test_client());
+      core_freeze();       /* nothing queued: rc_client_idle, as the stock run */
+      state_record((rc_client_t*)dsc_test_client(), frame);
+      continue;
+    }
+    /* the game halts with this frame's memory, then its VBlank; with
+     * hand-over, a frame whose memory didn't change since the last capture
+     * sometimes has none (a lag frame: evaluated with the last capture) */
+    if (g_handover && !g_trace_ranges && !g_changed_since_capture && ho_rnd() % 2)
+      g_lag_frames++;
+    else {
+      while (dsc_capture() == 1) ;
+      g_changed_since_capture = 0;
+    }
+    g_vblanks++;
+    if (g_vblanks >= g_core_map_size) die("too many frames");
+    g_core_map[g_vblanks] = frame;
+    dsc_vblank();
+    if (late & 1) dsc_reset();
+    if (late & 2) dsc_hardcore_off();
+    {
+      uint32_t b = dsc_backlog();
+      if (b > g_max_backlog) g_max_backlog = b;
+    }
+    core_tick();
+  }
+  core_freeze();     /* the end: everything evaluated */
+  dsc_get_stats(&st);
+  fprintf(g_log, "# core: frames %u evaluated %u (arm9 %u arm7 %u) dropped %u repeated %u stale %u live_reads %u handovers %u switches %u stalls %u max_backlog %u notices_lost %u lag %u\n",
+          st.frames_snapshotted, st.frames_evaluated, g_by_cpu[0], g_by_cpu[1], st.frames_dropped, st.frames_repeated, st.frames_stale, st.live_reads,
+          st.handovers, g_ho_switches, g_ho_stalls, g_max_backlog, st.notices_lost, g_lag_frames);
+  if (st.frames_dropped) fprintf(stderr, "difftest-run-core: %u frames dropped\n", st.frames_dropped);
+  fprintf(g_log, "END %u\n", g_frames_done);
+  dsc_shutdown();
+  fclose(g_log);
+  return 0;
+}
+#endif
+
 int main(int argc, char** argv)
 {
   const char *set = NULL, *session = NULL, *trace = NULL, *script = NULL, *out = NULL;
   const char *mode = "single", *split = "none", *features = "";
   int hardcore = 1, paused = 0, i, flags, ci = 0;
   long full_from = -1, max_frames = -1, state_sparse = 0;
+  uint32_t ho_seed = 0;
   uint32_t frame, frames_done = 0;
   rc_client_t* client;
   char h[65];
@@ -798,12 +1151,16 @@ int main(int argc, char** argv)
     else if (ARG("--frames")) max_frames = atol(argv[++i]);
     else if (ARG("--state-sparse")) state_sparse = atol(argv[++i]);
     else if (ARG("--out")) out = argv[++i];
+    else if (ARG("--handover")) ho_seed = (uint32_t)strtoul(argv[++i], NULL, 0);
 #ifdef DIFFTEST_STATS
     else if (ARG("--stats")) { g_stats = fopen(argv[++i], "w"); if (!g_stats) die("can't write stats"); }
 #endif
     else if (!strcmp(a, "--fault")) {
 #ifdef DIFFTEST_PARTITION
       g_fault = 1;
+#endif
+#ifdef DIFFTEST_CORE
+      g_core_fault = 1;
 #endif
     }
     else if (!strcmp(a, "--thread")) {
@@ -855,6 +1212,11 @@ int main(int argc, char** argv)
   fprintf(g_log, "H trace_seed %u frames %u\n", g_trace_seed, g_trace_frames);
   if (script) load_script(script);
 
+#ifdef DIFFTEST_CORE
+  return core_main(features, hardcore, full_from, max_frames, state_sparse, ho_seed);
+#else
+  (void)ho_seed;
+#endif
   client = new_client(hardcore, features);
   fprintf(g_log, "F load\n");
   rc_client_begin_load_game(client, g_hash, load_done, NULL);

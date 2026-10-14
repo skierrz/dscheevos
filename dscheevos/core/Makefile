@@ -1,6 +1,6 @@
 # Host build of the DScheevos core and its unit tests.
 #   make test        build and run the tests
-#   make test DSC_FLAGS="-DDSC_CHANGE_DRIVEN -DDSC_CHANGED_RANGES" BUILD=build-flags
+#   make test DSC_FLAGS="-DDSC_CHANGE_DRIVEN -DDSC_CHANGED_RANGES" BUILD=build/flags
 #                    the same with the module's default flags
 RCHEEVOS ?= ../../external/rcheevos
 CC       ?= cc

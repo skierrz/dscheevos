@@ -363,7 +363,12 @@ static struct {
   volatile uint32_t frames;    /* VBlanks queued, all time */
   volatile uint32_t sealed;    /* the one of those the stage went to */
   volatile uint32_t taken;     /* frames drain() has committed */
+  /* hand-over: the ARM9's own side (only the ARM9 reads or writes these);
+   * here because dsc_idle's early return reads this line anyway */
+  int want;                    /* dsc_want */
+  int acquired;                /* platform.ownership(1) done for this turn */
 } Q IRQ_DATA;
+#define A9 Q
 
 /* Hand-over (config.handover): who owns the rc_client. Each word has one
  * writer; on the DS both must be read and written past the ARM9's data
@@ -372,12 +377,6 @@ static struct {
   volatile uint32_t req9;      /* ARM9 only: it wants the rc_client, or has it */
   volatile uint32_t grant7;    /* ARM7 only: it stopped and let the ARM9 have it */
 } O;
-
-/* The ARM9's own side of it (only the ARM9 reads or writes these). */
-static struct {
-  int want;                    /* dsc_want */
-  int acquired;                /* platform.ownership(1) done for this turn */
-} A9;
 
 #ifdef DSC_TEST_HOOKS
 static dsc_test_hooks_t T;
@@ -2602,7 +2601,6 @@ int dsc_init(const dsc_platform_t* platform, const dsc_config_t* config)
   memset(&S, 0, sizeof(S));
   memset((void*)&Q, 0, sizeof(Q));
   memset((void*)&O, 0, sizeof(O));
-  memset(&A9, 0, sizeof(A9));
   S.platform = *platform;
   S.config = *config;
   if (!S.config.max_addresses)
@@ -3529,7 +3527,8 @@ int dsc_idle(void)
    * touching more memory (rcheevos' own timers run once a frame below). */
   {
     uint32_t clock = S.platform.frame ? S.platform.frame() : S.platform.millis();
-    if (clock == S.idle_clock && Q.frames == Q.taken && S.slot_tail == S.slot_head && S.http_answered == S.http_taken)
+    if (clock == S.idle_clock && Q.frames == Q.taken && S.slot_tail == S.slot_head && S.http_answered == S.http_taken
+        && A9.want == A9.acquired)    /* hand-over: wanted and not held yet, ask (arm9_turn) */
       return 0;
     S.idle_clock = clock;
   }
@@ -3542,7 +3541,7 @@ int dsc_idle(void)
 
 void dsc_want(int want)
 {
-  if (!S.initialized)
+  if (!S.initialized || !S.config.handover)
     return;
   A9.want = want != 0;
   if (!A9.want && S.config.handover && O.req9)
@@ -3758,7 +3757,6 @@ void dsc_shutdown(void)
   memset(&S, 0, sizeof(S));
   memset((void*)&Q, 0, sizeof(Q));
   memset((void*)&O, 0, sizeof(O));
-  memset(&A9, 0, sizeof(A9));
 }
 
 #ifdef DSC_TEST_HOOKS

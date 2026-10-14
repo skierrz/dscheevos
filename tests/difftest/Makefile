@@ -23,8 +23,24 @@ RC_FILES := client/rc_client.c \
   api/rc_api_common.c api/rc_api_info.c api/rc_api_runtime.c api/rc_api_user.c \
   util/md5.c util/rc_compat.c util/rc_util.c util/rc_version.c
 
-.PHONY: all clean
+.PHONY: all clean core
 all: $(BUILD)/difftest-run-stock $(BUILD)/difftest-run-patched $(BUILD)/difftest-run-patched-tsan
+core: $(BUILD)/difftest-run-core $(BUILD)/difftest-run-core-noflags
+
+# core mode: the DScheevos core (dscheevos/core) runs the patched rc_client, with the module's flags
+# (CORE_FLAGS) or without; --handover SEED adds the two simulated evaluators
+CORE      := ../../dscheevos/core
+CORE_FLAGS ?= -DDSC_CHANGE_DRIVEN -DDSC_CHANGED_RANGES
+$(BUILD)/difftest-run-core: run.c sha256.h $(CORE)/src/dscheevos.c $(CORE)/include/dscheevos.h $(addprefix $(PATCHED)/src/,$(RC_FILES))
+	@mkdir -p $(BUILD)
+	$(CC) $(CFLAGS) -Wno-missing-field-initializers $(RC_DEFS) -DDIFFTEST_CORE -DDSC_TEST_HOOKS -DDSC_CHECK_FAST_STEPS $(CORE_FLAGS) \
+	  -I$(CORE)/include -I$(PATCHED)/include -I$(PATCHED)/src run.c $(CORE)/src/dscheevos.c \
+	  $(addprefix $(PATCHED)/src/,$(RC_FILES)) -lm -o $@
+$(BUILD)/difftest-run-core-noflags: run.c sha256.h $(CORE)/src/dscheevos.c $(CORE)/include/dscheevos.h $(addprefix $(PATCHED)/src/,$(RC_FILES))
+	@mkdir -p $(BUILD)
+	$(CC) $(CFLAGS) -Wno-missing-field-initializers $(RC_DEFS) -DDIFFTEST_CORE -DDSC_TEST_HOOKS -DDSC_CHECK_FAST_STEPS \
+	  -I$(CORE)/include -I$(PATCHED)/include -I$(PATCHED)/src run.c $(CORE)/src/dscheevos.c \
+	  $(addprefix $(PATCHED)/src/,$(RC_FILES)) -lm -o $@
 
 $(BUILD)/stock/.ok:
 	@mkdir -p $(BUILD)/stock
