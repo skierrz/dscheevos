@@ -13,6 +13,15 @@
 
 dscm_heap_t dscm_g_heap;
 
+/* Load-time only, linked after all other code (module.ld): adding it moved
+ * newlib's and lwIP's code by 0x118 and cost Kirby ~13k game cycles a frame
+ * through the I-cache (research/optimize/bigset.md). */
+#ifdef DSCM_HEAP_HOST_TEST
+#define DSCM_COLD
+#else
+#define DSCM_COLD __attribute__((section(".text_cold"), noinline))
+#endif
+
 #ifdef DSCM_HEAP_HOST_TEST
 /* the host test's session area, HEAP_ZONE_END - DSCM_SESSION bytes (or more) */
 extern char dscm_host_session[];
@@ -22,6 +31,7 @@ extern char dscm_host_session[];
 #endif
 #define ARENA     (SESSION + HEAP_SESSION_HEAD)
 #define ZONE_END  (ARENA + HEAP_ARENA_BYTES)
+#define TOP       (SESSION + (DSCM_HEAP_END - DSCM_SESSION))   /* the high piece's end, in the session's view */
 #define ADDR(p)   ((uint32_t)(uintptr_t)(p))
 #define IS_ARENA(p) (((ADDR(p) ^ ADDR(ARENA)) & 0x00FFFFFFu) == 0)   /* in either view */
 
@@ -37,7 +47,9 @@ static uint32_t g_heap_hi = DSCM_DATA_HI;
 #define LOW_BASE  HV((((uint32_t)__heap_start + 7u) & ~7u))
 #define LOW_END   HV(DSCM_SESSION)
 #define HIGH_BASE HV(HEAP_ZONE_END)
-#define HIGH_END  HV(DSCM_HEAP_END)
+/* the high piece's end: below a moved session while it is in use (heap_load_begin) */
+static uint32_t g_high_end = DSCM_HEAP_END;
+#define HIGH_END  HV(g_high_end)
 
 
 static char* g_brk;
@@ -124,20 +136,78 @@ static struct {
   struct { char* p; uint32_t size; } lent[LEND_MAX];   /* lent and not freed yet */
   char* bump;                  /* the parsed set, after the session file */
   int live;                    /* bump blocks not freed yet */
+  char* moved;                 /* a session bigger than the arena: its replies' copy at the */
+  char* moved_end;             /* top of the high piece (heap_load_begin), until heap_release_session */
 } Z;
 
-/* the session header, the replies and the arena: never newlib's */
-static int in_zone(const void* p)
+DSCM_COLD static int in_moved(const void* p)
 {
-  return (const char*)p >= SESSION && (const char*)p < ZONE_END;
+  return (const char*)p >= Z.moved && (const char*)p < Z.moved_end;
 }
 
-void heap_load_begin(uint32_t file_size)
+/* the session header, the replies (also a moved copy) and the arena: never newlib's */
+static int in_zone(const void* p)
 {
+  return ((const char*)p >= SESSION && (const char*)p < ZONE_END) || (Z.moved && in_moved(p));
+}
+
+/* the end of the zone piece p is in */
+DSCM_COLD static const char* zone_end(const void* p)
+{
+  return (const char*)p >= Z.moved && (const char*)p < Z.moved_end ? Z.moved_end : ZONE_END;
+}
+
+DSCM_COLD const char* heap_load_begin(uint32_t file_size)
+{
+  char* base = SESSION;
   memset(&Z, 0, sizeof(Z));
   Z.loading = 1;
   Z.bump = SESSION + ((file_size + 7u) & ~7u);
+  if (file_size > (uint32_t)(ZONE_END - SESSION) && file_size <= (uint32_t)(TOP - SESSION)) {
+    /* Bigger than the arena: the file runs on into the high piece, which the
+     * heap is about to use. Move the replies (and the CA) to the top of the
+     * high piece, keeping their offsets from base; the header stays where it
+     * is (nds-bootstrap's ARM7 reads it, and its PMK isn't copied). The
+     * arena is then free for the parsed set. */
+    const uint32_t from = sizeof(dscm_boot_t);
+    base = TOP - file_size;
+    base -= ADDR(base) & 7u;
+    memmove(base + from, SESSION + from, file_size - from);
+    Z.moved = base + from;
+    Z.moved_end = base + file_size;
+    Z.bump = ARENA;
+#ifndef DSCM_HEAP_HOST_TEST
+    g_high_end = ADDR(base);   /* the heap stays below the copy (and its gap) */
+#endif
+    dscm_g_heap.moved = ADDR(base);
+  }
   dscm_g_heap.parse_base = dscm_g_heap.parse_top = ADDR(Z.bump);
+  return base;
+}
+
+#ifndef DSCM_HEAP_HOST_TEST
+extern void dscm_dc_clean(const void* addr, uint32_t len);
+extern void dscm_dc_invalidate(const void* addr, uint32_t len);
+#endif
+
+DSCM_COLD void heap_release_session(void)
+{
+  if (!Z.moved)
+    return;
+#ifndef DSCM_HEAP_HOST_TEST
+  {
+    /* The copy was written and read in the session's view; the heap may use
+     * the other one (heap_view). No line of either view may stay in the
+     * cache to be written back over the heap's data later. */
+    const uint32_t start = ADDR(Z.moved) & ~31u, len = ADDR(TOP) - start;
+    dscm_dc_clean((const void*)start, len);
+    dscm_dc_invalidate((const void*)start, len);
+    dscm_dc_clean(HV(start), len);
+    dscm_dc_invalidate(HV(start), len);
+    g_high_end = DSCM_HEAP_END;
+  }
+#endif
+  Z.moved = Z.moved_end = NULL;
 }
 
 void heap_arena_window(int open)
@@ -148,7 +218,7 @@ void heap_arena_window(int open)
 void heap_lend(const char* body, uint32_t len)
 {
   /* only what free() will know as not newlib's */
-  Z.lend = Z.loading && in_zone(body) && len < (uint32_t)(ZONE_END - body) ? body : NULL;
+  Z.lend = Z.loading && in_zone(body) && len < (uint32_t)(zone_end(body) - body) ? body : NULL;
   Z.lend_len = len;
 }
 

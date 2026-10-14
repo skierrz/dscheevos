@@ -33,6 +33,7 @@ SECTIONS {
     . = ALIGN(0x800) + DSCM_TEXT_COLOUR;
     *rc/runtime/*.o(.text .text.*) *rc/client/*.o(.text .text.*) *dscheevos.o(.text .text.*)
     *(.text .text.* .gnu.linkonce.t.*) *(.glue_7) *(.glue_7t) *(.vfp11_veneer) *(.v4_bx)
+    *(.text_cold)   /* load-time code added later: last, so it moves nothing above (DSCM_COLD) */
   } > image
   .ARM.exidx : { *(.ARM.exidx* .gnu.linkonce.armexidx.*) } > image
   .init_array : { KEEP(*(.init_array*)) } > image

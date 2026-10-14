@@ -69,7 +69,7 @@ void* h_realloc(void* v, size_t n)
 #define AREA (8u << 20)
 char dscm_host_session[AREA] __attribute__((aligned(32)));
 static dscm_boot_t* boot = (dscm_boot_t*)dscm_host_session;
-static const char* g_session = dscm_host_session;
+static const char* g_session = dscm_host_session;   /* the replies' base (heap_load_begin) */
 
 static const char login[] = "{\"Success\":true,\"User\":\"tester\",\"Token\":\"tok\",\"Score\":0,\"SoftcoreScore\":0,\"Messages\":0}";
 static const char start[] = "{\"Success\":true,\"Unlocks\":[],\"HardcoreUnlocks\":[],\"ServerNow\":1760000000}";
@@ -170,8 +170,9 @@ static result_t run(int place, uint32_t arena_bytes, uint32_t n)
   rng = 12345;
   for (i = 0; i < sizeof(ram); i += 4) { uint32_t v = rnd(); if (!(v & 7)) v = 0x02000000u | (rnd() & 0x3FFFFCu); memcpy(ram + i, &v, 4); }
 
+  g_session = dscm_host_session;
   if (place)
-    heap_load_begin(boot->file_size);
+    g_session = heap_load_begin(boot->file_size);
   memset(&pl, 0, sizeof(pl));
   pl.read_memory = read_memory; pl.memory_map = memory_map; pl.interrupt_pending = no_interrupt;
   pl.millis = millis; pl.http_send = http_send; pl.event = on_event; pl.unix_time = unix_time;
@@ -190,6 +191,8 @@ static result_t run(int place, uint32_t arena_bytes, uint32_t n)
   for (i = 0; i < DSCM_PRELOAD_COUNT; i++)
     boot->preload_length[i] = 0;   /* as module_init */
   res.left = place ? heap_load_end() : 0;
+  if (place)
+    heap_release_session();
   res.active = dsc_is_active();
   res.load_peak = peak;
   res.set_blocks = set_blocks;
@@ -302,6 +305,33 @@ static void test_parse_overflow(void)
   free(set);
 }
 
+static void test_oversized_set(void)
+{
+  /* a set reply bigger than the whole arena (Pokemon Platinum's is 311 KB): the
+   * replies move to the top of the heap, are lent in place there, and the
+   * parsed set gets the whole arena */
+  size_t n = sizeof(small_set) - 1, big = 320 * 1024;
+  char* set = (char*)malloc(big + 1);
+  const char* cut = strstr(small_set, "\"Title\":\"Heap Test\"");
+  size_t head = (size_t)(cut - small_set) + 9;
+  char* top = dscm_host_session + (DSCM_HEAP_END - DSCM_SESSION);
+  result_t a;
+  printf("set reply bigger than the arena\n");
+  memcpy(set, small_set, head);
+  memset(set + head, 'x', big - n);
+  memcpy(set + head + (big - n), small_set + head, n - head);
+  make_session(set, big, 0);
+  CHECK(boot->file_size > HEAP_SESSION_HEAD + HEAP_ARENA_BYTES && boot->file_size <= DSCM_SESSION_MAX);
+  a = run(1, HEAP_ARENA_BYTES, 400);
+  CHECK(a.active && a.left == 0 && a.heap.load_left == 0 && a.unlocks == 1);
+  CHECK(a.heap.moved != 0 && a.heap.moved + boot->file_size <= (uint32_t)(uintptr_t)top
+        && (uint32_t)(uintptr_t)top - (a.heap.moved + boot->file_size) < 8);
+  CHECK(a.heap.lent == (uint32_t)(sizeof(login) - 1 + big + sizeof(start) - 1));   /* nothing copied */
+  CHECK(a.heap.parse_base == (uint32_t)(uintptr_t)(dscm_host_session + HEAP_SESSION_HEAD));   /* the arena */
+  CHECK(!strncmp(dscm_host_session, (const char*)boot, 4) && boot->magic == DSCM_SESSION_MAGIC);   /* header in place */
+  free(set);
+}
+
 static void test_no_arena(void)
 {
   result_t a;
@@ -340,6 +370,7 @@ int main(void)
   test_placement();
   test_old_layout();
   test_parse_overflow();
+  test_oversized_set();
   test_no_arena();
   printf("%d checks, %d failures\n", checks, failures);
   return failures != 0;

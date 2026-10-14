@@ -404,8 +404,11 @@ int session_write(const dsc_settings_t* settings, const char* rom_path, const ch
     }
   }
   boot.file_size = offset;
-  if (offset > DSCM_SESSION_MAX)
+  if (offset > DSCM_SESSION_MAX) {
+    /* the set needs more memory than the module has (docs/architecture.md, "Big sets") */
+    log_line("session: %u bytes, over the %u-byte limit", (unsigned)offset, (unsigned)DSCM_SESSION_MAX);
     return 0;
+  }
 
   f = fopen(DSC_DIR "session.bin", "wb");
   if (!f)

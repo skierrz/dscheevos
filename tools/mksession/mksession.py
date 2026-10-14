@@ -20,7 +20,7 @@ import time
 MAGIC = 0x53435344          # "DSCS"
 BOOT_SIZE = 604             # sizeof(dscm_boot_t); checked by layout.c in CI
 FLAGS_OFFSET = 462          # offsetof(dscm_boot_t, flags), as layout.c prints it
-SESSION_MAX = 0x40000       # DSCM_SESSION_MAX
+SESSION_MAX = 0x60000       # DSCM_SESSION_MAX
 BOOT_SPECTATOR = 0x01       # DSCM_BOOT_SPECTATOR
 BOOT_UTC_KNOWN = 0x02         # DSCM_BOOT_UTC_KNOWN
 

@@ -39,8 +39,19 @@
 #define DSCM_SIZE        0x00200000u
 #define DSCM_IMAGE_MAX   0x00080000u   /* code incl. TCP/IP and TLS, data, bss */
 #define DSCM_SESSION     (DSCM_BASE + DSCM_IMAGE_MAX)
-#define DSCM_SESSION_MAX 0x00040000u
-#define DSCM_HEAP        (DSCM_SESSION + DSCM_SESSION_MAX)
+/* The session file: the snapshot arena's place (256 KB) holds it. A bigger
+ * one (a set reply over ~255 KB: Pokemon Platinum, SoulSilver) runs on into
+ * the heap's high piece; the module moves its replies to the top of the heap
+ * for the load and then gives that memory back (heap.h). Nothing else in the
+ * region changes: the game loses no memory to it. 384 KB: while it loads,
+ * a set needs about its reply twice over (the reply, rc_api's parse of it)
+ * plus its game data in the heap; Platinum (312 KB) loads with ~110 KB to
+ * spare, Pearl (409 KB) and SoulSilver (612 KB) need more heap than the
+ * region has, so the launcher refuses them up front rather than starting
+ * a load that fails after a long wait (docs/architecture.md, "Big sets").
+ * nds-bootstrap's DSCHEEVOS_SESSION_MAX must match. */
+#define DSCM_SESSION_MAX 0x00060000u
+#define DSCM_HEAP        (DSCM_SESSION + 0x00040000u)
 #define DSCM_STACK_SIZE  0x00002000u
 #define DSCM_STACK_TOP   (DSCM_BASE + DSCM_SIZE)
 #define DSCM_IRQ_STACK_SIZE 0x00001000u

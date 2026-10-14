@@ -63,7 +63,8 @@ union {
 static void* g_net_handle[DSCM_NET_SLOTS];
 static uint32_t g_net_sequence;
 static dscm_boot_t g_boot;
-static const char* g_session;        /* session file in memory (preloads) */
+static const char* g_session;        /* session file in memory (its header) */
+static const char* g_replies;        /* its replies and CA: preload_offset[i] from here (heap_load_begin) */
 static int g_initialized;
 
 /* What every idle wake reads or writes, in one cache line: the game's idle
@@ -360,7 +361,7 @@ static void http_send(const dsc_http_request_t* request)
   if (preload >= 0) {
     if (g_boot.preload_length[preload]) {
       uint32_t offset = g_boot.preload_offset[preload], length = g_boot.preload_length[preload];
-      const char* body = g_session + offset;
+      const char* body = g_replies + offset;
       /* With a spare NUL after it in the file, the core's copy of the reply
        * is the reply itself (heap.h): no heap for it. */
       if (offset + length < g_boot.file_size && body[length] == '\0')
@@ -545,7 +546,7 @@ int module_init(const dscm_boot_t* boot)
       dsc_state_view(0x02000000u);
   }
 #endif
-  heap_load_begin(boot->file_size);   /* before the first malloc */
+  g_replies = heap_load_begin(boot->file_size);   /* before the first malloc */
   g_boot.host[sizeof(g_boot.host) - 1] = '\0';
   g_boot.username[sizeof(g_boot.username) - 1] = '\0';
   g_boot.token[sizeof(g_boot.token) - 1] = '\0';
@@ -650,12 +651,14 @@ int module_init(const dscm_boot_t* boot)
     dscm_dc_clean(((dscm_boot_t*)g_session)->pmk, sizeof(g_boot.pmk));
     /* still in the session: nothing writes the arena before the first frame */
     if (g_boot.ca_length && g_boot.ca_offset <= g_boot.file_size && g_boot.ca_length <= g_boot.file_size - g_boot.ca_offset)
-      https_add_ca(g_session + g_boot.ca_offset, g_boot.ca_length);
+      https_add_ca(g_replies + g_boot.ca_offset, g_boot.ca_length);
     dscm_publish_net_ring((void*)DSCM_PHYS(ring));
     dscm_g_status.net_state = DSCM_NET_STATE_CONNECTING;
     H.net_started = 1;
     H.net_busy = 1;           /* the first pass services it */
   }
+  /* nothing reads the session's replies or CA from here on */
+  heap_release_session();
   g_initialized = 1;
   g_idle.frame = dscm_irq.frames;
   H.pass_frame = dscm_irq.frames - 1;   /* the first pass is a full one */

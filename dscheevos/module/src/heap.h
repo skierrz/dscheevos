@@ -22,6 +22,15 @@
  *     bump-allocated after the session file, freed before the load ends.
  * So the set's raw and parsed JSON cost no heap: load peak = steady state,
  * as long as the session file plus the parsed set fit in the arena.
+ *
+ * A session file bigger than the arena (a set reply over ~255 KB: Pokemon
+ * Platinum 311 KB, SoulSilver 612 KB) runs on into the high piece. Before
+ * the first allocation heap_load_begin moves its replies to the top of the
+ * high piece (DSCM_HEAP_END down), where they are read and lent in place;
+ * the high piece's sbrk stops below them, and the parsed set gets the whole
+ * arena. heap_release_session gives their bytes back to the heap once the
+ * module has read the last of the session (its CA), so nothing is lost
+ * after the load.
  */
 #ifndef DSCM_HEAP_H
 #define DSCM_HEAP_H
@@ -44,8 +53,11 @@ void heap_view(int uncached);
  * view's addresses in newlib's free lists, and later blocks get used through
  * both views at once (a dirty cached line then overwrites uncached writes). */
 void* heap_ptr(const void* p);
-/* Load-time placement. file_size: the session file's (checked by the caller). */
-void heap_load_begin(uint32_t file_size);
+/* Load-time placement. file_size: the session file's (checked by the caller:
+ * at most DSCM_SESSION_MAX). Returns where the replies are, in the module's
+ * data view: the session itself, or the moved copy (a file bigger than the
+ * arena); a reply at preload_offset[i] in the file is at that + offset. */
+const char* heap_load_begin(uint32_t file_size);
 /* Around dsc_init: its malloc of HEAP_ARENA_BYTES is the arena. */
 void heap_arena_window(int open);
 /* Lend body (in the session, body[len] a NUL the file has spare) to the
@@ -54,6 +66,9 @@ void heap_lend(const char* body, uint32_t len);
 /* The load is over: nothing load-time may stay in the arena. Returns 0 if
  * nothing does, else -1 (the arena would overwrite it: don't start). */
 int heap_load_end(void);
+/* After the module's last read of the session's replies and CA (module_init's
+ * end): a moved session's bytes become heap. A no-op otherwise. */
+void heap_release_session(void);
 
 /* For tests and the RAM dump (tests/bootstrap/status.py reads it by name):
  * sbrk high-water marks per piece, the arena's use while loading. */
@@ -69,6 +84,7 @@ typedef struct dscm_heap_t {
   uint32_t load_left;                 /* load-time blocks still alive at the end (0) */
   uint32_t wrong_view;                /* frees/reallocs of a heap block through the other view
                                          (cached vs mirror): a bug, must stay 0 (status.py fails) */
+  uint32_t moved;                     /* a session bigger than the arena: where its copy went during the load (0: none) */
 } dscm_heap_t;
 extern dscm_heap_t dscm_g_heap;
 
