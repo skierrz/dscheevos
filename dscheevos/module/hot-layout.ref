@@ -155,9 +155,9 @@
 02d8cc34 dsc_idle
 02d8d258 dsc_work_pending
 02d8d2a4 dsc_get_stats
-02dc747c rc_memref_masks
-02dc74e0 rc_memref_size_bytes
-02dc7544 rc_bits_set
-02dc75b8 memp_pools
-02dc75d4 memp_SYS_TIMEOUT
-02dc75dc lwip_cyclic_timers
+02dc807c rc_memref_masks
+02dc80e0 rc_memref_size_bytes
+02dc8144 rc_bits_set
+02dc81b8 memp_pools
+02dc81d4 memp_SYS_TIMEOUT
+02dc81dc lwip_cyclic_timers

@@ -6,8 +6,8 @@
 	.global dscm_header
 	.align 2
 dscm_header:
-	.word 0x56435344            @ DSCM_MAGIC "DSCV"
-	.word 7                     @ DSCM_VERSION (the module test checks it matches)
+	b	bw_entry                @ 0x00: LAB coverage: the patched SVC_WaitVBlankIntr lands here (magic moved to 0x3C)
+	.word 8                     @ DSCM_VERSION (the module test checks it matches)
 	.word __image_size
 	.word init_entry
 	.word vblank_entry
@@ -24,7 +24,7 @@ dscm_list_ptr:
 	.word dscm_g_notices        @ 0x30
 	.word dscm_g_journal_phys   @ 0x34: physical (the ARM7 reads it); cleaned at each step
 	.word flush_entry           @ 0x38: evaluate what is queued, before a journal copy
-	.space 4
+	.word 0x56435344            @ 0x3C: DSCM_MAGIC "DSCV" (LAB coverage: moved from 0x00)
 	.global dscm_notify_count
 dscm_notify_count:
 	.word 0                     @ 0x40: unlock count for the ARM7 (own cache line)
@@ -400,6 +400,72 @@ flush_entry:
 	strb	r2, [r1, #-GUARD_BACK]
 9:	pop	{r4, lr}
 	bx	lr
+
+
+@ LAB (coverage): the BIOS-wait gate. nds-bootstrap rewrites NitroSDK's
+@ SVC_WaitVBlankIntr (Thumb: movs r2,#0; svc 5; bx lr) in place to jump to
+@ header word 0 (ARM), which branches here. The game's main thread, in SYS
+@ mode, with its frame done. Same checks as halt_entry (IRQs on, IME on, the
+@ data view writable, the guard free), then module_wait on the module stack,
+@ which works only while the wait would still be waiting (before line 192),
+@ with the game's IRQs on. Then the stock wrapper, byte for byte, runs from
+@ here: the BIOS discards old flags and waits for the next VBlank exactly as
+@ stock. Nothing of the game's is written; the game's stack is not used.
+	.global bw_entry
+	.type bw_entry, %function
+bw_entry:
+	mrs	r0, cpsr
+	and	r1, r0, #0x1F
+	cmp	r1, #0x1F                   @ SYS: NitroSDK threads
+	bne	bw_stock
+	tst	r0, #0x80
+	bne	bw_stock
+	mov	r0, #0x04000000
+	ldr	r0, [r0, #0x208]            @ REG_IME
+	tst	r0, #1
+	beq	bw_stock
+	mov	r12, #MIRROR_HI
+	orr	r12, r12, #REGION_END
+	sub	r12, r12, #GUARD_BACK
+	ldrb	r0, [r12, #GUARD_TO_REGION]
+	cmp	r0, #8
+	adrhs	r3, 1f
+	bhs	data_region_scan
+1:	mrc	p15, 0, r1, c5, c0, 2
+	mov	r2, r0, lsl #2
+	mov	r1, r1, lsr r2
+	and	r1, r1, #15
+	sub	r1, r1, #1
+	cmp	r1, #3
+	bhs	bw_stock
+	mov	r0, #1
+	swpb	r1, r0, [r12]
+	cmp	r1, #0
+	bne	bw_stock
+	mov	r12, sp
+	mov	sp, #STACK_TOP_HI
+	sub	sp, sp, #STACK_GAP
+	push	{r12, lr}
+	ldr	r1, =module_wait
+	blx	r1
+	pop	{r12, lr}
+	mov	sp, r12
+	mov	r1, #MIRROR_HI
+	orr	r1, r1, #REGION_END
+	mov	r2, #0
+	strb	r2, [r1, #-GUARD_BACK]
+bw_stock:
+	adr	r2, bw_wrapper + 1
+	bx	r2
+	.thumb
+	.type bw_wrapper, %function
+bw_wrapper:                         @ the game's wrapper, unchanged
+	movs	r2, #0
+	svc	5
+	bx	lr
+	.arm
+	.align 2
+	.pool
 
 @ Init: called once by nds-bootstrap's ARM9 before the game starts, with
 @ the session file in r0. Its stack is tiny, so run on the module stack.

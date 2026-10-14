@@ -74,7 +74,7 @@
 #define DSCM_PHYS(a)      ((((uint32_t)(a)) & 0x00FFFFFFu) | 0x02000000u)
 
 #define DSCM_MAGIC   0x56435344u  /* "DSCV" */
-#define DSCM_VERSION 7u
+#define DSCM_VERSION 8u
 #define DSCM_SESSION_MAGIC 0x53435344u  /* "DSCS" */
 
 /* Server responses fetched by the launcher at session start. */
@@ -382,7 +382,7 @@ typedef struct dscm_journal_t {
 #define DSCM_CUE_CHALLENGE        0x00010000u   /* a challenge indicator is showing */
 
 typedef struct dscm_header_t {
-  uint32_t magic;
+  uint32_t branch;                    /* 0x00: LAB coverage: ARM b to the BIOS-wait gate (bw_entry) */
   uint32_t version;
   uint32_t image_size;
   int  (*init)(const dscm_boot_t* boot);
@@ -401,7 +401,7 @@ typedef struct dscm_header_t {
    * queued, so an unlock in the last moments is in the journal. Runs on the
    * module's stack; does nothing if idle work is running or parked there. */
   void (*flush)(void);
-  uint32_t reserved;
+  uint32_t magic;                     /* 0x3C: DSCM_MAGIC (LAB coverage: moved from 0x00) */
   volatile uint32_t notify_count;     /* 0x40: unlocks so far; own cache line, cleaned to RAM */
   void* net_ring;                     /* 0x44: dscm_shim.h ring, 0 if none; same line */
   volatile uint32_t cues;             /* 0x48: LED cues for the ARM7 (DSCM_CUE_*); same cache line, cleaned to RAM */

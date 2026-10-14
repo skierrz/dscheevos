@@ -186,8 +186,8 @@ if mh:
           f" whole run {used(hp['low_top'], hp['high_top'])} (+12 KB stacks at the top)")
     print(f"  arena {'in the session area' if hp['arena'] else 'on the heap'}, replies lent {hp['lent']},"
           f" parsed set in the arena {hp['parse_top'] - hp['parse_base']}, on the heap {hp['parse_heap']}, left {hp['load_left']}")
-hdr = struct.unpack_from('<14I', ram, 0xD80000)
-print('header magic %08x version %d vblank_count %d' % (hdr[0], hdr[1], hdr[9]))
+hdr = struct.unpack_from('<16I', ram, 0xD80000)
+print('header magic %08x version %d vblank_count %d' % (hdr[15], hdr[1], hdr[9]))
 
 lst = notices = journal = None
 if hdr_version(ram) >= 6:
@@ -229,7 +229,7 @@ if hdr_version(ram) >= 6:
 fails = []
 if mh and hp['wrong_view']:
     fails.append(f"{hp['wrong_view']} heap blocks freed through the wrong view (cached vs mirror, heap.c own_view)")
-if hdr[0] != 0x56435344:
+if hdr[15] != 0x56435344:  # LAB coverage: magic at 0x3C
     fails.append('module not loaded')
 if not f[0]:
     fails.append('not active')
