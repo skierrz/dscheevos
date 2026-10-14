@@ -232,6 +232,16 @@ _Static_assert(offsetof(dscm_irq_t, idle_start) == 16 && offsetof(dscm_irq_t, ti
 _Static_assert(offsetof(dscm_irq_t, irq_lines_last) == 28 && offsetof(dscm_irq_t, irq_lines_max) == 30, "dscm_irq");
 _Static_assert(offsetof(dscm_irq_t, idle_cut_lines) == 32 && offsetof(dscm_irq_t, idle_cut) == 36 && offsetof(dscm_irq_t, frames_missed) == 40, "dscm_irq");
 #define g_frames (dscm_irq.frames)
+/* LAB coverage: the BIOS-wait gate's counters, in the IRQ timing fields
+ * (no IRQ work since the read-only rule), so publish_stats is unchanged:
+ * status irq_lines_last = waits entered (mod 65536), irq_lines_max =
+ * overruns (a VBlank came while the gate worked), irq_lines_total = lines
+ * worked in waits, frames_missed = longest unit in lines (the gate's estimate) */
+#define BW_WAITS (dscm_irq.irq_lines_last)
+#define BW_OVERRUNS (dscm_irq.irq_lines_max)
+#define BW_LINES (dscm_irq.irq_lines_total)
+#define BW_EST (dscm_irq.frames_missed)
+#define BW_UNITS (dscm_irq.reserved2[0])
 
 /* The ARM7's VBlank count, written behind the data cache. Through the
  * 0x0C000000 mirror when the game's MPU leaves it uncached (no line filled),
@@ -779,7 +789,7 @@ static __attribute__((noinline)) uint32_t backlog(void)
 }
 
 /* The core's counters for the status (and the in-game menu). */
-static void publish_stats(void)
+static inline __attribute__((always_inline)) void publish_stats(void)
 {
   /* diagnostics: is the 0x0C000000 mirror cached under the game's MPU (SDK5)?
    * Checked once the game's own MPU setup is in effect. The module doesn't
@@ -996,6 +1006,109 @@ WAKE_CODE int module_idle(int idle_loop)
     wake_irq_restore(cpsr);
     return 1;   /* halted here */
   }
+}
+#undef WP
+#define WP WAKE_PAGE
+
+
+/* ---- LAB (coverage): the BIOS-wait gate ----
+ * From bw_entry (start.s): the game's main thread called NitroSDK's
+ * SVC_WaitVBlankIntr, its frame done; the stock wait follows when this
+ * returns (the BIOS discards old flags, then waits for the next VBlank).
+ * The wait would return right after the next VBlank (line 192), so work
+ * only while it can end before that: a capture, then evaluation one queued
+ * frame at a time while the lines left exceed the longest unit seen so far
+ * plus BW_MARGIN. The game's IRQs stay on (as in the idle path): its
+ * handlers and higher-priority threads run as they would in the BIOS wait.
+ * If a VBlank comes anyway (an overrun), the stock wait then discards it and
+ * the game waits a frame more: counted (BW_OVERRUNS), must stay 0. */
+#define BW_MARGIN 6           /* lines kept free before line 192 */
+#define BW_FIRST 100          /* the first unit (nothing measured yet) needs this many lines */
+#define BW_NET_LINES 100      /* the network's once-a-frame pass needs this many */
+static __attribute__((section(".text_cold"), noinline, target("arm"))) uint32_t bw_left(void)
+{
+  uint32_t v = REG_VCOUNT;
+  return v < 192 ? 192 - v : LINES_PER_FRAME - v + 192;
+}
+static __attribute__((section(".text_cold"), noinline)) int bw_step(uint32_t left)
+{
+  int evaluated;
+  H.pass_frame = g_frames;
+  if (H.reset_pending) {
+    H.reset_pending = 0;
+    dsc_reset();
+  }
+  if (H.requests)
+    poll_network();
+  if (H.progress_stale)
+    update_progress();
+  evaluated = dsc_idle_max(1);
+  if (evaluated) {
+    clean_notices();
+    update_cues();
+  }
+  if (H.net_started && left >= BW_NET_LINES) {
+    net_service(millis());
+    H.net_busy = net_busy() != 0;
+    dscm_g_status.net_state = net_state();
+    dscm_g_status.net_detail = net_detail();
+    poll_network();
+  }
+  H.more = dsc_work_pending() != 0;
+  if (evaluated)
+    publish_stats();        /* always_inline: the idle path's copy is unchanged */
+  return evaluated;
+}
+#undef WP
+#define WP wp
+__attribute__((section(".text_cold"), noinline, target("arm"))) void module_wait(void)
+{
+  wake_page_t* const wp = wake_page_arm();
+  uint32_t v0, c0, left, cpsr;
+  if (!dscm_irq.on)
+    return;
+  if (REG_IE & REG_IF & 1)
+    return;            /* a VBlank is already requested: the stock wait returns at once */
+  if (bw_left() < BW_MARGIN + 2)
+    return;
+  if (wake_swap(&H.busy, 1))
+    return;            /* idle work parked in the idle thread: stock */
+  BW_WAITS++;
+  v0 = REG_VCOUNT;
+  if (dscm_irq.alias_cached == 0xFF)
+    alias_check();
+  c0 = vblank_count(WP);
+  /* the game's memory at the end of its frame, for the coming VBlank
+   * (capture() first queues the VBlanks since the last call) */
+  cpsr = capture(WP);
+  wake_irq_restore(cpsr);
+  idle_frames(WP, 0);
+  for (;;) {
+    uint32_t start, used, est = BW_EST;
+    left = bw_left();
+    if (vblank_count(WP) != c0 || (REG_IF & 1))
+      break;
+    if (left < (est ? est : BW_FIRST) + BW_MARGIN)
+      break;
+    if (!work_wanted(WP))
+      break;
+    start = REG_VCOUNT;
+    used = bw_step(left);
+    BW_UNITS++;
+    if (!used && !H.more)
+      break;
+    used = lines_between(start, REG_VCOUNT);
+    if (used + 1 > est)
+      BW_EST = used + 1;   /* whole lines: a unit can be up to a line longer than it read */
+  }
+  {
+    uint32_t lines = lines_since(v0);
+    BW_LINES += lines;
+    idle_frames(WP, lines);
+  }
+  if (vblank_count(WP) != c0)
+    BW_OVERRUNS++;
+  H.busy = 0;
 }
 #undef WP
 #define WP WAKE_PAGE

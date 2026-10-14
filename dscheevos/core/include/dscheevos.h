@@ -220,6 +220,7 @@ int dsc_capture(void);
 
 /* Idle time. Returns the number of frames evaluated. */
 int dsc_idle(void);
+int dsc_idle_max(uint32_t max_frames);   /* LAB (coverage) */
 
 /* Answer for a request from dsc_platform_t.http_send. */
 void dsc_http_done(void* handle, int http_status, const char* body, size_t body_length);
