@@ -67,8 +67,14 @@ void* h_realloc(void* v, size_t n)
   return q;
 }
 
-/* heap.c's limit for the high piece: the host's malloc has none */
-void dscm_host_high_end(uint32_t reserved) { (void)reserved; }
+/* heap.c's limit for the high piece (the host's malloc has none): the bytes
+ * a moved session holds at the top, each time heap.c changes it */
+static uint32_t reserved_seen[4], reserved_calls;
+void dscm_host_high_end(uint32_t reserved)
+{
+  if (reserved_calls < 4) reserved_seen[reserved_calls] = reserved;
+  reserved_calls++;
+}
 
 /* ---- the session area (DSCM_SESSION on the DS) ---- */
 #define AREA (8u << 20)
@@ -330,10 +336,18 @@ static void test_oversized_set(void)
   memcpy(set + head + (big - n), small_set + head, n - head);
   make_session(set, big, 0);
   CHECK(boot->file_size > HEAP_SESSION_HEAD + HEAP_ARENA_BYTES && boot->file_size <= DSCM_SESSION_MAX);
+  reserved_calls = 0;
   a = run(1, HEAP_ARENA_BYTES, 400);
+  /* moved (the whole file), the set's bytes given back once parsed (the
+   * start-session reply stays until the load's end), then nothing */
+  CHECK(reserved_calls == 3);
+  CHECK(reserved_seen[0] >= boot->file_size && reserved_seen[0] < boot->file_size + 12);
+  CHECK(reserved_seen[1] <= boot->file_size - boot->preload_offset[2] + 12);   /* the set's NUL pad, rounded down to 8 */
+  CHECK(reserved_seen[2] == 0);
+  CHECK(((a.heap.moved + boot->preload_offset[1]) & 7) == 4);   /* the lent set: never a newlib pointer */
   CHECK(a.active && a.left == 0 && a.heap.load_left == 0 && a.unlocks == 1);
   CHECK(a.heap.moved != 0 && a.heap.moved + boot->file_size <= (uint32_t)(uintptr_t)top
-        && (uint32_t)(uintptr_t)top - (a.heap.moved + boot->file_size) < 8);
+        && (uint32_t)(uintptr_t)top - (a.heap.moved + boot->file_size) < 12);
   CHECK(a.heap.lent == (uint32_t)(sizeof(login) - 1 + big + sizeof(start) - 1));   /* nothing copied */
   CHECK(a.heap.parse_base == (uint32_t)(uintptr_t)(dscm_host_session + HEAP_SESSION_HEAD));   /* the arena */
   CHECK(!strncmp(dscm_host_session, (const char*)boot, 4) && boot->magic == DSCM_SESSION_MAGIC);   /* header in place */

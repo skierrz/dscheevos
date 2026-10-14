@@ -143,9 +143,18 @@ static struct {
   char* moved_end;             /* top of the high piece (heap_load_begin), until heap_release_session */
 } Z;
 
+/* In the moved copy, or a reply lent from it whose bytes went back to the
+ * heap early (release_set): such a pointer is never 8-aligned, so it is
+ * never one of newlib's blocks (heap_load_begin places the copy so). */
 DSCM_COLD static int in_moved(const void* p)
 {
-  return (const char*)p >= Z.moved && (const char*)p < Z.moved_end;
+  int i;
+  if ((const char*)p >= Z.moved && (const char*)p < Z.moved_end)
+    return 1;
+  for (i = 0; i < LEND_MAX; i++)
+    if (Z.lent[i].p == p)
+      return 1;
+  return 0;
 }
 
 /* the session header, the replies (also a moved copy) and the arena: never newlib's */
@@ -175,6 +184,9 @@ DSCM_COLD const char* heap_load_begin(uint32_t file_size)
     const uint32_t from = sizeof(dscm_boot_t);
     base = TOP - file_size;
     base -= ADDR(base) & 7u;
+    /* the set reply at 4 mod 8: never a newlib pointer (in_moved) */
+    if (((ADDR(base) + ((const dscm_boot_t*)SESSION)->preload_offset[DSCM_PRELOAD_SET]) & 7u) == 0)
+      base -= 4;
     memmove(base + from, SESSION + from, file_size - from);
     Z.moved = base + from;
     Z.moved_end = base + file_size;
@@ -356,17 +368,71 @@ void* __wrap_realloc(void* p, size_t n)
 /* rc_client's only parse of the set: every allocation in it is the parsed
  * response, which rc_client frees (rc_api_destroy_fetch_game_sets_response)
  * once it has built its own game data from it. */
+int parse_set(rc_api_fetch_game_sets_response_t* response, const rc_api_server_response_t* server_response);
 int __real_rc_api_process_fetch_game_sets_server_response(rc_api_fetch_game_sets_response_t* response,
     const rc_api_server_response_t* server_response);
-int __wrap_rc_api_process_fetch_game_sets_server_response(rc_api_fetch_game_sets_response_t* response,
+
+/* A moved set reply, once parsed: rc_api has copied what it keeps (its
+ * strings into the response's own buffer) and rc_client reads only that
+ * from here on, so the reply's bytes go back to the heap now, before
+ * rc_client builds the game data, instead of at the load's end. The rest of
+ * the copy (the start-session reply, read next, and the CA) stays. The core
+ * still frees the lent pointer after rc_client's callback: in_moved knows it. */
+DSCM_COLD static void release_set(const char* body, uint32_t len)
+{
+  char* keep = (char*)body + len - ((ADDR(body) + len) & 7u);   /* below: the login reply (answered) and the set */
+  int i;
+  for (i = 0; i < LEND_MAX && Z.lent[i].p != body; i++) {}
+  if (i == LEND_MAX || (ADDR(body) & 7u) == 0 || body < Z.moved || keep <= Z.moved || keep > Z.moved_end)
+    return;
+#ifndef DSCM_HEAP_HOST_TEST
+  {
+    /* as heap_release_session: no line of either view may stay cached */
+    const uint32_t start = ADDR(Z.moved) & ~31u, n = ((ADDR(keep) + 31u) & ~31u) - start;
+    dscm_dc_clean((const void*)start, n);
+    dscm_dc_invalidate((const void*)start, n);
+    dscm_dc_clean(HV(start), n);
+    dscm_dc_invalidate(HV(start), n);
+    g_high_end = ADDR(keep);
+  }
+#else
+  dscm_host_high_end((uint32_t)(TOP - keep));
+#endif
+  Z.moved = keep;
+}
+
+DSCM_COLD __attribute__((used)) int parse_set(rc_api_fetch_game_sets_response_t* response,
     const rc_api_server_response_t* server_response)
 {
   int result;
   Z.parsing = Z.loading;
   result = __real_rc_api_process_fetch_game_sets_server_response(response, server_response);
   Z.parsing = 0;
+  if (result == RC_OK && response->response.succeeded && Z.moved && server_response->body)
+    release_set(server_response->body, (uint32_t)server_response->body_length);
   return result;
 }
+
+#ifdef DSCM_HEAP_HOST_TEST
+int __wrap_rc_api_process_fetch_game_sets_server_response(rc_api_fetch_game_sets_response_t* response,
+    const rc_api_server_response_t* server_response)
+{
+  return parse_set(response, server_response);
+}
+#else
+/* A jump to parse_set, as long as the C wrapper it replaces (0x18 bytes):
+ * the code after it (newlib, lwIP) stays where it was (research/optimize/layout.md). */
+__attribute__((naked)) int __wrap_rc_api_process_fetch_game_sets_server_response(
+    rc_api_fetch_game_sets_response_t* response, const rc_api_server_response_t* server_response)
+{
+  __asm__ volatile(
+    "ldr r3, 1f\n\t"
+    "bx r3\n\t"
+    ".align 2\n"
+    "1: .word parse_set\n\t"
+    ".space 16\n\t");
+}
+#endif
 
 DSCM_COLD int heap_load_end(void)
 {

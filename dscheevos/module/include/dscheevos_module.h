@@ -44,11 +44,12 @@
  * the heap's high piece; the module moves its replies to the top of the heap
  * for the load and then gives that memory back (heap.h). Nothing else in the
  * region changes: the game loses no memory to it. 384 KB: while it loads,
- * a set needs about its reply twice over (the reply, rc_api's parse of it)
- * plus its game data in the heap; Platinum (312 KB) loads with ~110 KB to
- * spare, Pearl (409 KB) and SoulSilver (612 KB) need more heap than the
- * region has, so the launcher refuses them up front rather than starting
- * a load that fails after a long wait (docs/architecture.md, "Big sets").
+ * a set needs its reply until rc_api has parsed it, then rc_api's parse plus
+ * rcheevos' game data in the heap; Platinum (312 KB) peaks at 946 KB of the
+ * high piece's 1,297 KB. Pearl (409 KB) and SoulSilver (612 KB) have more
+ * game data alone than the heap holds, so the launcher refuses them up front
+ * rather than starting a load that fails after a long wait
+ * (docs/architecture.md, "Big sets"; tests/perf/fitmem.sh).
  * nds-bootstrap's DSCHEEVOS_SESSION_MAX must match. */
 #define DSCM_SESSION_MAX 0x00060000u
 #define DSCM_HEAP        (DSCM_SESSION + 0x00040000u)
