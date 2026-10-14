@@ -16,6 +16,7 @@
 #   EXTRA_ARGS (more runner arguments, both runs), GAMEPCS=prefix (the game's extra cycles from
 #   sharing the caches, by PC: prefix.on.csv/.off.csv), ARM7=prefix (ARM7 cycles by PC block),
 #   WAITTRACE=prefix (LAB coverage: the runner's --trace-wait, prefix.on.csv/.off.csv),
+#   VFLAG=prefix (LAB coverage: the runner's --watch-vflag, prefix.on.csv/.off.csv),
 #   SKIP=N (game-cost table: leave out the first N intervals), PROFDIR=dir (keep each run's profile log as dir/prof.off.csv and prof.on.csv).
 # Needs what tests/launcher/run.sh needs (DSI_FILES, BOOTSTRAP, RUNNER). Runs the
 # emulator twice, one after the other; don't run other emulator tests meanwhile.
@@ -54,6 +55,7 @@ for mode in ${MODES:-off on}; do
   [ -n "${GAMEPCS:-}" ] && extra="$extra --profile-game-pcs $GAMEPCS.$mode.csv"
   [ -n "${ARM7:-}" ] && extra="$extra --profile-arm7 $ARM7.$mode.csv"
   [ -n "${WAITTRACE:-}" ] && extra="$extra --trace-wait $WAITTRACE.$mode.csv"
+  [ -n "${VFLAG:-}" ] && extra="$extra --watch-vflag $VFLAG.$mode.csv"
   echo "== $(basename "$rom"): achievements $mode"
   PORT=${PORT:-8453} ENABLED=$enabled ROM=$rom WORK=$work SCRIPT=$script RUNNER_ARGS="$args --profile-log $work/prof.csv $extra" \
     "$repo/tests/launcher/run.sh" "$set" $((frames + ${BOOT_FRAMES:-6000})) > "$work/run.out" 2>&1 || true
