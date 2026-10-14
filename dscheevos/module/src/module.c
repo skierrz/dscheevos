@@ -1137,8 +1137,28 @@ __attribute__((section(".text_cold"), noinline, target("arm"))) void module_wait
         BW_FIRST_OVER = 1;
       break;
     }
+#ifdef BW_EST_PCT
+    /* LAB: the estimate is the BW_EST_PCT-th percentile of the units so far
+     * (4-line buckets), not the maximum: more units fit, overruns can happen */
+    {
+      static uint32_t hist[64], n;
+      uint32_t b = (used + 1 + 3) / 4, i, acc = 0, want;
+      hist[b < 64 ? b : 63]++;
+      n++;
+      want = (n * BW_EST_PCT + 99) / 100;
+      for (i = 0; i < 64; i++) {
+        acc += hist[i];
+        if (acc >= want)
+          break;
+      }
+      BW_EST = i * 4;
+      if (n < 8 && BW_EST < BW_FIRST)
+        BW_EST = BW_FIRST;
+    }
+#else
     if (used + 1 > est)
       BW_EST = used + 1;   /* whole lines: a unit can be up to a line longer than it read */
+#endif
   }
   {
     uint32_t lines = lines_since(v0);
