@@ -320,6 +320,23 @@ int main(int argc, char** argv)
     if (frames <= skip) continue;
     seen++;
     watched_sum += cx[0]->ntl;
+    {   /* CO_FRAMES=file: one line per counted frame (everyframe.md): frame, then per candidate watched bytes differing / events differ / state differs */
+      static FILE* fo;
+      static int tried;
+      if (!tried) { tried = 1; if (getenv("CO_FRAMES")) fo = fopen(getenv("CO_FRAMES"), "w"); }
+      if (fo) {
+        fprintf(fo, "%u", fr);
+        for (k = 1; k < NFILE; k++) {
+          uint32_t w = 0, ri;
+          for (ri = 0; ri < rs[k].n; ri++) {
+            uint32_t o = rs[k].r[ri].off, e = o + rs[k].r[ri].len;
+            for (; o < e; o++) if (cx[k]->img[o] != cx[0]->img[o] && (cx[0]->touched[o] || cx[k]->touched[o])) w++;
+          }
+          fprintf(fo, ",%u,%d,%d", w, strcmp(cx[k]->events, cx[0]->events) != 0, cx[k]->digest != cx[0]->digest);
+        }
+        fputc('\n', fo);
+      }
+    }
     for (k = 1; k < NCAND; k++) {
       uint32_t w = 0, full = 0, ri;
       present[k] += have[k] ? 1 : 0;
