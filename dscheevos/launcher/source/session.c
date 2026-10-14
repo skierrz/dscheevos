@@ -28,6 +28,10 @@ static int g_done, g_result;
  * answers those two requests from them, so only startsession goes out */
 static int g_replay;
 static char g_error[128];
+/* the set reply was bigger than a session file can be: the module could never
+ * load it, so it isn't parsed here either (a 2.4 MB set crashed the launcher
+ * in rcheevos' parse; Animal Crossing: Wild World) */
+static size_t g_too_big;
 
 /* Logs the request's API name and the answer (never the parameters: they hold the token). */
 void session_log_request(const char* post, int status)
@@ -92,6 +96,16 @@ static void RC_CCONV server_call(const rc_api_request_t* request, rc_client_serv
   if (r.status < 0)
     snprintf(g_error, sizeof(g_error), "%s", net_error());
 
+  if (kind == DSCM_PRELOAD_SET && r.status == 200 && r.length > DSCM_SESSION_MAX) {
+    g_too_big = r.length;
+    http_free(&r);
+    memset(&response, 0, sizeof(response));
+    response.http_status_code = RC_API_SERVER_RESPONSE_CLIENT_ERROR;
+    response.body = "";
+    snprintf(g_error, sizeof(g_error), "The achievement set is too big");
+    callback(&response, callback_data);
+    return;
+  }
   if (kind >= 0 && r.status == 200 && r.body) {
     free(g_reply[kind]);
     g_reply[kind] = r.body;          /* keep it; freed when replaced */
@@ -165,6 +179,11 @@ int session_login(dsc_settings_t* settings, const char* password, const char** e
   return (result == RC_INVALID_CREDENTIALS || result == RC_EXPIRED_TOKEN) ? SESSION_LOGIN_FAILED : SESSION_ERROR;
 }
 
+int session_too_big(void)
+{
+  return g_too_big != 0;
+}
+
 int session_hash_rom(const char* rom_path, char hash[33])
 {
   rc_hash_iterator_t it;
@@ -226,6 +245,7 @@ int session_prepare(const dsc_settings_t* settings, const char* hash, bench_resu
       ? SESSION_LOGIN_FAILED : SESSION_ERROR;
   }
   g_done = 0;
+  g_too_big = 0;
   if (bench_begin() != 0)
     log_line("bench: no memory");
   rc_client_begin_load_game(client, hash, on_done, NULL);
@@ -239,6 +259,11 @@ int session_prepare(const dsc_settings_t* settings, const char* hash, bench_resu
   }
   rc_client_destroy(client);
   bench_end();
+  if (g_too_big) {
+    log_line("session: set reply %u bytes, over the %u-byte limit", (unsigned)g_too_big, (unsigned)DSCM_SESSION_MAX);
+    clear_replies();
+    return SESSION_TOO_BIG;
+  }
   if (result == RC_NO_GAME_LOADED) {
     clear_replies();
     return SESSION_NO_SET;
@@ -407,6 +432,7 @@ int session_write(const dsc_settings_t* settings, const char* rom_path, const ch
   if (offset > DSCM_SESSION_MAX) {
     /* the set needs more memory than the module has (docs/architecture.md, "Big sets") */
     log_line("session: %u bytes, over the %u-byte limit", (unsigned)offset, (unsigned)DSCM_SESSION_MAX);
+    g_too_big = offset;
     return 0;
   }
 

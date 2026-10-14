@@ -288,6 +288,10 @@ int main(int argc, char** argv)
         ui_status("\x1b[33;1mSpectator: nothing is sent\x1b[39;0m");
       log_line("session: started%s", settings.spectator ? ", spectator" : "");
       if (!pending_prepare(&settings) || !session_write(&settings, rom_path, hash)) {
+        if (session_too_big()) {
+          ui_wait("This game's achievement set is\n too big for DScheevos yet.\n\n Playing without achievements.", 240);
+          boot_game(0);
+        }
         log_line("session: couldn't write the session files");
         if (ui_choose("Couldn't write the session file.", "Try again", "Play without achievements") == 'B')
           boot_game(0);
@@ -296,6 +300,10 @@ int main(int argc, char** argv)
       if (ui_wait("Have fun!\n\n B  Play without achievements", 90) & KEY_B)
         boot_game(0);
       boot_game(1);
+    }
+    if (r == SESSION_TOO_BIG) {
+      ui_wait("This game's achievement set is\n too big for DScheevos yet.\n\n Playing without achievements.", 240);
+      boot_game(0);
     }
     if (r == SESSION_NO_SET) {
       log_line("session: no set for this game");

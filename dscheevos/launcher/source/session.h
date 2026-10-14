@@ -23,6 +23,7 @@ enum {
   SESSION_NO_SET,        /* the game isn't known to RetroAchievements */
   SESSION_LOGIN_FAILED,  /* token rejected: log in again */
   SESSION_ERROR,         /* network or server error: retry or play without */
+  SESSION_TOO_BIG,       /* the set is too big for the module's memory: play without */
 };
 
 /* Logs in with a password and stores the token in settings. */
@@ -38,6 +39,10 @@ int session_start(const dsc_settings_t* settings, const char* rom_path, const ch
 
 /* Writes sd:/_nds/dscheevos/session.bin for the session just started. */
 int session_write(const dsc_settings_t* settings, const char* rom_path, const char* hash);
+
+/* Nonzero after session_prepare() or session_write() found the set too big for
+ * the module (DSCM_SESSION_MAX): trying again can't help. */
+int session_too_big(void);
 
 /* Appends "api: HTTP status" (or the network error) to launcher.log. */
 void session_log_request(const char* post, int status);
