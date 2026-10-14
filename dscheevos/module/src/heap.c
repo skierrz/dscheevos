@@ -50,6 +50,24 @@ void heap_view(int uncached)
     g_heap_hi = uncached ? DSCM_DATA_HI : 0x02000000u;
 }
 
+void* heap_ptr(const void* p)
+{
+  return HV(p);
+}
+
+/* A newlib block in the heap's view. A pointer through the other view is a
+ * bug (see heap_ptr): count it for status.py and free the heap's view of it,
+ * so the free lists never hold the other view's addresses. */
+static void* own_view(void* p)
+{
+  if (p && ((ADDR(p) ^ g_heap_hi) & 0xFF000000u)) {
+    dscm_g_heap.wrong_view++;
+    return HV(p);
+  }
+  return p;
+}
+#define OWN_VIEW(p) own_view(p)
+
 void* _sbrk_r(struct _reent* r, ptrdiff_t incr)
 {
   char* lo = g_high ? HIGH_BASE : LOW_BASE;
@@ -86,6 +104,7 @@ void* _sbrk(ptrdiff_t incr) { return _sbrk_r(_REENT, incr); }
 #define ARENA_VIEW HV(ARENA)
 #else
 #define ARENA_VIEW ARENA
+#define OWN_VIEW(p) (p)
 #endif
 
 /* ---- load-time placement ---- */
@@ -195,7 +214,7 @@ void __wrap_free(void* p)
   if (IS_ARENA(p))
     return;                      /* the arena (either view), at dsc_shutdown */
   if (!in_zone(p)) {
-    __real_free(p);
+    __real_free(OWN_VIEW(p));
     return;
   }
   {
@@ -231,7 +250,7 @@ void* __wrap_realloc(void* p, size_t n)
   if (IS_ARENA(p))
     return NULL;
   if (!in_zone(p))
-    return __real_realloc(p, n);
+    return __real_realloc(OWN_VIEW(p), n);
   i = lent_slot(p);
   old = i >= 0 ? Z.lent[i].size : *((uint32_t*)p - 2);
   q = __wrap_malloc(n);

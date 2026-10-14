@@ -169,7 +169,7 @@ if timing and status_size >= (p + 92 - o) + 4 * (len(TIMING) + len(HALT) + 2):
 # module memory (dscm_g_heap, heap.h): not ABI, read by name
 mh = re.search(r'0x([0-9a-f]+)\s+dscm_g_heap\b', mp)
 if mh:
-    HEAP = 'low_base low_top high_base high_top load_low_top load_high_top load_in_use arena lent parse_base parse_top parse_heap load_left'.split()
+    HEAP = 'low_base low_top high_base high_top load_low_top load_high_top load_in_use arena lent parse_base parse_top parse_heap load_left wrong_view'.split()
     hp = dict(zip(HEAP, struct.unpack_from(f'<{len(HEAP)}I', ram, int(mh.group(1), 16) & 0x00FFFFFF)))
     for k in 'low_base low_top high_base high_top load_low_top load_high_top arena parse_base parse_top'.split():
         if hp[k] >> 24 == 0x0C:   # addresses in the mirror view
@@ -227,6 +227,8 @@ if hdr_version(ram) >= 6:
         print('journal: empty (no game loaded)')
 
 fails = []
+if mh and hp['wrong_view']:
+    fails.append(f"{hp['wrong_view']} heap blocks freed through the wrong view (cached vs mirror, heap.c own_view)")
 if hdr[0] != 0x56435344:
     fails.append('module not loaded')
 if not f[0]:

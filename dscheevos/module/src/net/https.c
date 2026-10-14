@@ -537,6 +537,7 @@ static uint32_t g_paused_seen;
  * before newlib gets them back, so the two views never share a dirty line. */
 extern void dscm_dc_clean(const void* addr, uint32_t len);
 extern void dscm_dc_invalidate(const void* addr, uint32_t len);
+extern void* heap_ptr(const void* p);   /* heap.h */
 static void* tls_calloc(size_t n, size_t size)
 {
   size_t bytes;
@@ -557,7 +558,7 @@ static void tls_free(void* p)
   uint32_t len;
   if (!p)
     return;
-  q = (void*)DSCM_DATA_ADDR(p);
+  q = heap_ptr(p);   /* the heap's view, cached or not (heap_view): as memalign gave it */
   len = (uint32_t)malloc_usable_size(q) & ~31u;
   dscm_dc_clean(p, len);
   dscm_dc_invalidate(p, len);

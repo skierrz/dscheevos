@@ -39,6 +39,11 @@
  * cache (faster for big sets, but their streaming evicts the game's lines).
  * The session, the replies and the snapshot arena stay in the data view. */
 void heap_view(int uncached);
+/* p (either view) in the heap's view: what malloc returned and free and
+ * malloc_usable_size take. Freeing a block through the other view puts that
+ * view's addresses in newlib's free lists, and later blocks get used through
+ * both views at once (a dirty cached line then overwrites uncached writes). */
+void* heap_ptr(const void* p);
 /* Load-time placement. file_size: the session file's (checked by the caller). */
 void heap_load_begin(uint32_t file_size);
 /* Around dsc_init: its malloc of HEAP_ARENA_BYTES is the arena. */
@@ -62,6 +67,8 @@ typedef struct dscm_heap_t {
   uint32_t parse_base, parse_top;     /* rc_api's parsed set in the arena: start, high-water */
   uint32_t parse_heap;                /* bytes of it that didn't fit there (heap) */
   uint32_t load_left;                 /* load-time blocks still alive at the end (0) */
+  uint32_t wrong_view;                /* frees/reallocs of a heap block through the other view
+                                         (cached vs mirror): a bug, must stay 0 (status.py fails) */
 } dscm_heap_t;
 extern dscm_heap_t dscm_g_heap;
 
