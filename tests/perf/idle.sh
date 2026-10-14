@@ -31,7 +31,7 @@ mkdir -p "$dumps"
 [ -z "$script" ] || script=$(cd "$(dirname "$script")" && pwd)/$(basename "$script")
 
 . "$here/../lib/workdir.sh"
-trap 'exit 130' INT TERM HUP   # so the EXIT trap below also runs when the run is killed
+dsc_softterm   # so the EXIT trap below also runs when the run is killed
 work=$(dsc_mkwork dsc-idle-p${PORT:-8453})
 trap 'dsc_rmwork "$work"' EXIT
 args="--profile --profile-frames $frames --script-from-game --profile-log $work/prof.csv"

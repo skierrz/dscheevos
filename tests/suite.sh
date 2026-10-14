@@ -13,7 +13,7 @@ W=$(cd "$here/.." && pwd)
 cd "$W" || exit 1
 export EMU_SLOTS=${EMU_SLOTS:-6}
 LABEL=${LABEL:-suite}
-trap 'exit 130' INT TERM HUP
+dsc_softterm
 WD=
 if [ -n "${SUITE_OUT:-}" ]; then SP=$SUITE_OUT; mkdir -p "$SP"; own=; else SP=$(dsc_mkwork dsc-suite-$$); own=$SP; fi
 trap '[ -z "$WD" ] || dsc_rmwork "$WD"; [ -z "$own" ] || dsc_rmwork "$own"' EXIT
@@ -25,7 +25,7 @@ make -C dscheevos/core test > "$SP/core.txt" 2>&1; res core "$(last "$SP/core.tx
 make -C dscheevos/module/tests test > "$SP/wpa.txt" 2>&1; res module-host "$(grep -E 'checks|layout' "$SP/wpa.txt" | tail -2 | tr '\n' ' ')"
 $HOME/Developer/DScheevos/bin/build-lock -l "$LABEL" docker run --rm --platform linux/amd64 -v "$PWD:/src" -w /src devkitpro/devkitarm:20241104 make -C tests/module > "$SP/modrom-build.txt" 2>&1
 cp "$DSI_FILES/dsinand.bin" "$SP/nand.bin"
-$E "$RUNNER" --mode dsi --rom tests/module/out/module-test.nds --bios-dir "$DSI_FILES" --nand "$SP/nand.bin" --frames 3000 --until RESULT > "$SP/modrom.txt" 2>&1
+$E "$RUNNER" $(dsc_runner_flags) --mode dsi --rom tests/module/out/module-test.nds --bios-dir "$DSI_FILES" --nand "$SP/nand.bin" --frames 3000 --until RESULT > "$SP/modrom.txt" 2>&1
 rm -f "$SP/nand.bin"; res module-rom "$(last "$SP/modrom.txt")"
 
 $E tests/twilight/run.sh tests/bootstrap/sets/pipeline.json 4000 --expect 9901 --never 9902 > "$SP/tw-kirby.txt" 2>&1; res twilight-kirby "$(last "$SP/tw-kirby.txt")"

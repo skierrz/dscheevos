@@ -12,7 +12,7 @@ set -e
 here=$(cd "$(dirname "$0")" && pwd)
 LOAD_BIN=${LOAD_BIN:-$here/../../dscheevos/launcher/loader/out/load.bin}
 . "$here/../lib/workdir.sh"
-trap 'exit 130' INT TERM HUP   # so the EXIT trap below also runs when the run is killed
+dsc_softterm   # so the EXIT trap below also runs when the run is killed
 work=$(dsc_mkwork dsc-cl-$$); trap 'dsc_rmwork "$work"' EXIT
 fail=0
 

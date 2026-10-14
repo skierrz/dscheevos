@@ -29,7 +29,7 @@ if [ "${1:-}" = "--check" ]; then check=1; shift; fi
 . "$here/../lib/workdir.sh"
 work=${WORK:-$(dsc_mkwork dsc-real-$$)}
 [ -n "${WORK:-}" ] || tmpwork=$work   # no WORK: delete the files on exit
-trap 'exit 130' INT TERM HUP   # so the EXIT trap below also runs when the run is killed
+dsc_softterm   # so the EXIT trap below also runs when the run is killed
 trap '[ -z "${tmpwork:-}" ] || dsc_rmwork "$tmpwork"' EXIT
 sd=$work/sd
 mkdir -p "$sd/_nds/dscheevos" "$sd/games"
@@ -71,7 +71,7 @@ cp "$repo/dscheevos/launcher/dscheevos-launcher.nds" "$sd/_nds/nds-bootstrap-rel
 cp "$DSI_FILES/dsinand.bin" "$work/nand.bin"
 [ $spectator = 1 ] && echo "spectator mode: nothing is sent" || echo "LIVE_UNLOCKS=1: unlocks are sent to $user's account"
 
-"$RUNNER" --mode dsi --rom "$sd/_nds/nds-bootstrap-release.nds" --arg sd:/_nds/nds-bootstrap-release.nds \
+"$RUNNER" $(dsc_runner_flags) --mode dsi --rom "$sd/_nds/nds-bootstrap-release.nds" --arg sd:/_nds/nds-bootstrap-release.nds \
   --bios-dir "$DSI_FILES" --nand "$work/nand.bin" --sd "$sd" --net --frames "$frames" ${SCRIPT:+--script "$SCRIPT" --profile --script-from-game} ${RUNNER_ARGS:-} \
   --screenshot "$work/screen.ppm" --dump-ram "$work/ram.bin" > "$work/runner.log" 2>&1 || true
 log=$sd/_nds/dscheevos/launcher.log

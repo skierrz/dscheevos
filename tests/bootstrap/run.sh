@@ -18,7 +18,7 @@ work=${WORK:-$(dsc_mkwork dsc-bs-$$)}
 sd=$work/sd
 # no WORK: delete the files on exit, with the runner's SD image (<sd>.img, .img.idx)
 if [ -z "${WORK:-}" ]; then
-  trap 'exit 130' INT TERM HUP   # so the EXIT trap below also runs when the run is killed
+  dsc_softterm   # so the EXIT trap below also runs when the run is killed
   trap 'dsc_rmwork "$work" || true' EXIT
 fi
 mkdir -p "$sd/_nds/dscheevos" "$sd/games"
@@ -30,7 +30,7 @@ printf '[NDS-BOOTSTRAP]\nNDS_PATH = sd:/games/game.nds\nSAV_PATH = sd:/games/gam
 python3 "$repo/tools/mksession/mksession.py" --rom-path sd:/games/game.nds --hash "$hash" --set "$set" ${SESSION_ARGS:-} -o "$sd/_nds/dscheevos/session.bin"
 cp "$DSI_FILES/dsinand.bin" "$work/nand.bin"
 [ -z "${SD_SETUP:-}" ] || $SD_SETUP "$sd"
-"$RUNNER" --mode dsi --rom "$BOOTSTRAP" --arg sd:/_nds/nds-bootstrap-nightly.nds \
+"$RUNNER" $(dsc_runner_flags) --mode dsi --rom "$BOOTSTRAP" --arg sd:/_nds/nds-bootstrap-nightly.nds \
   --bios-dir "$DSI_FILES" --nand "$work/nand.bin" --sd "$sd" --frames "$frames" \
   ${SCRIPT:+--script "$SCRIPT"} ${RUNNER_ARGS:-} --screenshot "$work/screen.ppm" --dump-ram "$work/ram.bin" 2>&1 | tail -1
 grep -a "DScheevos" "$sd/NDSBTSRP.LOG" | tr -cd '[:print:]\n' || true

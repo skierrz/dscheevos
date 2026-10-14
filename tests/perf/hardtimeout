@@ -6,37 +6,77 @@
 # and, at the limit, sends TERM then KILL to the group. Exit status: the command's, or 124 on timeout.
 # It also removes the work dirs the command made with tests/lib/workdir.sh (listed in DSC_WORK_LIST),
 # since a SIGKILLed script runs no EXIT trap; they hold SD images and session files with the RA token.
+# Soft lock (see tests/lib/workdir.sh): the first SIGTERM/SIGHUP from outside is logged and ignored; a second
+# within 10 s, SIGINT or SIGKILL stops the run. The time-limit kill sends SIGINT first (never bounced), then
+# TERM twice, then KILL; the work-dir holders' immutable flag is cleared on the way out.
 # Use it inside emu-lock: emu-lock -l label tests/perf/hardtimeout 900 tests/perf/gamecost.sh ...
 use strict;
 use POSIX qw(setpgid :sys_wait_h);
 use File::Path qw(remove_tree);
+use File::Basename qw(basename);
 my $secs = shift @ARGV;
 die "usage: hardtimeout SECONDS command...\n" unless defined $secs && $secs =~ /^\d+$/ && @ARGV;
 my $root = $ENV{DSC_WORK} // "$ENV{HOME}/Developer/DScheevos/.work";
+my $label = $ENV{DSC_RUN_LABEL} // basename($ARGV[0]);
+$ENV{DSC_RUN_LABEL} = $label;
 my $list;
 if (!defined $ENV{DSC_WORK_LIST}) {
     mkdir $root, 0700; chmod 0700, $root;
     $list = "$root/.list.$$";
     $ENV{DSC_WORK_LIST} = $list;
 }
-sub sweep {   # remove the listed work dirs (only below the work root) and their runner .img files
+sub sweep {   # remove the listed run dirs (below <root>.d) with their holders (below <root>) and runner .img files
     return unless defined $list && open(my $fh, '<', $list);
     while (my $d = <$fh>) {
         chomp $d;
-        next unless $d =~ m{^\Q$root\E/[^/]+$} && $d !~ /\.\./;
-        remove_tree($d); unlink "$d.img", "$d.img.idx";
+        next unless $d =~ m{^\Q$root\E\.d/([^/]+)$} && $d !~ /\.\./;
+        my $holder = "$root/$1";
+        system('chflags', '-R', 'nouchg', $holder) if -e $holder && -x '/usr/bin/chflags';   # soft lock off
+        remove_tree($holder); remove_tree($d); unlink "$d.img", "$d.img.idx";
     }
     close $fh; unlink $list;
 }
 my $pid = fork() // die "fork: $!\n";
 if ($pid == 0) { setpgid(0, 0); exec @ARGV or die "exec $ARGV[0]: $!\n"; }
 setpgid($pid, $pid);
+my ($st, $reaped) = (0, 0);
+sub gone {   # wait up to $t seconds for the command to end
+    my $t = shift;
+    for (1 .. $t * 10) {
+        return 1 if $reaped;
+        my $r = waitpid($pid, WNOHANG);
+        if ($r == $pid) { $st = $?; $reaped = 1; return 1; }
+        select(undef, undef, undef, 0.1);
+    }
+    return $reaped;
+}
+sub stop_group {   # SIGINT is never bounced; then TERM twice (the second lands inside the bounce window); then KILL
+    kill 'INT', -$pid;
+    return if gone(3);
+    kill 'TERM', -$pid; select(undef, undef, undef, 0.5); kill 'TERM', -$pid;
+    return if gone(3);
+    kill 'KILL', -$pid;
+}
 my $timed_out = 0;
-local $SIG{ALRM} = sub { $timed_out = 1; kill 'TERM', -$pid; sleep 5; kill 'KILL', -$pid; };
-for my $s (qw(INT TERM HUP)) { $SIG{$s} = sub { kill 'TERM', -$pid; sleep 2; kill 'KILL', -$pid; sweep(); exit 130; }; }
+$SIG{ALRM} = sub { $timed_out = 1; stop_group(); };
+$SIG{INT} = sub { stop_group(); kill 'KILL', -$pid; sweep(); exit 130; };
+my $last_term = 0;
+for my $s (qw(TERM HUP)) {
+    $SIG{$s} = sub {
+        my $now = time;
+        if ($last_term && $now - $last_term <= 10) { stop_group(); kill 'KILL', -$pid; sweep(); exit 130; }
+        $last_term = $now;
+        my $m = "$label: ignored SIG$s from outside; send it again within 10 s, or use SIGINT/SIGKILL, to stop\n";
+        print STDERR $m;
+        if (open(my $lg, '>>', "$root.d/softterm.log")) { print $lg scalar(localtime), " pid $$ ppid ", getppid(), " $m"; close $lg; }
+    };
+}
 alarm $secs;
-waitpid($pid, 0);
-my $st = $?;
+while (!$reaped) {
+    my $r = waitpid($pid, 0);
+    if ($r == $pid) { $st = $?; $reaped = 1; }
+    elsif ($r == -1 && !$!{EINTR}) { last; }
+}
 alarm 0;
 kill 'KILL', -$pid;   # anything the command left running in its group (a background mock server)
 sweep();

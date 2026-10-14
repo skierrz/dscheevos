@@ -90,7 +90,7 @@ topng() { python3 -c 'import sys; from PIL import Image; Image.open(sys.argv[1])
 
 # One emulator run from a fresh copy of the SD, with its own mock server.
 mock=
-trap 'exit 130' INT TERM HUP   # so the EXIT trap below also runs when the run is killed
+dsc_softterm   # so the EXIT trap below also runs when the run is killed
 trap '[ -z "$mock" ] || kill $mock 2>/dev/null; [ -z "${tmpwork:-}" ] || dsc_rmwork "$tmpwork"' EXIT
 run() { # run NAME FRAMES
   d=$work/$1
@@ -101,7 +101,7 @@ run() { # run NAME FRAMES
   mock=$!
   sleep 1
   # (the runner needs --rom, which also goes in slot 1; neither boot path starts it from there)
-  "$RUNNER" --mode dsi --rom "$d/sd/BOOT.NDS" $boot_args \
+  "$RUNNER" $(dsc_runner_flags) --mode dsi --rom "$d/sd/BOOT.NDS" $boot_args \
     --bios-dir "$DSI_FILES" --nand "$d/nand.bin" --sd "$d/sd" --net --frames "$2" --script "$work/keys.txt" \
     --screenshot "$d/screen.ppm" --dump-ram "$d/ram.bin" > "$d/runner.log" 2>&1 || true
   kill $mock 2>/dev/null; wait $mock 2>/dev/null || true; mock=

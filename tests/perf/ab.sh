@@ -34,7 +34,7 @@ esac
 
 . "$here/../lib/workdir.sh"
 top=$(dsc_mkwork "dsc-ab-p${PORT:-8453}")   # per slot (PORT), see run.sh
-[ "${KEEP:-0}" = 1 ] || { trap 'exit 130' INT TERM HUP; trap 'dsc_rmwork "$top"' EXIT; }
+[ "${KEEP:-0}" = 1 ] || { dsc_softterm; trap 'dsc_rmwork "$top"' EXIT; }
 set=${SET:-}
 if [ -z "$set" ]; then
   set=$top/typical.json

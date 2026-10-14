@@ -71,7 +71,7 @@ k += [(480, DOWN, 900), (1400, A, 6)]               # last entry: sdmc:/BOOT.NDS
 k += [(1440 + i * 30, DOWN, 6) for i in range(7)]   # down to SAVE & EXIT (the list stops there)
 k += [(1700, A, 6)]
 open(sys.argv[1], "w").writelines("%d %#x %d\n" % x for x in k)' "$work/unlaunch-keys.txt"
-"$RUNNER" --mode dsi --rom "$work/sd/BOOT.NDS" --firmware-boot --bios-dir "$DSI_FILES" --nand "$out" \
+"$RUNNER" $(dsc_runner_flags) --mode dsi --rom "$work/sd/BOOT.NDS" --firmware-boot --bios-dir "$DSI_FILES" --nand "$out" \
   --sd "$work/sd" --frames 1900 --script "$work/unlaunch-keys.txt" > "$work/unlaunch-setup.log" 2>&1
 
 # --- check the saved NO BUTTON entry

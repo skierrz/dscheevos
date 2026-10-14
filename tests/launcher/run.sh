@@ -66,14 +66,14 @@ fi
 python3 "$repo/tools/mock-ra-server/server.py" --bind 0.0.0.0 --port "$port" --set "$set" --log "$work/events.jsonl" \
   --tls-cert "$work/tls/server.pem" --tls-key "$work/tls/server.key" ${MOCK_ARGS:-} > "$work/mock.log" 2>&1 &
 mock=$!
-trap 'exit 130' INT TERM HUP   # so the EXIT trap below also runs when the run is killed
+dsc_softterm   # so the EXIT trap below also runs when the run is killed
 trap 'kill $mock 2>/dev/null; wait $mock 2>/dev/null || true; [ -z "${tmpwork:-}" ] || dsc_rmwork "$tmpwork"' EXIT
 # wait until it listens: loading a big set takes it seconds, and the launcher's
 # first request comes sooner than that in an unthrottled emulator
 i=0
 until lsof -nP -a -p $mock -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1 || [ $i -ge 300 ] || ! kill -0 $mock 2>/dev/null; do sleep 0.1; i=$((i + 1)); done
 
-"$RUNNER" --mode dsi --rom "$sd/_nds/nds-bootstrap-release.nds" --arg sd:/_nds/nds-bootstrap-release.nds \
+"$RUNNER" $(dsc_runner_flags) --mode dsi --rom "$sd/_nds/nds-bootstrap-release.nds" --arg sd:/_nds/nds-bootstrap-release.nds \
   --bios-dir "$DSI_FILES" --nand "$work/nand.bin" --sd "$sd" --net --frames "$frames" ${SCRIPT:+--script "$SCRIPT"} ${RUNNER_ARGS:-} \
   --screenshot "$work/screen.ppm" --dump-ram "$work/ram.bin" > "$work/runner.log" 2>&1 || true
 grep -v "^\[pc\]" "$work/runner.log" | tail -1

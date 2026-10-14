@@ -46,7 +46,7 @@ header "$game" "$frames" "$script"
 PORT=${PORT:-$((8500 + $$ % 400))}
 . "$here/../lib/workdir.sh"
 dir=${OUT:-$(dsc_mkwork "dsc-gc-p$PORT")}
-[ -n "${OUT:-}" ] || { trap 'exit 130' INT TERM HUP; trap 'dsc_rmwork "$dir"' EXIT; }
+[ -n "${OUT:-}" ] || { dsc_softterm; trap 'dsc_rmwork "$dir"' EXIT; }
 mkdir -p "$dir"
 PORT=$PORT PROFDIR=$dir EXTRA_ARGS="--thumb-cycle ${EXTRA_ARGS:-}" CACHE_MODEL=1 MODES="off on" \
   "$here/ab.sh" "$game" "$frames" $script > "$dir/ab.txt" 2>&1 || { tail -20 "$dir/ab.txt"; exit 1; }

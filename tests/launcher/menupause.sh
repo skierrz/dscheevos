@@ -11,7 +11,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 set=${1:-$here/../bootstrap/sets/live.json}
 open=${MENU_AT:-3000} hold=${MENU_FRAMES:-600} frames=$((${MENU_AT:-3000} + ${MENU_FRAMES:-600} + 1500))
 . "$here/../lib/workdir.sh"
-trap 'exit 130' INT TERM HUP   # so the EXIT trap below also runs when the run is killed
+dsc_softterm   # so the EXIT trap below also runs when the run is killed
 w=$(dsc_mkwork dsc-mp-$$); trap 'dsc_rmwork "$w"' EXIT
 s=$w/script.txt
 printf '%d 0x284 20\n%d 0x2 5\n' "$open" $((open + hold)) > "$s"   # L+Down+Select opens, B closes
