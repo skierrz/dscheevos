@@ -396,7 +396,12 @@ typedef struct dscm_header_t {
   dscm_list_t* volatile list;         /* 0x2C: published achievement list, 0 until the set is loaded */
   dscm_notices_t* notices;            /* 0x30 */
   dscm_journal_t* journal;            /* 0x34: cached-mirror address; the ARM7 reads RAM directly */
-  uint32_t reserved[2];
+  /* 0x38: ARM code. Call with the game stopped, before the ARM7 copies the
+   * journal at a safe point (in-game menu, reset): evaluates the frames still
+   * queued, so an unlock in the last moments is in the journal. Runs on the
+   * module's stack; does nothing if idle work is running or parked there. */
+  void (*flush)(void);
+  uint32_t reserved;
   volatile uint32_t notify_count;     /* 0x40: unlocks so far; own cache line, cleaned to RAM */
   void* net_ring;                     /* 0x44: dscm_shim.h ring, 0 if none; same line */
   volatile uint32_t cues;             /* 0x48: LED cues for the ARM7 (DSCM_CUE_*); same cache line, cleaned to RAM */

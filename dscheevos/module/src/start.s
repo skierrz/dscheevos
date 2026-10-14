@@ -23,7 +23,8 @@ dscm_list_ptr:
 	.word 0                     @ 0x2C: published achievement list (module.c swaps it)
 	.word dscm_g_notices        @ 0x30
 	.word dscm_g_journal_phys   @ 0x34: physical (the ARM7 reads it); cleaned at each step
-	.space 8
+	.word flush_entry           @ 0x38: evaluate what is queued, before a journal copy
+	.space 4
 	.global dscm_notify_count
 dscm_notify_count:
 	.word 0                     @ 0x40: unlock count for the ARM7 (own cache line)
@@ -354,4 +355,33 @@ dscm_dtcm_base:
 	bx	lr
 
 	.pool
+
+@ Flush: nds-bootstrap's ARM9 calls it with the game stopped, before the ARM7
+@ copies the journal (in-game menu, reset). The module stack is free unless
+@ idle work is running or parked there (in_halt, test and set as halt_entry
+@ does): then it does nothing, and a later safe point writes the journal.
+	.pushsection .text_cold, "ax"
+	.arm
+	.global flush_entry
+	.type flush_entry, %function
+flush_entry:
+	push	{r4, lr}
+	ldr	r12, =dscm_irq + IRQ_IN_HALT
+	mov	r0, #1
+	swpb	r1, r0, [r12]
+	cmp	r1, #0
+	bne	9f
+	mov	r4, sp
+	ldr	sp, =__stack_top
+	push	{r4, r5}
+	ldr	r1, =module_flush
+	blx	r1
+	pop	{r4, r5}
+	mov	sp, r4
+	ldr	r1, =dscm_irq
+	mov	r2, #0
+	strb	r2, [r1, #IRQ_IN_HALT]
+9:	pop	{r4, lr}
+	bx	lr
+	.popsection
 

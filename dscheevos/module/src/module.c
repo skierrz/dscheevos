@@ -249,6 +249,14 @@ WAKE_INLINE void vblank_poll(void)
 /* used by the stubs in syscalls.c */
 uint32_t dscm_unix_time(void) { return g_boot.unix_time + g_frames / 60; }
 
+/* The same clock frames_ago VBlanks ago: a journal entry gets the time its
+ * frame was captured (the core counts VBlanks as g_frames does). */
+static uint32_t unix_time_at(uint32_t frames_ago)
+{
+  uint32_t f = g_frames;
+  return g_boot.unix_time + (f - (frames_ago < f ? frames_ago : f)) / 60;
+}
+
 /* ---- platform for the core ---- */
 
 static uint32_t read_memory(uint32_t address, uint8_t* buffer, uint32_t num_bytes)
@@ -565,6 +573,7 @@ int module_init(const dscm_boot_t* boot)
   platform.http_send = http_send;
   platform.event = on_event;
   platform.unix_time = dscm_unix_time;
+  platform.unix_time_at = unix_time_at;
   platform.clock_is_utc = (g_boot.flags & DSCM_BOOT_UTC_KNOWN) != 0;
   platform.clock = g_boot.clock;
   dscm_g_status.clock = g_boot.clock;
@@ -722,6 +731,18 @@ static void update_progress(void)
   if (p.hardcore_refused)
     dscm_g_status.hardcore = DSCM_HARDCORE_REFUSED;
   H.progress_stale = 0;
+}
+
+/* From flush_entry (start.s), on the module stack, with the game stopped
+ * (cold: linked after the hot code, see module.ld):
+ * evaluate what is queued (the in-game menu or a reset is about to have the
+ * ARM7 copy the journal). Skipped if idle work holds the lock. */
+__attribute__((section(".text_cold"), noinline)) void module_flush(void)
+{
+  if (!dscm_irq.on || dscm_lock(&H.busy))
+    return;
+  dsc_flush();         /* the journal is cleaned to RAM at each step (journal_sync) */
+  H.busy = 0;          /* notices, cues and stats: the next idle pass */
 }
 
 /* From reset_entry (start.s); IRQs are off. */
