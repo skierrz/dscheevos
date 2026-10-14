@@ -61,6 +61,9 @@
 #include <time.h>
 
 #define MAX_SLOTS 1024
+#ifndef MAX_BEHIND
+#define MAX_BEHIND 0x20000u   /* LAB (coverage): frames behind before dropping (36 min; an ARM immediate: the wake code keeps its layout) */
+#endif
 #define EVENT_RESERVE 16      /* ring slots only lifecycle changes may use: a reset is never lost to a full ring */
 #define NOTICE_QUEUE 32       /* notices waiting for the ring (DSC_NOTICES_PER_FRAME a frame go in) */
 #define NOTICE_HEADROOM 16    /* evaluation pauses while more than NOTICE_QUEUE - this are waiting */
@@ -3104,8 +3107,12 @@ static WAKE_SMALL void commit(int staged)
   slot_t* prev = S.slot_head != S.slot_tail ? &S.slots[(S.slot_head - 1) % MAX_SLOTS] : NULL;
 
   S.frame_counter++;
-  /* frames waiting, repeats included: past MAX_SLOTS (~17 s), drop */
-  if (S.items_in - S.items_out >= MAX_SLOTS) {
+  /* LAB (coverage): frames waiting, repeats included, past MAX_BEHIND
+   * (36 min), drop. Was MAX_SLOTS (~17 s): a repeat or a frame with no
+   * capture costs a counter, not a slot or arena bytes; the slot ring and the
+   * arena are bounded on their own (dsc_capture's slot check, arena_alloc,
+   * the carry slot's check below). */
+  if (S.items_in - S.items_out >= MAX_BEHIND) {
     if (staged) {
       sync_restore();
       slot->state = SLOT_FREE;
