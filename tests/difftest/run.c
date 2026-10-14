@@ -28,7 +28,9 @@
  * rc_client instead (dscheevos/core, its snapshot queue, the module's flags),
  * fed one capture and VBlank per trace frame, and evaluated by two simulated
  * CPUs that hand the rc_client over every random 1-8 frames (--handover SEED;
- * stalls of up to 150 frames, ending at 48 queued or half the arena, build a backlog). Resets and the hardcore switch
+ * stalls of up to 150 frames, ending at 48 queued or half the arena, build a backlog;
+ * past 96 KB or 48 frames both get extra turns until it is short again, as P1's
+ * ARM9 take-over would). Resets and the hardcore switch
  * go through the core's queue (dsc_reset, dsc_hardcore_off); pauses and MENU
  * frames are a frozen window: the ARM9 takes the rc_client and drains the
  * queue (dsc_flush), then the paused frames run rc_client_idle. rc_client's
@@ -810,7 +812,7 @@ static dscm_journal_t g_journal;
 static dscm_notices_t g_notices;
 static uint32_t g_ho_rng;
 static int g_ho_want, g_ho_switch_in, g_ho_stall, g_handover;
-static uint32_t g_ho_switches, g_ho_stalls, g_max_backlog;
+static uint32_t g_ho_switches, g_ho_stalls, g_max_backlog, g_ho_catchups;
 static int g_cpu;                        /* which simulated CPU is calling the core */
 static uint32_t g_by_cpu[2];             /* frames evaluated by each */
 static int g_core_fault;                 /* --fault: self-test, resets and the hardcore switch one frame late */
@@ -970,6 +972,25 @@ static void core_tick(void)
   }
   g_ho_stall = 0;
   if (ho_rnd() % 200 == 0) { g_ho_stall = 1 + (int)(ho_rnd() % 150); g_ho_stalls++; }
+  /* behind (P1's "ARM9 helps when the backlog passes Hi"): more turns for
+   * both, through the same protocol, until the queue is short again, so no
+   * frame drops for capacity (busy SoulSilver frames are many KB each) */
+  {
+    dsc_stats_t st;
+    int guard = 0;
+    dsc_get_stats(&st);
+    if (st.arena_used > 96u * 1024u || dsc_backlog() > 48) {
+      g_ho_catchups++;
+      while ((st.arena_used > 64u * 1024u || dsc_backlog() > 24) && guard++ < 1000) {
+        g_cpu = DSC_OWNER_ARM9;
+        dsc_idle();
+        g_cpu = DSC_OWNER_ARM7;
+        dsc_arm7_step(1 + ho_rnd() % 3);
+        g_cpu = DSC_OWNER_ARM9;
+        dsc_get_stats(&st);
+      }
+    }
+  }
   if (--g_ho_switch_in <= 0) {
     g_ho_want = !g_ho_want;
     dsc_want(g_ho_want);
@@ -1123,9 +1144,9 @@ static int core_main(const char* features, int hardcore, long full_from, long ma
   }
   core_freeze();     /* the end: everything evaluated */
   dsc_get_stats(&st);
-  fprintf(g_log, "# core: frames %u evaluated %u (arm9 %u arm7 %u) dropped %u repeated %u stale %u live_reads %u handovers %u switches %u stalls %u max_backlog %u notices_lost %u lag %u\n",
+  fprintf(g_log, "# core: frames %u evaluated %u (arm9 %u arm7 %u) dropped %u repeated %u stale %u live_reads %u handovers %u switches %u stalls %u max_backlog %u notices_lost %u lag %u catchups %u\n",
           st.frames_snapshotted, st.frames_evaluated, g_by_cpu[0], g_by_cpu[1], st.frames_dropped, st.frames_repeated, st.frames_stale, st.live_reads,
-          st.handovers, g_ho_switches, g_ho_stalls, g_max_backlog, st.notices_lost, g_lag_frames);
+          st.handovers, g_ho_switches, g_ho_stalls, g_max_backlog, st.notices_lost, g_lag_frames, g_ho_catchups);
   if (st.frames_dropped) fprintf(stderr, "difftest-run-core: %u frames dropped\n", st.frames_dropped);
   fprintf(g_log, "END %u\n", g_frames_done);
   dsc_shutdown();
