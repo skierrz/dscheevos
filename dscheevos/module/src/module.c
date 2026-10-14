@@ -252,7 +252,7 @@ static uint32_t bw_last_gate = 0x80000000u;   /* g_frames at the gate's last ent
 static uint32_t bw_run;                        /* consecutive frames with a gate entry */
 static uint32_t bw_midwork;
 static uint32_t bw_cap_est;
-static uint32_t bw_idle_last, bw_idle_run;     /* idle path: the ARM7's VBlank count at its last wake; frames in a row with one */                    /* lines a capture needs (decaying max) */
+static uint32_t bw_idle_last, bw_idle_run, bw_ever_warm;     /* idle path: the ARM7's VBlank count at its last wake; frames in a row with one */                    /* lines a capture needs (decaying max) */
 static uint32_t bw_midwork_unused;                    /* the fiber gave a wait back in the middle of its work */
 #endif
 #define BW_UNITS_ALL (dscm_irq.reserved2[4])   /* LAB fiber build: bw_step calls (shown as "first unit overran") */
@@ -976,14 +976,18 @@ WAKE_CODE int module_idle(int idle_loop)
    * so it can never be preempted holding H.busy or the guard: in a
    * BIOS-wait game the idle thread may stop running for good, e.g. when a
    * load ends) until the game has shown it is an OS_Halt game: an idle wake
-   * in each of 600 frames in a row with no BIOS-wait gate entry (a gate
-   * entry starts the count again). Then it is perf's. */
+   * in each of 60 frames in a row, and the gate never warm (30 frames in a
+   * row with a wrapper call) this session. Measured (biowait.md): BIOS-wait
+   * games idle at most 4 frames in a row before their gate warms; OS_Halt
+   * games reach 60 in a row within 60-155 frames, 600 only after
+   * 1300-1900 (or never). Sticky either way. */
   uint32_t bw_now = vblank_count(WP);
-  if (bw_now != bw_idle_last) {
+  if (bw_now != bw_idle_last && bw_idle_run < 60u && !bw_ever_warm) {
+    /* sticky once reached: perf's passes may span frames */
     bw_idle_run = bw_now - bw_idle_last <= 2u ? bw_idle_run + 1 : 0;
     bw_idle_last = bw_now;
   }
-  const int bw_cap = bw_idle_run < 600u;
+  const int bw_cap = bw_ever_warm || bw_idle_run < 60u;
 #elif defined(BW_HALT_CAPTURE)
   const int bw_cap = 1;
 #else
@@ -1248,7 +1252,7 @@ __attribute__((section(".text_cold"), noinline, target("arm"))) int module_wait(
  * own capture. While suspended mid-work it keeps H.busy (no other pass can
  * start); rcheevos sees one uninterrupted call. */
 #ifndef BW_YIELD_MARGIN
-#define BW_YIELD_MARGIN 6     /* lines: the longest gap between yield points + the way out (measured: BW_GAP_MAX) */
+#define BW_YIELD_MARGIN 14    /* lines: the game's own IRQ handlers run up to 11 lines in one go (Meteos), and the longest gaps between yield points; 6 lost more frames (biowait.md) */
 #endif
 extern void bw_yield(int late);   /* start.s: late (BW_SKIP_LATE builds): the VBlank already came */
 uint32_t bw_ctx[11];          /* start.s: game r4-r11, sp, lr; the fiber's sp (0: not started) */
@@ -1288,10 +1292,10 @@ static __attribute__((section(".text_cold"), noinline, target("arm"))) int bwf_b
     uint32_t now = vblank_count(WP);   /* the ARM7's count: g_frames moves only when the module polls */
     bw_run = now - bw_last_gate <= 2u ? bw_run + (now != bw_last_gate) : 0;
     bw_last_gate = now;
-    bw_idle_run = 0;     /* a BIOS-wait game (for now): the idle path stays capture-only */
   }
   if (bw_run < 30 && !bw_midwork)
     return 0;
+  bw_ever_warm = 1;    /* a BIOS-wait game for the session: the idle path stays capture-only (stray calls don't count) */
   if (REG_IE & REG_IF & 1)
     return 0;          /* a VBlank is already requested: the stock wait returns at once */
   /* the capture's estimate: the longest of the recent ones (it decays a line
