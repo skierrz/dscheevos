@@ -1092,7 +1092,7 @@ __attribute__((section(".text_cold"), noinline, target("arm"))) int module_wait(
 {
   int over = 0;
   wake_page_t* const wp = wake_page_arm();
-  uint32_t v0, c0, left, cpsr;
+  uint32_t v0, c0, left, left0, cpsr;
   if (!dscm_irq.on || BW_STACK_BAD)
     return 0;
   if (REG_IE & REG_IF & 1)
@@ -1103,6 +1103,11 @@ __attribute__((section(".text_cold"), noinline, target("arm"))) int module_wait(
     return 0;          /* idle work parked in the idle thread: stock */
   BW_WAITS++;
   v0 = REG_VCOUNT;
+  /* the deadline from VCOUNT at entry: the lines elapsed since then are
+   * counted against it. (The ARM7's VBlank count can lag the ARM9's VBlank,
+   * and VCOUNT alone restarts after line 192: "lines to the next VBlank"
+   * read after a missed VBlank looks like a whole new frame.) */
+  left0 = bw_left();
   if (dscm_irq.alias_cached == 0xFF)
     alias_check();
   c0 = vblank_count(WP);
@@ -1113,7 +1118,10 @@ __attribute__((section(".text_cold"), noinline, target("arm"))) int module_wait(
   idle_frames(WP, 0);
   for (;;) {
     uint32_t start, used, est = BW_EST;
-    left = bw_left();
+    {
+      uint32_t el = lines_between(v0, REG_VCOUNT);
+      left = el < left0 ? left0 - el : 0;
+    }
     if (vblank_count(WP) != c0 || (REG_IF & 1))
       break;
     if (left < (est ? est : BW_FIRST) + BW_MARGIN)
@@ -1166,7 +1174,7 @@ __attribute__((section(".text_cold"), noinline, target("arm"))) int module_wait(
     BW_LINES += lines;
     idle_frames(WP, lines);
   }
-  if (vblank_count(WP) != c0) {
+  if (vblank_count(WP) != c0 || lines_between(v0, REG_VCOUNT) >= left0) {
     over = 1;
     if (!(BW_UNITS == 1 && BW_FIRST_OVER))
       BW_OVERRUNS++;
