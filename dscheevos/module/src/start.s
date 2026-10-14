@@ -438,13 +438,18 @@ bw_entry:
 	sub	r1, r1, #1
 	cmp	r1, #3
 	bhs	bw_stock
+	@ its own guard (guard[1]) and stack (the spare 4 KB below the idle
+	@ stack): an idle-path wake preempted after its halt (its IRQ taken in
+	@ module_idle) keeps the idle guard and its frame on the idle stack until
+	@ the idle thread runs again, which in a BIOS-wait game may be never
 	mov	r0, #1
+	add	r12, r12, #4
 	swpb	r1, r0, [r12]
+	sub	r12, r12, #4
 	cmp	r1, #0
 	bne	bw_blocked
 	mov	r12, sp
-	mov	sp, #STACK_TOP_HI
-	sub	sp, sp, #STACK_GAP
+	ldr	sp, =__irq_stack_top
 	push	{r12, lr}
 	ldr	r1, =module_wait
 	blx	r1
@@ -453,9 +458,9 @@ bw_entry:
 	mov	r1, #MIRROR_HI
 	orr	r1, r1, #REGION_END
 	mov	r2, #0
-	strb	r2, [r1, #-GUARD_BACK]
+	strb	r2, [r1, #-GUARD_BACK + 4]
 	b	bw_stock
-bw_blocked:                         @ the guard is held: idle work parked in the idle thread (counted, dscm_irq.reserved2[1])
+bw_blocked:                         @ the gate's guard is held (another thread is in the gate): counted, dscm_irq.reserved2[1]
 	ldr	r0, [r12, #-80]
 	add	r0, r0, #1
 	str	r0, [r12, #-80]
