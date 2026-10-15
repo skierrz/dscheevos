@@ -280,6 +280,10 @@ static int interrupt_pending(void) { return 0; }
 static dscm_journal_t journal;
 static dscm_notices_t notices;
 
+/* Random bytes changed per bench frame (LAB_CHANGES; 0: every frame unchanged, a repeat). */
+#ifndef LAB_CHANGES
+#define LAB_CHANGES 512
+#endif
 static void change_memory(int n)
 {
   int k;
@@ -546,7 +550,7 @@ static int core_tests(void)
     int cold = i < FRAMES;
     u32 t0, t1, t2, cap, ime;
     frames++;
-    change_memory(512);
+    change_memory(LAB_CHANGES);
     ime = REG_IME;
     REG_IME = 0;
     if (cold) { DC_FlushAll(); IC_InvalidateAll(); }
@@ -576,7 +580,7 @@ static int core_tests(void)
   report("capture, warm", cap_warm, FRAMES);
   report("idle (eval), warm", idle_warm, FRAMES);
   dsc_get_stats(&s);
-  say("evaluated %lu, dropped %lu", (unsigned long)s.frames_evaluated, (unsigned long)s.frames_dropped);
+  say("evaluated %lu, dropped %lu, repeated %lu", (unsigned long)s.frames_evaluated, (unsigned long)s.frames_dropped, (unsigned long)s.frames_repeated);
   return 0;
 }
 
