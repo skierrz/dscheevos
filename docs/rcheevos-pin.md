@@ -1,19 +1,26 @@
 # rcheevos version pin
 
-Which rcheevos DScheevos builds, and why. Checked 2026-10-12.
+Which rcheevos DScheevos builds, and why. Checked 2026-10-12; patch list updated 2026-10-15.
 
 ## Where we are
 
-- Submodule `external/rcheevos`: upstream `develop` at `683197d` ("restructure src folder", 2026-10-04) plus one patch, on the fork `skierrz/rcheevos` branch `dscheevos-683197d`. `git describe` of the base: `v12.5.0-9-g683197d`.
+- Submodule `external/rcheevos`: upstream `develop` at `683197d` ("restructure src folder", 2026-10-04) plus ten patches, on the fork `skierrz/rcheevos` branch `dscheevos-683197d` (head `754965e`). `git describe` of the base: `v12.5.0-9-g683197d`. `git diff 683197d..754965e` shows every byte we changed (7 files: `include/rc_client.h`, `src/client/rc_client.c`, `src/client/rc_client_internal.h`, `src/runtime/rc_condset.c`, `rc_internal.h`, `rc_memref.c`, `rc_runtime_progress.c`).
 - Patches (each one commit, proven identical to stock with `tests/difftest` on every real set):
-  1. **clean stores** (`src/runtime/rc_condset.c` only): a condition's `is_true`, a ResetNextIf'd zero `current_hits` and a condset's `is_paused` are stored only when they change. Same values everywhere; an unchanged store no longer dirties a data-cache line (on the DSi each dirty line costs a write-back when evicted). ARM code: `ldrb; cmp; strbne`, +2 instructions per condition, no branch.
+  1. **clean stores** (`09ea746`) (`src/runtime/rc_condset.c` only): a condition's `is_true`, a ResetNextIf'd zero `current_hits` and a condset's `is_paused` are stored only when they change. Same values everywhere; an unchanged store no longer dirties a data-cache line (on the DSi each dirty line costs a write-back when evicted). ARM code: `ldrb; cmp; strbne`, +2 instructions per condition, no branch.
      - **Measured (2026-10-13, melonDS cache model, not hardware), against stock with identical code layout** (a padded stock build, because the patch shifts the code after it by 0x18 bytes):
        - Kirby: evaluation -0.8k and the game's own cycles -1.4k per frame, net -2.2k (-0.19% of a frame); dirty write-backs we cause 196 -> 156.
        - MKDS race: evaluation -2.6% per evaluated frame; game within noise; write-backs 97 -> 73.
      - **Correction:** the first figures (Kirby game +63.5k -> +54.3k, write-backs 300 -> 155, "-15%", also in commit 23f736d) compared against unpadded stock, and the layout shift alone accounts for about two-thirds of those write-backs and over half of that game gain.
      - **Desktop** (Apple M5, clang -O2, real sets): neutral to slower, up to +6.5% evaluation time on TWEWY; there the guarded stores compile to real branches.
      - **Status:** DSi-only, kept in our fork. Upstream PR [RetroAchievements/rcheevos#562](https://github.com/RetroAchievements/rcheevos/pull/562) is being closed for these reasons.
-- `RCHEEVOS_VERSION_STRING` still says 12.5.0, so the user agent says `rcheevos/12.5.0` while we run 9 commits past it.
+  2. **unchanged modified memrefs** (`d2a8110`, general fix): a modified memref (AddSource sum, scaled or masked value) whose inputs did not change this frame or last is not recalculated; only its changed flag is cleared, as stock would. Deserializing forces a recalculation.
+  3. **dependency-driven modified-memref pass** (`4344006`, general fix): an index from each memref to its dependents, so only flagged entries are visited, in list order. Index up to 32 KB (SoulSilver).
+  4. **indexed memref deduplication** (`e01c29c`, general fix, load time only): a hash index replaces the quadratic dedup scans; same entries in the same order. Set load on the DS: Platinum 15.5 -> 3.7 s, SoulSilver 109 -> 9.7 s.
+  5. - 9. **change-driven evaluation** (`283b79a`, `9a74581`, `1f6f17e`, `d79d137`, `e3dc5bc`; opt-in, off unless the host calls `rc_client_set_change_driven_enabled`): an achievement or leaderboard is skipped when nothing it reads changed and it is at a fixed point; tallies still run on skipped frames.
+  10. **changed ranges** (`754965e`; opt-in, DSi-specific, the host must supply exact changed ranges with `rc_client_set_changed_memory`): an indirect read whose pointer and last target range are unchanged is not re-read.
+  - **Proof (patches 2-10):** each commit difftested separately against stock `683197d`, zero differences on all 16 real sets with RAM dumps plus the real Black trace (fuzzed traces, 7-8 lifecycle scripts x 2 sessions x hardcore on/off, comparing every memref value/prior/changed, every hit count, events, requests, rich presence and leaderboards per frame). rcheevos' own unit tests: the same 5 arm64 float failures as stock. Details: research/optimize/opt-evalcost.md (planning repo) and `tests/difftest`. The DScheevos core turns 5-10 on with `DSC_CHANGE_DRIVEN` / `DSC_CHANGED_RANGES`.
+  - **Upstream:** 2-4 help every platform (candidates for a PR once our numbers are labelled emulator vs hardware); 5-10 are DSi-motivated and would be raised as an issue/discussion first (CLAUDE.md rule). Nothing sent yet.
+- `RCHEEVOS_VERSION_STRING` still says 12.5.0, so the user agent says `rcheevos/12.5.0` while we run 9 upstream commits past it (plus our ten patches).
 - Latest release tag: **v12.5.0**. Upstream `develop` is 3 commits past us: `aed817f` (runtime types made internal), `23bcf47` (project files), `116d018` (a test script).
 
 ## The 9 commits between v12.5.0 and our pin
