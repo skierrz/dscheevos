@@ -46,6 +46,9 @@ frame's work"**, 3 files (`src/runtime/rc_internal.h`, `src/client/rc_client.c`,
   206fff5 (2026-10-15) keeps f5a0727's pre-sizing to builds with the hook (#ifdef RC_CLIENT_YIELD_HOOK), so the
   default build's rc_client.o is byte-identical to 806fdc0's again; with the hook the code is c6bd0e1's, which passed
   the difftest on all 16 sets.
+  3ca6b3f (2026-10-15): a yield point every 16 modified memrefs while linking memref dependencies (4 frames in one
+  piece at Super Princess Peach's start). Difftest on the tree with it (run6): all 16 sets, 96 runs each, zero
+  differences.
 - **Upstream:** DSi-specific; to be raised as an issue/discussion (draft to the owner), not a PR.
 - Tried and dropped: an `rc_client_build_change_index()` to build the index at load. Its second caller stops GCC inlining
   `rc_client_cd_build` into `rc_client_do_frame` (moves the hot layout), and the yield points in the build already
