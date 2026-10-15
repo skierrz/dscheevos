@@ -401,20 +401,27 @@ WAKE_CODE static int interrupt_pending(void)
     return 1;          /* a VBlank: the copy would be of two frames (vblank_poll queues it next) */
   if (!(REG_IE & REG_IF))
     return 0;
-#ifdef BW_FIBER
-  /* LAB coverage: the idle path's capture-only mode masks IRQs from its start to the halt, so the
-   * window below would open nothing and the copy would hold the game's IRQ off to its end (up to 54
-   * lines at Super Princess Peach's start, 8 frames lost): stop the copy instead (the stage keeps the
-   * frame's last completed capture), and the halt returns at once to take the IRQ */
-  if (bw_cap_now)
-    return 1;
-#endif
   before = REG_VCOUNT;
   wake_irq_restore(g_capture_cpsr);
   wake_irq_off();
   /* a VBlank: the copy would be of two frames (vblank_poll queues it next) */
   return lines_between(before, REG_VCOUNT) >= 2 || vblank_count(WP) != dscm_irq.last_vblank;
 }
+#ifdef BW_FIBER
+/* LAB coverage: a BIOS-wait game's interrupt_pending (registered only when nds-bootstrap patched the wrapper,
+ * so an OS_Halt game runs the default one and the hot layout stays the default's). The idle path's
+ * capture-only mode masks IRQs from its start to the halt, so the default window would open nothing and
+ * the copy would hold the game's IRQ off to its end (up to 54 lines at Super Princess Peach's start):
+ * there, a waiting IRQ stops the copy (the stage keeps the frame's last completed capture) and the halt
+ * returns at once to take it. */
+static __attribute__((section(".text_cold"), noinline, target("arm"))) int bw_interrupt_pending(void)
+{
+  wake_page_t* const wp = wake_page_arm();
+  if (!bw_cap_now)
+    return interrupt_pending();
+  return vblank_count(WP) != dscm_irq.last_vblank || (REG_IE & REG_IF) != 0;
+}
+#endif
 #undef WP
 #define WP WAKE_PAGE
 
@@ -689,7 +696,11 @@ int module_init(const dscm_boot_t* boot)
   memset(&platform, 0, sizeof(platform));
   platform.read_memory = read_memory;
   platform.memory_map = memory_map;
+#ifdef BW_FIBER
+  platform.interrupt_pending = dscm_bw_patched ? bw_interrupt_pending : interrupt_pending;
+#else
   platform.interrupt_pending = interrupt_pending;
+#endif
   platform.millis = millis;
   platform.http_send = http_send;
   platform.event = on_event;
@@ -965,23 +976,14 @@ int dscm_idle_step(void)
  * 0 for the stock halt. */
 #undef WP
 #define WP wp
-WAKE_CODE int module_idle(int idle_loop)
-{
-  wake_page_t* const wp = wake_page_arm();
-  uint32_t start;
-
-  start = REG_VCOUNT;
-  if (!dscm_irq.on)   /* initialized and active */
-    return 0;
-  /* A game thread that halts until its IRQ comes (while (!flag) OS_Halt())
-   * is waiting for its own frame: any work here would delay the game. Only
-   * the idle thread's loop is free time. */
-  if (!idle_loop) {
-    H.halts_other++;
-    return 0;
-  }
-  /* idle work parked elsewhere (dscm_idle_step): the stock halt */
 #if defined(BW_FIBER)
+/* LAB coverage: the idle path's capture-only decision, out of line (cold), so module_idle keeps
+ * nearly its default size and the hot layout moves as little as it can */
+static __attribute__((section(".text_cold"), noinline, target("arm"))) int bw_idle_cap(void)
+{
+  if (!dscm_bw_patched)
+    return 0;          /* not patched (NitroSDK 3+, an OS_Halt game): perf's idle path, nothing to track */
+  wake_page_t* const wp = wake_page_arm();
   /* LAB coverage: the idle path only captures (masked from start to halt,
    * so it can never be preempted holding H.busy or the guard: in a
    * BIOS-wait game the idle thread may stop running for good, e.g. when a
@@ -1009,19 +1011,79 @@ WAKE_CODE int module_idle(int idle_loop)
 #endif
   /* not patched (NitroSDK 3+: no BIOS-wait games): perf's idle path from the start */
 #ifdef BW_IDLE_LOADS
-  const int bw_cap = dscm_bw_patched && (bw_ever_warm ? bw_load_run < 30u : bw_idle_run < 60u);
+  return dscm_bw_patched && (bw_ever_warm ? bw_load_run < 30u : bw_idle_run < 60u);
 #else
-  const int bw_cap = dscm_bw_patched && (bw_ever_warm || bw_idle_run < 60u);
+  return dscm_bw_patched && (bw_ever_warm || bw_idle_run < 60u);
 #endif
+}
+/* LAB coverage: module_idle's capture-only path for a BIOS-wait game (bw_idle_cap): IRQs masked from
+ * here to the halt, so it is never preempted holding H.busy; a waiting IRQ stops the copy (bw_cap_now,
+ * interrupt_pending) and the halt returns at once. Nothing else runs: all work is the gate's. */
+static __attribute__((section(".text_cold"), noinline, target("arm"))) int bw_idle_capture_only(uint32_t start)
+{
+  wake_page_t* const wp = wake_page_arm();
+  uint32_t cpsr0 = wake_irq_off();
+  if (wake_swap(&H.busy, 1)) {
+    wake_irq_restore(cpsr0);
+    return 0;
+  }
+  H.halts_idle++;
+  if (dscm_irq.alias_cached == 0xFF)
+    alias_check();
+  vblank_poll(WP);
+  idle_frames(WP, 0);
+  dscm_irq.idle_start = start;
+  dscm_irq.idle_open = 1;
+  bw_cap_now = 1;
+  capture(WP);
+  bw_cap_now = 0;
+  start = dscm_irq.idle_start;
+  idle_frames(WP, wake_swap(&dscm_irq.idle_open, 0) ? lines_since(start) : 0);
+  H.busy = 0;
+  wake_wfi();
+  wake_irq_restore(cpsr0);
+  return 1;
+}
+/* LAB coverage: module_idle's one call for the BIOS-wait lab: -1 = carry on (an OS_Halt game, or a
+ * BIOS-wait game whose idle path works as perf's), else module_idle's return value */
+static __attribute__((section(".text_cold"), noinline, target("arm"))) int bw_idle_hook(uint32_t start)
+{
+  if (!dscm_bw_patched || !bw_idle_cap())
+    return -1;
+  return bw_idle_capture_only(start);
+}
+#endif
+WAKE_CODE int module_idle(int idle_loop)
+{
+  wake_page_t* const wp = wake_page_arm();
+  uint32_t start;
+
+  start = REG_VCOUNT;
+  if (!dscm_irq.on)   /* initialized and active */
+    return 0;
+  /* A game thread that halts until its IRQ comes (while (!flag) OS_Halt())
+   * is waiting for its own frame: any work here would delay the game. Only
+   * the idle thread's loop is free time. */
+  if (!idle_loop) {
+    H.halts_other++;
+    return 0;
+  }
+  /* idle work parked elsewhere (dscm_idle_step): the stock halt */
+#if defined(BW_FIBER)
+  /* LAB coverage: a BIOS-wait game's capture-only idle path runs out of line (cold), so the rest
+   * of module_idle is the default build's code and the hot layout stays where it is */
+  {
+    int r = bw_idle_hook(start);
+    if (r >= 0)
+      return r;
+  }
+  const int bw_cap = 0;
 #elif defined(BW_HALT_CAPTURE)
   const int bw_cap = 1;
 #else
   const int bw_cap = 0;
 #endif
   uint32_t bw_cpsr0 = bw_cap ? wake_irq_off() : 0;
-#ifdef BW_FIBER
-  bw_cap_now = bw_cap;
-#endif
   if (wake_swap(&H.busy, 1)) {
     if (bw_cap)
       wake_irq_restore(bw_cpsr0);
@@ -1074,9 +1136,6 @@ WAKE_CODE int module_idle(int idle_loop)
     /* else a VBlank came meanwhile and counted the pass */
     idle_frames(WP, wake_swap(&dscm_irq.idle_open, 0) ? lines_since(start) : 0);
     H.busy = 0;       /* IRQs masked: nothing runs before the halt */
-#ifdef BW_FIBER
-    bw_cap_now = 0;
-#endif
     wake_wfi();
     wake_irq_restore(bw_cap ? bw_cpsr0 : cpsr);
     return 1;   /* halted here */
