@@ -206,17 +206,24 @@ def load_io(base):
 
 
 def cmp_ipc(IA, IB):
-    """IPC writes (IPCSYNC, FIFO send) per CPU per frame: the commands each CPU gives the other (sound commands go this way)."""
+    """IPC writes (IPCSYNC, FIFO send) per CPU: the commands each CPU gives the other (the ARM9's sound commands go
+    this way). Per CPU the whole sequence (frame ignored), then per frame."""
     def per(rows):
         d = collections.defaultdict(list)
         for f, cpu, ts, pc, rw, addr, val, cnt in rows:
             if rw == 'w':
-                d[(cpu, f)].extend([(addr, val)] * cnt)
+                d[cpu].extend([(f, addr, val)] * cnt)
         return d
     a, b = per(IA), per(IB)
-    keys = sorted(set(a) | set(b), key=lambda k: (k[1], k[0]))
-    dif = [k for k in keys if a.get(k) != b.get(k)]
-    return dict(differing=len(dif), first=dif[0] if dif else None, ok=not dif)
+    out = {}
+    for cpu in sorted(set(a) | set(b)):
+        x, y = a.get(cpu, []), b.get(cpu, [])
+        k = min(len(x), len(y))
+        j = next((i for i in range(k) if x[i][1:] != y[i][1:]), None)
+        moved = sum(1 for i in range(j if j is not None else k) if x[i][0] != y[i][0])
+        out[cpu] = dict(n=(len(x), len(y)), seq_first=None if j is None else (j, x[j][0], x[j][1]), moved=moved,
+                        ok=j is None and len(x) == len(y) and moved == 0)
+    return dict(cpus=out, ok=all(v['ok'] for v in out.values()))
 
 
 def cmp_reads(IA, IB):
@@ -345,13 +352,16 @@ def main():
              sp['crossed_frame']))
     IA, IB = load_io(ref), load_io(run)
     ipc = cmp_ipc(IA, IB); res['ipc'] = ipc
-    say('IPC (IPCSYNC/FIFO-send writes per CPU per frame, incl. the ARM9\'s sound commands): %s' %
-        ('PASS' if ipc['ok'] else 'FAIL (%d cpu-frames differ, first ARM%s frame %d)' % (ipc['differing'], ipc['first'][0], ipc['first'][1])))
+    for cpu, v in ipc['cpus'].items():
+        say('IPC from ARM%s (IPCSYNC/FIFO-send writes; the ARM9\'s sound commands go this way): %s; writes %d vs %d; %d moved to another frame' %
+            (cpu, 'sequence identical' if v['seq_first'] is None and v['n'][0] == v['n'][1] else
+             'sequence differs from write %s' % (v['seq_first'],), v['n'][0], v['n'][1], v['moved']))
     rd = cmp_reads(IA, IB); res['reads'] = rd
     say('timing-sensitive reads by game code (VCOUNT/DISPSTAT/timers; diagnostic): %d of %d (cpu, pc, register) streams saw different values' %
         (rd['differing'], rd['streams']))
     for f, (cpu, pc, addr), j in rd['first'][:detail]:
-        say('    frame %d: ARM%s pc %s reads %s (value #%d differs)' % (f, cpu, pc, addr, j))
+        tag = ' (nds-bootstrap ce7)' if cpu == '7' and 0x037E0000 <= int(pc, 16) < 0x037F0000 else ''
+        say('    frame %d: ARM%s pc %s%s reads %s (value #%d differs)' % (f, cpu, pc, tag, addr, j))
     pc = cmp_pcm(ref, run); res['pcm'] = pc
     if pc:
         say('sound samples (as close as possible): %.3f%% of %d differ, peak |d| %d, diff RMS %.1f dBFS vs signal %.1f%s' %
