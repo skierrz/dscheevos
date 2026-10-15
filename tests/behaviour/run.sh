@@ -32,7 +32,7 @@ case $kind in
   load) base=$1; shift
         [ -f "$state" ] || { echo "no state $state"; exit 1; }
         fr=${FRAMES:-3000}; out=$base.log
-        extra="--load-state $state --bgate $base.bg --audio-out $base.pcm --spu7 $base.spu7";;
+        extra="--load-state $state --bgate $base.bg --hash9 $base.hash --audio-out $base.pcm --spu7 $base.spu7";;
   *) echo "kind: save or load"; exit 2;;
 esac
 h() { { sha1sum "$1" 2>/dev/null || shasum "$1"; } | cut -c1-12; }
