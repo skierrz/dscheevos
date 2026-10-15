@@ -252,6 +252,7 @@ static uint32_t bw_last_gate = 0x80000000u;   /* g_frames at the gate's last ent
 static uint32_t bw_run;                        /* consecutive frames with a gate entry */
 static uint32_t bw_midwork;
 static uint32_t bw_cap_est;
+extern volatile uint32_t dscm_bw_patched;   /* start.s header word 0x4C, set by nds-bootstrap at boot */
 static uint32_t bw_idle_last, bw_idle_run, bw_ever_warm;     /* idle path: the ARM7's VBlank count at its last wake; frames in a row with one */                    /* lines a capture needs (decaying max) */
 static uint32_t bw_midwork_unused;                    /* the fiber gave a wait back in the middle of its work */
 #endif
@@ -987,7 +988,8 @@ WAKE_CODE int module_idle(int idle_loop)
     bw_idle_run = bw_now - bw_idle_last <= 2u ? bw_idle_run + 1 : 0;
     bw_idle_last = bw_now;
   }
-  const int bw_cap = bw_ever_warm || bw_idle_run < 60u;
+  /* not patched (NitroSDK 3+: no BIOS-wait games): perf's idle path from the start */
+  const int bw_cap = dscm_bw_patched && (bw_ever_warm || bw_idle_run < 60u);
 #elif defined(BW_HALT_CAPTURE)
   const int bw_cap = 1;
 #else
@@ -1074,7 +1076,13 @@ void dscm_yield_point(void);
 #define BW_YP() ((void)0)
 #endif
 #define BW_FIRST 100          /* the first unit (nothing measured yet) needs this many lines */
+#ifdef BW_FIBER
+#define BW_NET_LINES 120      /* BW=1: the network starts, or resumes after a yield inside it, only with this many lines left: its
+                               * longest stretch without a yield point (the TLS receive path) measured 110 lines (biowait.md) */
+static uint32_t bw_in_net;    /* the fiber is inside net_service */
+#else
 #define BW_NET_LINES 100      /* the network's once-a-frame pass needs this many */
+#endif
 static __attribute__((section(".text_cold"), noinline, target("arm"))) uint32_t bw_left(void)
 {
   uint32_t v = REG_VCOUNT;
@@ -1107,7 +1115,13 @@ static __attribute__((section(".text_cold"), noinline)) int bw_step(uint32_t lef
 #else
   if (H.net_started && left >= BW_NET_LINES) {
 #endif
+#ifdef BW_FIBER
+    bw_in_net = 1;
+#endif
     net_service(millis());
+#ifdef BW_FIBER
+    bw_in_net = 0;
+#endif
     H.net_busy = net_busy() != 0;
     dscm_g_status.net_state = net_state();
     dscm_g_status.net_detail = net_detail();
@@ -1369,6 +1383,12 @@ static __attribute__((section(".text_cold"), noinline, target("arm"))) void bwf_
 /* A yield point: give the wait back if its time is nearly up (or a VBlank
  * came), and carry on in a later wait. Anywhere on the fiber; elsewhere
  * (the idle path, init, flush) it returns at once. */
+/* core DSC_ROOM_HOOK: room for a long step without yield points (the list rebuild): outside
+ * the gate always; in it, only with BW_NET_LINES left */
+__attribute__((section(".text_cold"), noinline, target("arm"))) int dscm_room(void)
+{
+  return !BWF.in || bwf_left() >= BW_NET_LINES;
+}
 __attribute__((section(".text_cold"), noinline, target("arm"))) void dscm_yield_point(void)
 {
   wake_page_t* wp;
@@ -1402,6 +1422,10 @@ __attribute__((section(".text_cold"), noinline, target("arm"))) void dscm_yield_
     bw_yield(bw_late);
     bw_late = 0;
     if (bwf_begin()) {
+      if (bw_in_net && bwf_left() < BW_NET_LINES) {
+        bwf_end();     /* inside the network: resume only in a wait with room for its longest stretch */
+        continue;
+      }
       bw_midwork = 0;
       return;
     }

@@ -2386,9 +2386,19 @@ static void list_build(void)
 }
 
 /* Idle time: rebuild a stale list, at most once every LIST_MIN_FRAMES frames. */
+/* LAB coverage (BW=1 module): a long, non-yielding step (the list rebuild)
+ * only when the host has room for it; else it stays pending (stale) */
+#ifdef DSC_ROOM_HOOK
+int DSC_ROOM_HOOK(void);
+#define DSC_ROOM() DSC_ROOM_HOOK()
+#else
+#define DSC_ROOM() 1
+#endif
 static void list_update(void)
 {
   if (!S.active || !S.list_stale || !S.list_buf[0])
+    return;
+  if (!DSC_ROOM())
     return;
   if (S.list_published && S.frame_counter - S.list_frame < LIST_MIN_FRAMES)
     return;
