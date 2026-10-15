@@ -1289,7 +1289,7 @@ __attribute__((section(".text_cold"), noinline)) int module_wait(void) { return 
 #endif
 extern void bw_yield(int late);   /* start.s: late (BW_SKIP_LATE builds): the VBlank already came */
 uint32_t bw_ctx[11];          /* start.s: game r4-r11, sp, lr; the fiber's sp (0: not started) */
-static struct { uint32_t v0, left0, c0, f0, in, gap_v, site, budget, frames0, last_el; } BWF;
+static struct { uint32_t v0, left0, c0, f0, in, gap_v, site, budget, frames0, last_el, mask_cpsr; } BWF;
 /* LAB diagnostics (status.py "bw diag"): longest gap between yield checks
  * (lines) with the call sites that start and end it (1 = the wait's start),
  * longest capture at a wait's start (lines), waits worked, waits with too
@@ -1365,6 +1365,11 @@ static __attribute__((section(".text_cold"), noinline, target("arm"))) int bwf_b
   }
   bw_diag[4]++;
   BWF.in = 1;
+#ifdef BW_DIAG_MASK
+  /* LAB diagnostic only: the gate's work with the game's IRQs masked (bwf_end unmasks), to tell our
+   * own time from the game's IRQ handlers and threads in the gaps. Not for use: the game's IRQs wait */
+  BWF.mask_cpsr = wake_irq_off();
+#endif
   return 1;
 }
 static __attribute__((section(".text_cold"), noinline, target("arm"))) uint32_t bwf_left(void)
@@ -1380,6 +1385,9 @@ static __attribute__((section(".text_cold"), noinline, target("arm"))) void bwf_
 {
   wake_page_t* const wp = wake_page_arm();
   uint32_t lines = lines_since(BWF.v0), f1;
+#ifdef BW_DIAG_MASK
+  wake_irq_restore(BWF.mask_cpsr);
+#endif
   BWF.in = 0;
   BW_LINES += lines;
   idle_frames(WP, lines);
