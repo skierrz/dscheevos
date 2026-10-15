@@ -42,6 +42,9 @@ frame's work"**, 3 files (`src/runtime/rc_internal.h`, `src/client/rc_client.c`,
   to 179 lines in one step on a real set; d1281e3 yield points per condition of the index build and every 256 steps of
   a comparison chain; 247a8d1 yield points between the index build's allocations and every 64 comparison offsets (a
   50-line stretch on Lost in Blue's set). None changes what is evaluated: allocation sizes and call points only.
+  206fff5 (2026-10-15) keeps f5a0727's pre-sizing to builds with the hook (#ifdef RC_CLIENT_YIELD_HOOK), so the
+  default build's rc_client.o is byte-identical to 806fdc0's again; with the hook the code is c6bd0e1's, which passed
+  the difftest on all 16 sets.
 - **Upstream:** DSi-specific; to be raised as an issue/discussion (draft to the owner), not a PR.
 - Tried and dropped: an `rc_client_build_change_index()` to build the index at load. Its second caller stops GCC inlining
   `rc_client_cd_build` into `rc_client_do_frame` (moves the hot layout), and the yield points in the build already
