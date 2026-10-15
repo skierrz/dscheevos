@@ -3922,6 +3922,7 @@ static inline __attribute__((always_inline)) int arm9_turn(void)
   return 0;
 }
 
+#ifdef DSC_IDLE_MAX
 /* LAB (coverage): dsc_idle evaluating at most max_frames queued frames. */
 int dsc_idle_max(uint32_t max_frames)
 {
@@ -3932,6 +3933,7 @@ int dsc_idle_max(uint32_t max_frames)
     return 0;
   return owner_pass(max_frames, DSC_OWNER_ARM9);
 }
+#endif
 
 int dsc_idle(void)
 {
