@@ -48,6 +48,13 @@ WRAPS    := malloc free calloc realloc rc_api_process_fetch_game_sets_server_res
 comma    := ,
 # the idle stack's top, this far below the module region's end (start.s, module.ld)
 STACK_GAP ?= 0x280
+# LAB coverage: BW builds keep the default build's hot layout: the wake region starts 0x10 lower (module_idle's
+# hook call grows it by 0x10), and module-bw.ld (bwlayout.py) leaves the hot functions the yield points grow
+# as placeholders of their default size, the grown code after the warm code
+ifeq ($(BW),1)
+WAKE_COLOUR ?= 0x5B0
+LDSCRIPT ?= module-bw.ld
+endif
 LDFLAGS  := -Wl$(comma)--defsym$(comma)DSCM_STACK_GAP=$(STACK_GAP) $(if $(CACHED_COLOUR),-Wl$(comma)--defsym$(comma)DSCM_CACHED_COLOUR=$(CACHED_COLOUR)) $(if $(WAKE_COLOUR),-Wl$(comma)--defsym$(comma)DSCM_WAKE_COLOUR=$(WAKE_COLOUR)) $(if $(TEXT_COLOUR),-Wl$(comma)--defsym$(comma)DSCM_TEXT_COLOUR=$(TEXT_COLOUR)) \
             $(if $(DATA_COLOUR),-Wl$(comma)--defsym$(comma)DSCM_DATA_COLOUR=$(DATA_COLOUR)) \
             $(ARCH) -nostartfiles -T $(or $(LDSCRIPT),$(if $(filter 1,$(DATA_MIRROR)),module.ld,module-cached.ld)) -Wl,--use-blx -Wl,--gc-sections -Wl,-Map,$(BUILD)/dscheevos9.map \
@@ -80,9 +87,6 @@ BW_ASFLAGS := -Wa,--defsym,BW_FIBER=1 -Wa,--defsym,TLS_YIELD=1
 RC_YIELD ?= dscm_yield_point
 CFLAGS += -DBW_FIBER -DBW_HALT_CAPTURE -DTLS_YIELD -DDSC_IDLE_MAX $(if $(RC_YIELD),-DRC_CLIENT_YIELD_HOOK=$(RC_YIELD)) -DDSC_ROOM_HOOK=dscm_room
 HOTCHECK := 0
-# the BIOS-wait code grows the wake region by 0x10 (module_idle's hook call): starting it 0x10 lower keeps
-# the wake core (dsc_capture, commit, ...) at the default build's addresses
-WAKE_COLOUR ?= 0x5B0
 endif
 # BW_PROTO=1: round 1's read-only gate prototype (no fiber)
 ifeq ($(BW_PROTO),1)
@@ -135,7 +139,7 @@ $(BUILD)/start.o: src/start.s
 	@mkdir -p $(BUILD)
 	$(CC) $(ARCH) -Wa,--defsym,STACK_GAP=$(STACK_GAP) $(BW_ASFLAGS) $(EXTRA_ASFLAGS) -c $< -o $@
 
-$(BUILD)/dscheevos9.elf: $(OBJ) module.ld module-cached.ld hot.ld warm.ld hot-rodata.ld
+$(BUILD)/dscheevos9.elf: $(OBJ) module.ld module-cached.ld hot.ld warm.ld hot-rodata.ld $(wildcard module-bw.ld hot-bw.ld)
 	$(CC) $(LDFLAGS) $(OBJ) -lc -lm -lgcc -o $@
 	$(SIZE) $@
 
