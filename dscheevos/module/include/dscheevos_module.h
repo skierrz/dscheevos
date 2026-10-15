@@ -16,17 +16,21 @@
  * DSCM_SESSION, then its ARM9 calls header->init(DSCM_SESSION). After that
  * only hooks call in:
  *   header->vblank()  no longer called (a stub, kept for the layout). The
- *                     ARM7 VBlank handler bumps header->vblank_count; the
- *                     module reads it in the game's idle time, before every
- *                     snapshot, and counts a frame per new count. Nothing of
- *                     DScheevos runs in the game's ARM9 interrupts.
+ *                     module counts frames with the game's own VBlank count
+ *                     (header->vblank_src, NitroSDK's, bumped by the game's
+ *                     ARM7 at each VBlank), read in the game's idle time,
+ *                     before every snapshot: a frame per new count. Nothing
+ *                     of DScheevos runs in the game's ARM9 interrupts, and
+ *                     nothing of it in the ARM7's on a frame without an event.
  *   header->halt()    replaces the game's OS_Halt: runs evaluation work,
  *                     then waits for an interrupt as OS_Halt did.
  *   header->reset()   from nds-bootstrap's game reset (in-game menu, soft
  *                     reset), IRQs off: achievement state resets in idle.
- * The ARM7 also reads header->notify_count (kept in RAM, past the ARM9's
- * cache) to signal unlocks with the Wi-Fi LED, and header->net_ring, the
- * frame ring its SDIO shim fills and drains (dscm_shim.h).
+ * The ARM7 reads header->notify_count and header->cues (kept in RAM, past
+ * the ARM9's cache) to signal unlocks with the Wi-Fi LED, and
+ * header->net_ring, the frame ring its SDIO shim fills and drains
+ * (dscm_shim.h), but only when the module rings: bumps header->bell, which
+ * the ARM7's VBlank handler compares with the value it saw last.
  */
 #ifndef DSCHEEVOS_MODULE_H
 #define DSCHEEVOS_MODULE_H
@@ -74,7 +78,7 @@
 #define DSCM_PHYS(a)      ((((uint32_t)(a)) & 0x00FFFFFFu) | 0x02000000u)
 
 #define DSCM_MAGIC   0x56435344u  /* "DSCV" */
-#define DSCM_VERSION 7u
+#define DSCM_VERSION 8u
 #define DSCM_SESSION_MAGIC 0x53435344u  /* "DSCS" */
 
 /* Server responses fetched by the launcher at session start. */
@@ -143,7 +147,7 @@ typedef struct dscm_status_t {
    * 67 MHz. A single reading is whole lines, but the start falls anywhere in
    * a line, so total / timed_frames is a fair average below one line too. */
   volatile uint32_t timed_frames;     /* VBlanks timed below */
-  volatile uint32_t irq_lines_last;   /* the module's VBlank work, inside the game's IPC IRQ */
+  volatile uint32_t irq_lines_last;   /* 0: the module has no VBlank IRQ work (kept for the layout) */
   volatile uint32_t irq_lines_max;
   volatile uint32_t irq_lines_total;
   /* the idle lines are added up in idle time: they lag while no pass runs */
@@ -162,6 +166,11 @@ typedef struct dscm_status_t {
    * shared words use explicit cache maintenance instead of the mirror. */
   volatile uint32_t alias_cached;
   volatile uint32_t clock;            /* DSCM_CLOCK_*: the session's speed-ups (appended) */
+  /* Appended: the game's VBlank count the module reads (header->vblank_src),
+   * and 1 if the game's MPU makes it data-cacheable (then the count can read
+   * stale; NitroSDK keeps it uncached, so this should never be 1) */
+  volatile uint32_t vblank_src;
+  volatile uint32_t vblank_src_cached;
 } dscm_status_t;
 
 enum {
@@ -391,7 +400,7 @@ typedef struct dscm_header_t {
   void (*shutdown)(void);
   dscm_status_t* status;
   dscm_net_slot_t* net;               /* DSCM_NET_SLOTS entries */
-  volatile uint32_t vblank_count;     /* 0x24: written by the ARM7 VBlank hook */
+  volatile uint32_t vblank_count;     /* 0x24: unused since version 8 (vblank_src) */
   void (*reset)(void);                /* 0x28 */
   dscm_list_t* volatile list;         /* 0x2C: published achievement list, 0 until the set is loaded */
   dscm_notices_t* notices;            /* 0x30 */
@@ -401,11 +410,15 @@ typedef struct dscm_header_t {
    * queued, so an unlock in the last moments is in the journal. Runs on the
    * module's stack; does nothing if idle work is running or parked there. */
   void (*flush)(void);
-  uint32_t reserved;
+  /* 0x3C: set by the loader before init: the game's own VBlank count, which
+   * the module reads and never writes (NitroSDK's HW_VBLANK_COUNT_BUF,
+   * 0x027FFC3C, or 0x02FFFC3C under TWL-SDK) */
+  const volatile uint32_t* vblank_src;
   volatile uint32_t notify_count;     /* 0x40: unlocks so far; own cache line, cleaned to RAM */
   void* net_ring;                     /* 0x44: dscm_shim.h ring, 0 if none; same line */
   volatile uint32_t cues;             /* 0x48: LED cues for the ARM7 (DSCM_CUE_*); same cache line, cleaned to RAM */
-  uint32_t reserved2[5];
+  volatile uint32_t bell;             /* 0x4C: bumped when the ARM7 has work (cues, frames to move); only the ARM9 writes it */
+  uint32_t reserved2[4];
   /* 0x60: the VBlank IRQ's own state, then its code (module internals) */
 } dscm_header_t;
 

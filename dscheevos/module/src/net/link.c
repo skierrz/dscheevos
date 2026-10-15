@@ -3,7 +3,8 @@
  *
  * The launcher left the chip associated; nds-bootstrap's ARM7 card engine
  * moves raw HTC frames between the chip's mailbox and the ring in
- * dscm_shim.h once per VBlank. Here the frames become Ethernet for lwIP:
+ * dscm_shim.h at VBlanks the module rings for (module.c, net_bell; a frame
+ * to send rings at once). Here the frames become Ethernet for lwIP:
  *   HTC header (6) | WMI data header (2) | 802.3: dst, src, length |
  *   LLC/SNAP (6) | ethertype | payload
  * WMI events (endpoint 1) tell us when the AP drops us.
@@ -93,16 +94,17 @@ int link_up(void)
 }
 
 /* Entropy from our own state only: VCOUNT and the hardware timers are the
- * game's (we never read game hardware), so the sample is the ARM7's
- * VBlank count (module memory), our frame counters and a call count. The
+ * game's (we never read game hardware), so the sample is the module's
+ * frame count, our frame counters and a call count. The
  * secret part of the pool is the session token (module.c, at init); the
  * first bytes of the RX slot at the ring's tail are stirred in too. */
-extern uint32_t dscm_vblank_count_read(void);
+extern uint32_t dscm_frames(void);
+extern void dscm_ring(void);
 void link_stir(void)
 {
   static uint32_t calls;
   uint32_t sample[4];
-  sample[0] = dscm_vblank_count_read();
+  sample[0] = dscm_frames();
   sample[1] = g_rx_frames;
   sample[2] = g_tx_frames;
   sample[3] = ++calls;
@@ -126,6 +128,7 @@ static void ring_push(shim_slot_tx_t* slot, uint32_t len)
   g_ring.tx_head++;
   publish_arm9_line();
   g_tx_frames++;
+  dscm_ring();      /* the ARM7 sends it at the next VBlank */
 }
 
 static void ctrl_flush(void)
@@ -513,19 +516,17 @@ void* link_init(const net_config_t* config)
 }
 
 /* Paused: the game is using its own (DS-mode) wireless, so the card engine
- * left the chip alone this VBlank. */
+ * leaves the chip alone: what it saw at its last look (it looks every few
+ * frames in a network session, nds-bootstrap's dscheevosNetPoll): the DS
+ * Wi-Fi powered (POWCNT2 bit 1) and its RF clock on (W_POWER_US bit 0 = 0). */
 int link_paused(uint32_t* paused_count)
 {
-  static uint32_t last;
-  uint32_t now;
+  uint32_t powcnt2, power_us;
   dscm_dc_invalidate((const void*)&g_ring.attached, offsetof(shim_shared_t, tx) - offsetof(shim_shared_t, attached));
-  now = g_ring.stats.paused_ntr_wifi;
-  *paused_count = now;
-  if (now != last) {
-    last = now;
-    return 1;
-  }
-  return 0;
+  *paused_count = g_ring.stats.paused_ntr_wifi;
+  powcnt2 = g_ring.stats.ntr_powcnt2;
+  power_us = g_ring.stats.ntr_power_us;
+  return (powcnt2 & 2) && !(power_us & 1);
 }
 
 int link_rejoining(void)

@@ -89,7 +89,10 @@ _Static_assert(sizeof(wake_h_t) == 32, "H: one cache line");
 _Static_assert(offsetof(wake_h_t, reset_pending) == 14 && offsetof(wake_h_t, busy) == 28, "H: start.s H_RESET_PENDING, H_BUSY (reset_entry writes them)");
 #define g_dtcm (H.dtcm)
 
-extern uint32_t dscm_vblank_count_read(void);  /* start.s */
+extern const volatile uint32_t* dscm_vblank_src;  /* start.s, header 0x3C: set by the loader */
+extern void dscm_publish_bell(uint32_t bell);
+void dscm_ring(void);                          /* below; link.c rings for frames to send */
+uint32_t dscm_frames(void);                    /* VBlanks counted so far (link.c's entropy) */
 extern uint32_t dscm_dtcm_base(void);
 extern void dscm_publish_notify(uint32_t count);
 extern void dscm_publish_cues(uint32_t cues);
@@ -145,14 +148,14 @@ static inline uint32_t lines_between(uint32_t start, uint32_t end)
 #define lines_since(start) lines_between((start), REG_VCOUNT)
 
 /* Frame counting and the wake's flags: two cache lines in the module header,
- * next to its code. The ARM7 bumps dscm_vblank_count at each VBlank; the idle
+ * next to its code. The game's ARM7 bumps its VBlank count (NitroSDK's) at each VBlank; the idle
  * thread reads it (vblank_poll) before every snapshot, so nothing of ours runs
  * in the game's interrupts. publish_stats() copies the counters to the status.
  * idle_open says an idle pass is being timed: whoever clears it (the pass at
  * its end, or the poll that finds a VBlank came meanwhile) counts its lines,
  * so none are counted twice. */
 typedef struct dscm_irq_t {
-  uint32_t last_vblank;          /* the ARM7's count at the last call */
+  uint32_t last_vblank;          /* the game's VBlank count at the last call */
   volatile uint32_t frames;      /* VBlanks since init */
   uint8_t on;                    /* initialized and active */
   uint8_t data_region;           /* the game's MPU region holding the module's data, 0xFF until known (start.s, data_region_scan) */
@@ -161,8 +164,8 @@ typedef struct dscm_irq_t {
   volatile uint32_t idle_open;
   volatile uint32_t idle_start;
   uint32_t timed_frames;
-  uint32_t irq_lines_total;
-  uint16_t irq_lines_last;
+  uintptr_t vblank_src;          /* the game's VBlank count (header vblank_src), read-only */
+  uint16_t irq_lines_last;       /* 0: no IRQ work (kept for the layout) */
   uint16_t irq_lines_max;
   /* second line: only when a pass is cut, or VBlanks were missed */
   volatile uint32_t idle_cut_lines;
@@ -228,28 +231,20 @@ WAKE_INLINE wake_page_t* wake_page_arm(void)
 /* the offsets start.s uses */
 _Static_assert(sizeof(dscm_irq_t) == 64, "dscm_irq: two cache lines");
 _Static_assert(offsetof(dscm_irq_t, on) == 8 && offsetof(dscm_irq_t, data_region) == 9 && offsetof(dscm_irq_t, in_halt) == 10 && offsetof(dscm_irq_t, alias_cached) == 11 && offsetof(dscm_irq_t, idle_open) == 12, "dscm_irq");
-_Static_assert(offsetof(dscm_irq_t, idle_start) == 16 && offsetof(dscm_irq_t, timed_frames) == 20 && offsetof(dscm_irq_t, irq_lines_total) == 24, "dscm_irq");
+_Static_assert(offsetof(dscm_irq_t, idle_start) == 16 && offsetof(dscm_irq_t, timed_frames) == 20 && offsetof(dscm_irq_t, vblank_src) == 24, "dscm_irq");
 _Static_assert(offsetof(dscm_irq_t, irq_lines_last) == 28 && offsetof(dscm_irq_t, irq_lines_max) == 30, "dscm_irq");
 _Static_assert(offsetof(dscm_irq_t, idle_cut_lines) == 32 && offsetof(dscm_irq_t, idle_cut) == 36 && offsetof(dscm_irq_t, frames_missed) == 40, "dscm_irq");
 #define g_frames (dscm_irq.frames)
 
-/* The ARM7's VBlank count, written behind the data cache. Through the
- * 0x0C000000 mirror when the game's MPU leaves it uncached (no line filled),
- * else drop the header line and read it through the cache (start.s). */
-extern uint32_t dscm_vblank_count_read(void);
+/* The game's own VBlank count: NitroSDK's, which its ARM7 bumps at each
+ * VBlank and its ARM9 reads uncached (OS_GetVBlankCount), at the address
+ * the loader put in the header (the SDK's OS work area). Read, never
+ * written: nothing of DScheevos runs on the ARM7 to count frames. */
 #undef WP
 #define WP wp
 WAKE_INLINE uint32_t vblank_count(wake_page_t* wp)
 {
-  if (dscm_irq.alias_cached == 0)   /* 0xFF until the game's MPU is read */
-  {
-    /* the header's mirror view, 0x0CD80000, from immediates (ARM code only:
-     * vblank_count is wake code) */
-    uintptr_t h;
-    __asm__(".syntax unified\n\tmov %0, #0x0C000000\n\torr %0, %0, #0x00D80000" : "=r"(h));
-    return *(volatile uint32_t*)(h + offsetof(dscm_header_t, vblank_count));
-  }
-  return dscm_vblank_count_read();
+  return *(const volatile uint32_t*)dscm_irq.vblank_src;
 }
 #undef WP
 #define WP WAKE_PAGE
@@ -287,6 +282,7 @@ void module_vblank_copy(void);
  * frames the game never halted in (repeats). Called with IRQs masked, right
  * before anything that would replace or read that snapshot, so no capture
  * can come between a VBlank and its queueing. */
+#define VBLANK_JUMP_MAX 0x10000u      /* ~18 minutes: more is the game setting its count, not frames */
 #undef WP
 #define WP wp
 WAKE_INLINE void vblank_poll(wake_page_t* wp)
@@ -295,6 +291,8 @@ WAKE_INLINE void vblank_poll(wake_page_t* wp)
   if (!n)
     return;
   dscm_irq.last_vblank = c;
+  if (n > VBLANK_JUMP_MAX)           /* the game set its count (boot): one frame, not billions */
+    n = 1;
   dscm_irq.frames += n;
   dscm_irq.timed_frames += n;        /* frames counted (the IRQ lines stay 0: no IRQ work) */
   if (dscm_irq.idle_open) {          /* the pass was cut at the VBlank (line 192) */
@@ -310,6 +308,8 @@ WAKE_INLINE void vblank_poll(wake_page_t* wp)
 }
 #undef WP
 #define WP WAKE_PAGE
+
+uint32_t dscm_frames(void) { return g_frames; }
 
 /* used by the stubs in syscalls.c */
 uint32_t dscm_unix_time(void) { return g_boot.unix_time + g_frames / 60; }
@@ -527,6 +527,7 @@ static void on_event(const dsc_event_t* e)
       copy_title(u->title, e->title, sizeof(u->title));
       dscm_g_status.unlock_count++;
       dscm_publish_notify(dscm_g_status.unlock_count);
+      dscm_ring();
       H.progress_stale = 1;
       break;
     }
@@ -563,6 +564,32 @@ static void clean_notices(void)
   }
 }
 
+/* The bell: the ARM7 does DScheevos work (LED cues, the Wi-Fi shim) only
+ * on a VBlank after the module bumped it (nds-bootstrap's card engine,
+ * dscheevosVBlank), so a frame without an event costs it one comparison. */
+static uint32_t g_bell;
+__attribute__((section(".text_cold"), noinline)) void dscm_ring(void)
+{
+  dscm_publish_bell(++g_bell);
+}
+
+/* The network's rings: once a frame while a reply, a connection or an
+ * association is in flight (the ARM7 then polls the chip every frame, as
+ * it always did), else once every NET_DRAIN_FRAMES for what the access
+ * point sends unasked (a group rekey, a drop, the server closing the
+ * connection). Frames to send ring on their own (link.c, ring_push). While
+ * the game uses its own wireless the chip is the game's: only the slow ring. */
+#define NET_DRAIN_FRAMES 60
+static uint32_t g_net_rung;
+__attribute__((section(".text_cold"), noinline)) static void net_bell(void)
+{
+  uint32_t since = g_frames - g_net_rung;
+  if ((H.net_busy && since && dscm_g_status.net_state != DSCM_NET_STATE_PAUSED) || since >= NET_DRAIN_FRAMES) {
+    g_net_rung = g_frames;
+    dscm_ring();
+  }
+}
+
 /* Turn new notices into header->cues for the ARM7's LED: a counter per
  * progress or leaderboard notice, and a bit while a challenge shows. */
 static void update_cues(void)
@@ -589,6 +616,7 @@ static void update_cues(void)
   if (cues != g_cues) {
     g_cues = cues;
     dscm_publish_cues(cues);
+    dscm_ring();
   }
 }
 
@@ -646,7 +674,20 @@ int module_init(const dscm_boot_t* boot)
   g_boot.game_hash[sizeof(g_boot.game_hash) - 1] = '\0';
   g_dtcm = g_boot.dtcm_base;
   H.dtcm_fixed = g_dtcm != 0;   /* fixed: refresh_dtcm leaves it */
-  dscm_irq.last_vblank = dscm_vblank_count_read();
+  /* the game's VBlank count: in main RAM, outside the module, word-aligned */
+  {
+    uintptr_t src;
+    dscm_dc_invalidate(&dscm_vblank_src, 4);   /* the ARM7 wrote it in RAM */
+    src = (uintptr_t)dscm_vblank_src;
+    if ((src & 3) || src < 0x02000000u || src >= 0x03000000u
+        || (src >= DSCM_PHYS(DSCM_BASE) && src < DSCM_PHYS(DSCM_BASE) + DSCM_SIZE)) {
+      dscm_g_status.error = DSCM_ERROR_BAD_BOOT;
+      return -1;
+    }
+    dscm_irq.vblank_src = src;
+    dscm_g_status.vblank_src = src;
+    dscm_irq.last_vblank = *(const volatile uint32_t*)src;
+  }
   dscm_irq.alias_cached = 0xFF;   /* known once the game idles (module_idle) */
   dscm_irq.data_region = 0xFF;    /* the game's MPU region for it too (start.s) */
   dscm_g_status.hardcore = g_boot.hardcore;
@@ -798,7 +839,7 @@ static void publish_stats(void)
   dscm_g_status.timed_frames = dscm_irq.timed_frames;
   dscm_g_status.irq_lines_last = dscm_irq.irq_lines_last;
   dscm_g_status.irq_lines_max = dscm_irq.irq_lines_max;
-  dscm_g_status.irq_lines_total = dscm_irq.irq_lines_total;
+  dscm_g_status.irq_lines_total = 0;
   dscm_g_status.idle_lines_last = g_idle.last;
   dscm_g_status.idle_lines_max = g_idle.max;
   dscm_g_status.idle_lines_total = g_idle.total;
@@ -895,6 +936,7 @@ static int idle_step_locked(void)
     dscm_g_status.net_detail = net_detail();
     dscm_g_status.tls_handshake_ms = net_handshake_ms();
     dscm_g_status.net_rejoins = link_rejoins();
+    net_bell();
     poll_network();
   }
   /* Work appears only through a VBlank (a new frame) or a pass like this
@@ -1003,6 +1045,8 @@ WAKE_CODE int module_idle(int idle_loop)
 static void alias_check(void)
 {
   dscm_irq.alias_cached = (uint8_t)mpu_dcacheable((uint32_t)DSCM_UNCACHED(&dscm_g_journal));
+  /* diagnostics: NitroSDK reads its VBlank count uncached, so should we */
+  dscm_g_status.vblank_src_cached = (uint32_t)mpu_dcacheable(dscm_irq.vblank_src);
 }
 
 void module_shutdown(void)

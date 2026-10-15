@@ -166,6 +166,12 @@ clock = None
 if timing and status_size >= (p + 92 - o) + 4 * (len(TIMING) + len(HALT) + 2):
     clock = struct.unpack_from('<I', ram, p + 92 + 4 * (len(TIMING) + len(HALT) + 1))[0]
     print(f"speed-ups chosen before launch: CPU {'133' if clock & 1 else '67'} MHz, VRAM boost {'on' if clock & 2 else 'off'}")
+# the game's VBlank count the module reads (appended after clock; module version 8)
+if timing and status_size >= (p + 92 - o) + 4 * (len(TIMING) + len(HALT) + 4):
+    vsrc, vcached = struct.unpack_from('<2I', ram, p + 92 + 4 * (len(TIMING) + len(HALT) + 2))
+    vnow = struct.unpack_from('<I', ram, vsrc & 0x00FFFFFF)[0] if 0x02000000 <= vsrc < 0x03000000 else None
+    print(f"frame count: the game's VBlank count at {vsrc:#010x} ({'CACHED under the game MPU' if vcached else 'uncached'}),"
+          f" now {vnow}; frames counted {timing['timed_frames']}")
 # module memory (dscm_g_heap, heap.h): not ABI, read by name
 mh = re.search(r'0x([0-9a-f]+)\s+dscm_g_heap\b', mp)
 if mh:

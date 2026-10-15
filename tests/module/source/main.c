@@ -34,15 +34,8 @@ static volatile int data_ro;   /* the module's data region is read-only now (see
 
 static void vblank_irq(void)
 {
+	/* the "game's" own VBlank count: the module reads it (header vblank_src) when the game idles */
 	frame++;
-	/* as the ARM7 VBlank hook does: straight to RAM; the module reads it past the cache
-	 * (while the mirror is read-only here, through the cache and cleaned: the ARM7 has no MPU) */
-	if (data_ro) {
-		((volatile dscm_header_t*)hdr)->vblank_count++;
-		DC_FlushRange((const void*)&hdr->vblank_count, 4);
-	} else
-		((volatile dscm_header_t*)DSCM_UNCACHED(hdr))->vblank_count++;
-	/* no call: the module reads the count when the game idles */
 }
 
 extern void mpu_regions(u32 out[8]);
@@ -217,6 +210,9 @@ int main(void)
 	hdr = DSCM_HEADER;
 	if (hdr->magic != DSCM_MAGIC || hdr->version != DSCM_VERSION) { out("FAIL bad module header"); goto end; }
 	out("module image %lu bytes", (unsigned long)hdr->image_size);
+	/* as nds-bootstrap does with NitroSDK's count: where the game keeps its VBlank count */
+	((dscm_header_t*)hdr)->vblank_src = &frame;
+	DC_FlushRange((const void*)&hdr->vblank_src, 4);
 
 	/* 2. session-start responses, as if fetched online before the game booted */
 	object_ptr = 0x02000000 | ra(object);

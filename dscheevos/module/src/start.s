@@ -7,7 +7,7 @@
 	.align 2
 dscm_header:
 	.word 0x56435344            @ DSCM_MAGIC "DSCV"
-	.word 7                     @ DSCM_VERSION (the module test checks it matches)
+	.word 8                     @ DSCM_VERSION (the module test checks it matches)
 	.word __image_size
 	.word init_entry
 	.word vblank_entry
@@ -15,8 +15,7 @@ dscm_header:
 	.word module_shutdown
 	.word dscm_g_status          @ 0x1C: the module's view (0x02 or 0x0C), for the ARM9 menu
 	.word dscm_g_net
-dscm_vblank_count:
-	.word 0                     @ 0x24: bumped by the ARM7 VBlank hook
+	.word 0                     @ 0x24: unused (the ARM7 bumped it before version 8)
 	.word reset_entry           @ 0x28
 	.global dscm_list_ptr
 dscm_list_ptr:
@@ -24,7 +23,9 @@ dscm_list_ptr:
 	.word dscm_g_notices        @ 0x30
 	.word dscm_g_journal_phys   @ 0x34: physical (the ARM7 reads it); cleaned at each step
 	.word flush_entry           @ 0x38: evaluate what is queued, before a journal copy
-	.space 4
+	.global dscm_vblank_src
+dscm_vblank_src:
+	.word 0                     @ 0x3C: the game's VBlank count (set by the loader)
 	.global dscm_notify_count
 dscm_notify_count:
 	.word 0                     @ 0x40: unlock count for the ARM7 (own cache line)
@@ -34,7 +35,10 @@ dscm_net_ring:
 	.global dscm_cues
 dscm_cues:
 	.word 0                     @ 0x48: LED cues for the ARM7 (same cache line)
-	.space 20
+	.global dscm_bell
+dscm_bell:
+	.word 0                     @ 0x4C: bumped when the ARM7 has work (same cache line)
+	.space 16
 
 @ The wake page (module.c wake_page_t): dscm_irq (frame counting and the
 @ wake's flags), g_idle, H and the re-entry guard, the module region's last
@@ -64,9 +68,9 @@ dscm_cues:
 	.section .header, "ax"
 
 	.arm
-@ The VBlank entry is no longer called: the ARM7 bumps dscm_vblank_count and
-@ the idle thread reads it (module.c, vblank_poll), so DScheevos runs nothing
-@ in the game's interrupts and uses none of its stacks. Kept as a stub so the
+@ The VBlank entry is no longer called: the idle thread reads the game's own
+@ VBlank count (module.c, vblank_poll), so DScheevos runs nothing in the
+@ game's interrupts and uses none of its stacks. Kept as a stub so the
 @ header layout (and old callers) stay valid.
 	.global vblank_entry
 	.type vblank_entry, %function
@@ -292,16 +296,9 @@ dscm_mpu_read:
 	str	r1, [r0, #36]
 	bx	lr
 
-@ uint32_t dscm_vblank_count_read(void): the ARM7 writes the count behind
-@ the data cache, so drop the cached line first. Nothing on the ARM9 writes
-@ that line (header words and code), so the invalidate loses no data.
-	.global dscm_vblank_count_read
-	.type dscm_vblank_count_read, %function
-dscm_vblank_count_read:
-	ldr	r1, =dscm_vblank_count
-	mcr	p15, 0, r1, c7, c6, 1
-	ldr	r0, [r1]
-	bx	lr
+@ (16 bytes where dscm_vblank_count_read was: the helpers below, called on
+@ every wake, keep their addresses and cache sets; Makefile hotcheck)
+	.space	16
 
 @ uint32_t dscm_take(volatile uint32_t* p): return *p and clear it in one
 @ step, so an IRQ can't come between the read and the write.
@@ -514,3 +511,20 @@ data_region_scan:
 	.pool
 	.popsection
 
+@ void dscm_publish_bell(uint32_t bell): as dscm_publish_notify, for the bell
+@ word (header 0x4C) the ARM7 compares at each VBlank. The ARM9 never reads
+@ that line, and its D-cache allocates on reads only, so the store goes past
+@ the cache; the clean is for a game whose MPU caches it anyway. Called on
+@ events only (cues, frames to send, the network's rings): cold text.
+	.section .text_cold, "ax"
+	.arm
+	.global dscm_publish_bell
+	.type dscm_publish_bell, %function
+dscm_publish_bell:
+	ldr	r1, =dscm_bell
+	str	r0, [r1]
+	mcr	p15, 0, r1, c7, c10, 1
+	mov	r0, #0
+	mcr	p15, 0, r0, c7, c10, 4
+	bx	lr
+	.ltorg

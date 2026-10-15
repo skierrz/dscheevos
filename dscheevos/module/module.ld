@@ -33,6 +33,7 @@ DSCM_TEXT_COLOUR = DEFINED(DSCM_TEXT_COLOUR) ? DSCM_TEXT_COLOUR : 0x500;
 DSCM_DATA_COLOUR = DEFINED(DSCM_DATA_COLOUR) ? DSCM_DATA_COLOUR : 0;
 DSCM_CACHED_COLOUR = DEFINED(DSCM_CACHED_COLOUR) ? DSCM_CACHED_COLOUR : 0x140;
 DSCM_WAKE_COLOUR = DEFINED(DSCM_WAKE_COLOUR) ? DSCM_WAKE_COLOUR : 0x5C0;
+DSCM_WAKE_CORE_OFFSET = DEFINED(DSCM_WAKE_CORE_OFFSET) ? DSCM_WAKE_CORE_OFFSET : 0x67C;
 /* the hot region's size limit (hot.ld today: 0x9d88) */
 DSCM_HOT_BUDGET = DEFINED(DSCM_HOT_BUDGET) ? DSCM_HOT_BUDGET : 0xB000;
 
@@ -59,7 +60,13 @@ SECTIONS {
     KEEP(*(.data.cached))   /* the core reads it by its fixed address (DSC_VIEWS_ADDR), not its symbol */
     . = ALIGN(0x800) + DSCM_WAKE_COLOUR - (((ABSOLUTE(.) & 0x7FF) != 0 && (ABSOLUTE(.) & 0x7FF) <= DSCM_WAKE_COLOUR) ? 0x800 : 0);
     __wake_start = .;
-    *(.text.wake) *(.text.wake.core)
+    *(.text.wake)
+    /* the core's wake code at its own offset in the block, so a size change
+     * of module.c's wake code moves none of it (the a7off change shortened
+     * module.c's by 0x78 bytes; the core's stayed where it was measured) */
+    . = MAX(., __wake_start + DSCM_WAKE_CORE_OFFSET);
+    __wake_core_start = .;
+    *(.text.wake.core)
     . = ALIGN(0x800) + DSCM_TEXT_COLOUR - (((ABSOLUTE(.) & 0x7FF) != 0 && (ABSOLUTE(.) & 0x7FF) <= DSCM_TEXT_COLOUR) ? 0x800 : 0);
     __hot_start = .;
     INCLUDE hot.ld
@@ -71,6 +78,7 @@ SECTIONS {
   } > image
   /* dscheevos.c builds the views line's address from immediates (Makefile DSC_VIEWS_ADDR) */
   ASSERT(DSCM_CACHED_COLOUR != 0x140 || dsc_views == 0x02D80540, "module.ld: the core's views line (.data.cached) moved: update DSC_VIEWS_ADDR in the Makefile")
+  ASSERT(__wake_core_start == __wake_start + DSCM_WAKE_CORE_OFFSET, "module.ld: module.c's wake code grew past DSCM_WAKE_CORE_OFFSET: raise it and re-measure the game cost")
   ASSERT(__hot_end - __hot_start <= DSCM_HOT_BUDGET, "module.ld: the hot code is over its budget (DSCM_HOT_BUDGET): trim it or raise the budget and re-measure the game cost")
   .ARM.exidx : { *(.ARM.exidx* .gnu.linkonce.armexidx.*) } > image
   .init_array : { KEEP(*(.init_array*)) } > image
