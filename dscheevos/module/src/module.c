@@ -253,7 +253,7 @@ static uint32_t bw_run;                        /* consecutive frames with a gate
 static uint32_t bw_midwork;
 static uint32_t bw_cap_est;
 extern volatile uint32_t dscm_bw_patched;   /* start.s header word 0x4C, set by nds-bootstrap at boot */
-static uint32_t bw_idle_last, bw_idle_run, bw_ever_warm;     /* idle path: the ARM7's VBlank count at its last wake; frames in a row with one */                    /* lines a capture needs (decaying max) */
+static uint32_t bw_idle_last, bw_idle_run, bw_ever_warm, bw_load_last, bw_load_run;     /* idle path: the ARM7's VBlank count at its last wake; frames in a row with one */                    /* lines a capture needs (decaying max) */
 static uint32_t bw_midwork_unused;                    /* the fiber gave a wait back in the middle of its work */
 #endif
 #define BW_UNITS_ALL (dscm_irq.reserved2[4])   /* LAB fiber build: bw_step calls (shown as "first unit overran") */
@@ -987,8 +987,22 @@ WAKE_CODE int module_idle(int idle_loop)
     bw_idle_run = bw_now - bw_idle_last <= 2u ? bw_idle_run + 1 : 0;
     bw_idle_last = bw_now;
   }
+#ifdef BW_IDLE_LOADS
+  /* LAB: a BIOS-wait game in a load (its idle thread ran in each of the
+   * last 30 frames, no gate entry since): the idle path works as perf's.
+   * A pass parked when the load ends only holds evaluation back until the
+   * idle thread runs again; it costs the game nothing. */
+  if (bw_ever_warm && bw_now != bw_load_last) {
+    bw_load_run = bw_now - bw_load_last <= 2u ? bw_load_run + 1 : 0;
+    bw_load_last = bw_now;
+  }
+#endif
   /* not patched (NitroSDK 3+: no BIOS-wait games): perf's idle path from the start */
+#ifdef BW_IDLE_LOADS
+  const int bw_cap = dscm_bw_patched && (bw_ever_warm ? bw_load_run < 30u : bw_idle_run < 60u);
+#else
   const int bw_cap = dscm_bw_patched && (bw_ever_warm || bw_idle_run < 60u);
+#endif
 #elif defined(BW_HALT_CAPTURE)
   const int bw_cap = 1;
 #else
@@ -1309,6 +1323,7 @@ static __attribute__((section(".text_cold"), noinline, target("arm"))) int bwf_b
   if (bw_run < 30 && !bw_midwork)
     return 0;
   bw_ever_warm = 1;    /* a BIOS-wait game for the session: the idle path stays capture-only (stray calls don't count) */
+  bw_load_run = 0;
   if (REG_IE & REG_IF & 1)
     return 0;          /* a VBlank is already requested: the stock wait returns at once */
   /* the capture's estimate: the longest of the recent ones (it decays a line
