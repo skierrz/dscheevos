@@ -64,9 +64,10 @@ static uint32_t millis(void) { return now_ms; }
  * dsc_capture() when the game halts, then the VBlank. With chaos (the
  * tests that compare with rcheevos), a frame also gets, at random: a
  * capture of other memory first (the game ran again before halting), a
- * capture stopped part-way for an interrupt, or no capture at all when
- * memory is the same as at the last one (a lag frame). None of these may
- * change any result. */
+ * capture stopped part-way for an interrupt, no capture at all when
+ * memory is the same as at the last one (a lag frame), or a complete
+ * capture followed by one of other memory that an interrupt stops (the
+ * frame keeps the complete one). None of these may change any result. */
 static int halt_mode, chaos;
 static uint32_t idle_budget;   /* config.idle_max_frames */
 static int stop_in = -1;      /* polls until the fake interrupt; -1: none */
@@ -86,7 +87,7 @@ static int interrupt_pending(void)
   return stop_in-- == 0;
 }
 static uint8_t seen_ram[0x400000], seen_dtcm[0x4000];
-static int seen_valid, chaos_stale, chaos_stops, chaos_extra, chaos_vblank_in_copy;
+static int seen_valid, chaos_stale, chaos_stops, chaos_extra, chaos_vblank_in_copy, chaos_kept;
 
 /* bytes the chaos capture scrambles and puts back */
 static void scramble(uint8_t* saved, uint32_t* where, int n)
@@ -128,6 +129,28 @@ static void test_vblank(void)
       }
     }
     else {
+      if (chaos && chaos_rnd() % 4 == 0) {
+        /* complete, then the game runs on and the next capture stops: the
+         * VBlank must get the complete one, not the frame before's */
+        uint8_t saved[24];
+        uint32_t where[24];
+        int r;
+        while (dsc_capture() == 1)
+          ;
+        scramble(saved, where, 24);
+        stop_in = (int)(chaos_rnd() % 2);
+        r = dsc_capture();
+        stop_in = -1;
+        unscramble(saved, where, 24);
+        if (r == 1) {
+          chaos_kept++;
+          memcpy(seen_ram, ram, sizeof ram);
+          memcpy(seen_dtcm, dtcm, sizeof dtcm);
+          seen_valid = 1;
+          (dsc_vblank)();
+          return;
+        }
+      }
       if (chaos && chaos_rnd() % 3 == 0) {
         uint8_t saved[24];
         uint32_t where[24];
@@ -525,6 +548,37 @@ static void test_evaluates_frozen_snapshot(void)
   ram[0x10] = 5;             /* true at VBlank ... */
   frame(clear_byte);         /* ... but the game clears it before idle time */
   CHECK(was_unlocked(1001)); /* evaluation saw the VBlank value */
+  dsc_shutdown();
+}
+
+/* At halt: a capture completes, the game runs on, and the next capture
+ * stops for an interrupt. The frame keeps the complete capture (its pointer
+ * target too), it is not evaluated with the frame before's memory. */
+static void test_stopped_capture_keeps_completed_one(void)
+{
+  dsc_stats_t before, after;
+  if (!halt_mode)
+    return;
+  start_with(1, 1024, 0);
+  frames(3);
+  dsc_get_stats(&before);
+  ram[0x10] = 5;               /* 1001: true at the complete capture only */
+  put32(0x100, 0x02000040);    /* 1002: the pointer moves, its target is 7 then */
+  ram[0x44] = 7;
+  CHECK(dsc_capture() == 0);
+  ram[0x10] = 0;               /* the game runs on */
+  put32(0x100, 0x02000020);
+  ram[0x44] = 0;
+  stop_in = 0;
+  CHECK(dsc_capture() == 1);   /* stopped at its first poll */
+  stop_in = -1;
+  (dsc_vblank)();
+  dsc_idle();
+  CHECK(was_unlocked(1001));
+  CHECK(was_unlocked(1002));
+  dsc_get_stats(&after);
+  CHECK(after.frames_stale == before.frames_stale);
+  CHECK(after.captures_stopped == before.captures_stopped + 1);
   dsc_shutdown();
 }
 
@@ -2577,6 +2631,7 @@ static void run_all(void)
     RUN(test_scattered_set_fits_default_arena);
   }
   use_map = 1;
+  RUN(test_stopped_capture_keeps_completed_one);
   RUN(test_pointer_chains_match_rcheevos);
   RUN(test_recall_chain_reads_live);
   RUN(test_live_read_next_to_failed_chain_read);
@@ -2636,9 +2691,9 @@ int main(void)
   printf("-- capture at halt\n");
   halt_mode = 1;
   run_all();
-  printf("capture at halt: %d stale frames, %d stopped captures, %d replaced captures, %d VBlanks during a copy\n",
-    chaos_stale, chaos_stops, chaos_extra, chaos_vblank_in_copy);
-  CHECK(chaos_stale > 50 && chaos_stops > 100 && chaos_extra > 100 && chaos_vblank_in_copy > 20);
+  printf("capture at halt: %d stale frames, %d stopped captures, %d replaced captures, %d VBlanks during a copy, %d frames kept their capture\n",
+    chaos_stale, chaos_stops, chaos_extra, chaos_vblank_in_copy, chaos_kept);
+  CHECK(chaos_stale > 50 && chaos_stops > 100 && chaos_extra > 100 && chaos_vblank_in_copy > 20 && chaos_kept > 100);
   printf("%d checks, %d failed\n", checks, failures);
   return failures ? 1 : 0;
 }

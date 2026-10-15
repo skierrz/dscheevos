@@ -25,11 +25,14 @@ MEMORY {
  * pools (research/optimize/shrink.md) it was swept again with STACK_GAP 0x280
  * (Makefile): Kirby +17.3k-17.5k at 0x4c0 and 0x540, 23k-44k at most other
  * points of a 0x40 grid (0x4e0, 0x500, 0x520, 0x560 included); 0x540 is the
- * better of the two for Pokemon Black. Re-sweep after any wake-path change. */
+ * better of the two for Pokemon Black. The stage fix (research/optimize/
+ * stagefix.md) grew dsc_capture by 0x140 bytes: swept again, Kirby +17.5k at
+ * 0x5c0 and +17.7k at 0x480, +20.9k or more elsewhere; 0x5c0 is the better of
+ * the two for Black (+33.2k vs +41.2k). Re-sweep after any wake-path change. */
 DSCM_TEXT_COLOUR = DEFINED(DSCM_TEXT_COLOUR) ? DSCM_TEXT_COLOUR : 0x500;
 DSCM_DATA_COLOUR = DEFINED(DSCM_DATA_COLOUR) ? DSCM_DATA_COLOUR : 0;
 DSCM_CACHED_COLOUR = DEFINED(DSCM_CACHED_COLOUR) ? DSCM_CACHED_COLOUR : 0x140;
-DSCM_WAKE_COLOUR = DEFINED(DSCM_WAKE_COLOUR) ? DSCM_WAKE_COLOUR : 0x540;
+DSCM_WAKE_COLOUR = DEFINED(DSCM_WAKE_COLOUR) ? DSCM_WAKE_COLOUR : 0x5C0;
 /* the hot region's size limit (hot.ld today: 0x9d88) */
 DSCM_HOT_BUDGET = DEFINED(DSCM_HOT_BUDGET) ? DSCM_HOT_BUDGET : 0xB000;
 

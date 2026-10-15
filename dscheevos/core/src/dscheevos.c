@@ -399,6 +399,13 @@ static struct state_t {
   http_reply_t reply[MAX_PENDING_HTTP] LINE;
   volatile uint32_t http_answered;  /* answers stored, all time */
   uint32_t end LINE;           /* nothing after N shares its last line */
+
+  /* ---- P again: the producer's keep-the-stage state (dsc_capture), after
+   * everything else, so no other field moves ---- */
+  rc_memref_value_t* sync_stage LINE;/* the stage's own chain values while a later capture runs */
+  int32_t place[2];            /* the two places a frame's captures take turns in (capture_places), -1: none */
+  uint32_t place_slot, place_size;  /* slot_head and snapshot size they were worked out for */
+  const table_t* place_table;
 } S_storage;
 /* The state through the view the platform picked (dsc_state_view): cached,
  * or uncached through the DS's 0x0C000000 mirror. Evaluation reads it for
@@ -413,7 +420,7 @@ static struct state_t {
 enum { MODE_OFF, MODE_COPY, MODE_QUEUE };
 static struct {
   volatile uint32_t mode;      /* MODE_COPY: dsc_vblank_copy() checks (and may switch to MODE_QUEUE) */
-  volatile uint32_t stage;     /* slots[slot_head] holds a capture for the next VBlank */
+  volatile uint32_t stage;     /* nonzero: slots[slot_head] holds a capture for the next VBlank (its number) */
   volatile uint32_t count;     /* every VBlank: did one come during a copy? */
   volatile uint32_t frames;    /* VBlanks queued, all time */
   volatile uint32_t sealed;    /* the one of those the stage went to */
@@ -1265,8 +1272,10 @@ static void free_chains(void)
 #endif
   free(S.sync);
   free(S.sync_saved);
+  free(S.sync_stage);
   S.sync = NULL;
   S.sync_saved = NULL;
+  S.sync_stage = NULL;
   S.sync_count = 0;
   S.sync_dirty = 0;
 }
@@ -1282,7 +1291,8 @@ static int list_sync(void)
 #endif
   S.sync = (rc_memref_value_t**)malloc((total ? total : 1) * sizeof(*S.sync));
   S.sync_saved = (rc_memref_value_t*)malloc((total ? total : 1) * sizeof(*S.sync_saved));
-  if (!S.sync || !S.sync_saved)
+  S.sync_stage = (rc_memref_value_t*)malloc((total ? total : 1) * sizeof(*S.sync_stage));
+  if (!S.sync || !S.sync_saved || !S.sync_stage)
     return -1;
   for (i = 0; i < c->root_count; i++)
     if (c->roots[i].sync)
@@ -1317,6 +1327,25 @@ WAKE_INL void sync_restore(void)
   for (i = 0; i < S.sync_count; i++)
     *S.sync[i] = S.sync_saved[i];
   S.sync_dirty = 0;
+}
+
+/* A capture while the stage is kept (dsc_capture): save the stage's chain
+ * state, and start again from the committed one (sync_saved, which stays). */
+WAKE_INL void sync_stage_keep(void)
+{
+  uint32_t i;
+  for (i = 0; i < S.sync_count; i++) {
+    S.sync_stage[i] = *S.sync[i];
+    *S.sync[i] = S.sync_saved[i];
+  }
+}
+
+/* That capture stopped: the stage's chain state again (still uncommitted). */
+WAKE_INL void sync_stage_back(void)
+{
+  uint32_t i;
+  for (i = 0; i < S.sync_count; i++)
+    *S.sync[i] = S.sync_stage[i];
 }
 
 /* A frame evaluated with the last snapshot's memory: as if every chain
@@ -2822,6 +2851,26 @@ WAKE_INL int32_t arena_alloc(uint32_t n)
   return tail - head > n ? (int32_t)head : -1;
 }
 
+/* Space for n bytes for a capture while the stage (at a, an bytes) is
+ * kept: where arena_alloc puts it if that misses the stage, else right
+ * after the stage, as if the stage were the newest snapshot. So the
+ * captures of one frame take turns between two places. -1 if there is none. */
+WAKE_INL int32_t arena_alloc_beside(uint32_t n, uint32_t a, uint32_t an)
+{
+  uint32_t head = a + an, tail = arena_oldest();
+  int32_t home = arena_alloc(n);
+  if (home >= 0 && ((uint32_t)home + n <= a || (uint32_t)home >= head))
+    return home;
+  if (tail == NO_KEEP)
+    tail = a;
+  if (head >= tail) {
+    if (S.arena_size - head >= n) return (int32_t)head;
+    if (tail > n) return 0;
+    return -1;
+  }
+  return tail - head > n ? (int32_t)head : -1;
+}
+
 /* Producer: the lag cap (config.lag_cap_*): queueing n more arena bytes as
  * a new frame would pass it. Repeats take no bytes and are always queued. */
 COLD static int lag_capped(uint32_t n)
@@ -3286,6 +3335,20 @@ HOT void dsc_vblank_copy(void)
   S.items_in++;
 }
 
+/* The two places in the arena the captures of a frame take turns in
+ * (dsc_capture): where arena_alloc puts a snapshot, and beside it. Worked
+ * out again only after the ring moved (a commit, a lifecycle change), for
+ * another table, or while one of them is missing. */
+COLD static void capture_places(const table_t* t, uint32_t size)
+{
+  int32_t a = S.slot_head - S.slot_tail <= S.slot_count ? arena_alloc(size) : -1;
+  S.place[0] = a;
+  S.place[1] = a >= 0 ? arena_alloc_beside(size, (uint32_t)a, size) : -1;
+  S.place_slot = S.slot_head;
+  S.place_size = size;
+  S.place_table = t;
+}
+
 WAKE int dsc_capture(void)
 {
   const table_t* t;
@@ -3293,15 +3356,20 @@ WAKE int dsc_capture(void)
   slot_t* prev = NULL;
   mem_t m;
   int32_t offset;
-  uint32_t size, head;
-  int same, chains;
+  uint32_t size, head, map;
+  uint8_t* data;
+  target_t* targets;
+  int same, chains, staged;
 
   if (!S.active || !S.config.capture_at_halt)
     return -1;
   drain();
-  /* replaces a capture taken earlier in this frame: the game ran since */
-  Q.stage = 0;
-  sync_restore();
+  /* A capture completed earlier in this frame (the stage) stays the
+   * frame's until this one completes: this one is copied to the other
+   * place, so if it stops (an interrupt, the VBlank) the stage is still
+   * there. */
+  slot = &S.slots[S.slot_head % MAX_SLOTS];
+  staged = Q.stage != 0;
 
   t = take_table();
 #ifdef DSC_CHECK_FAST_STEPS
@@ -3317,40 +3385,77 @@ WAKE int dsc_capture(void)
 #endif
   size = t->words * 4 + S.chains.target_count * sizeof(target_t);
   S.pstats.frame_bytes = size;
-  offset = S.slot_head - S.slot_tail <= S.slot_count ? arena_alloc(size) : -1;
+  if (S.place_slot != S.slot_head || S.place_table != t || S.place_size != size || S.place[1] < 0)
+    capture_places(t, size);
+  offset = S.place[0];
+  if (staged) {
+    /* the other place; the stage must be in one of them (the same table,
+     * held: the owner may free any other) */
+    if (slot->table == t && (uint32_t)offset == slot->offset)
+      offset = S.place[1];
+    else if (slot->table != t || slot->offset != (uint32_t)S.place[1])
+      offset = -1;
+    if (offset < 0) {
+      /* no room for both: this capture replaces the stage */
+      staged = 0;
+      Q.stage = 0;
+      offset = S.place[0];
+    }
+  }
+  if (!staged)
+    sync_restore();
   if (offset < 0) {
     S.stage_failed = 1;
     return -1;
   }
   S.stage_failed = 0;
 
-  slot = &S.slots[S.slot_head % MAX_SLOTS];
-  slot->map = mem_open(&m);
+  data = S.arena + offset;
+  targets = (target_t*)(data + t->words * 4);
+  map = mem_open(&m);
   if (S.slot_head != S.slot_tail) {
     prev = &S.slots[(S.slot_head - 1) % MAX_SLOTS];
-    if (prev->state != SLOT_READY || prev->carry || prev->event || prev->table != t || prev->map != slot->map)
+    if (prev->state != SLOT_READY || prev->carry || prev->event || prev->table != t || prev->map != map)
       prev = NULL;
   }
-  slot->state = SLOT_FILLING;
-  slot->event = QEV_NONE;
-  slot->offset = (uint32_t)offset;
-  slot->size = size;
-  slot->data = S.arena + offset;
-  slot->targets = (target_t*)(slot->data + t->words * 4);
-  slot->table = t;
-  sync_save();
+  if (staged) {
+    sync_stage_keep();
+  }
+  else {
+    slot->map = map;
+    slot->state = SLOT_FILLING;
+    slot->event = QEV_NONE;
+    slot->offset = (uint32_t)offset;
+    slot->size = size;
+    slot->data = data;
+    slot->targets = targets;
+    slot->table = t;
+    sync_save();
+  }
   head = S.slot_head;
   S.capture_frame = Q.count;
   S.capturing = S.platform.interrupt_pending != NULL;
-  same = copy_snapshot_inl(t, slot->data, &m);
-  chains = same < 0 ? -1 : HAS_CHAINS() ? run_chains(slot->targets, &m, NULL) : 0;
+  same = copy_snapshot_inl(t, data, &m);
+  chains = same < 0 ? -1 : HAS_CHAINS() ? run_chains(targets, &m, NULL) : 0;
   S.capturing = 0;
   if (chains < 0) {
-    sync_restore();
-    if (S.slot_head == head)
-      slot->state = SLOT_FREE;    /* else a VBlank copied into it (nothing captured before) */
+    if (staged) {
+      sync_stage_back();    /* the stage stays the frame's */
+    }
+    else {
+      sync_restore();
+      if (S.slot_head == head)
+        slot->state = SLOT_FREE;    /* else a VBlank copied into it (nothing captured before) */
+    }
     S.pstats.captures_stopped++;
     return 1;
+  }
+  if (staged) {
+    /* replaces the stage (the IRQ only reads Q, so no VBlank sees the slot half-written) */
+    slot->map = map;
+    slot->offset = (uint32_t)offset;
+    slot->data = data;
+    slot->targets = targets;
   }
   /* a repeat of prev? decided at the commit (snapshot_same), once a frame */
   same = prev != NULL;
@@ -3363,7 +3468,9 @@ WAKE int dsc_capture(void)
   S.stage_same = same;
   S.stage_prev = S.slot_head - 1;
   PUBLISH_BARRIER();
-  Q.stage = 1;
+  /* nonzero: the capture's number, so a reader of Q (the runner's
+   * --everyframe logger) sees which capture the stage is */
+  Q.stage = S.pstats.captures ? S.pstats.captures : 1;
   return 0;
 }
 
