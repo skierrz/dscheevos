@@ -34,7 +34,12 @@ dscm_net_ring:
 	.global dscm_cues
 dscm_cues:
 	.word 0                     @ 0x48: LED cues for the ARM7 (same cache line)
-	.space 20
+	.ifdef BW_FIBER
+	.global dscm_bw_patched
+dscm_bw_patched:
+	.endif
+	.word 0                     @ 0x4C: LAB coverage: 1 = nds-bootstrap patched SVC_WaitVBlankIntr to the gate (NitroSDK 2.x only)
+	.space 16
 
 @ The wake page (module.c wake_page_t): dscm_irq (frame counting and the
 @ wake's flags), g_idle, H and the re-entry guard, the module region's last
