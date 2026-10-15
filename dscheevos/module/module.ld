@@ -31,11 +31,14 @@ MEMORY {
  * the two for Black (+33.2k vs +41.2k). Capture once a frame (one capture per
  * frame, most wakes take nothing): Kirby +3.0k-3.8k at 16 of 32 points of a
  * 0x40 grid, +22k-24.7k at the others; 0x0c0-0x180 is the widest flat stretch,
- * 0x140 its middle (+3.0k). Re-sweep after any wake-path change. */
+ * 0x140 its middle (+3.0k). Word-wise snapshot_same and the direct-read skip
+ * (research/optimize/evalfast.md) grew the wake path: Kirby +3.4k-3.7k at
+ * 0x3c0-0x4c0 (5 points in a row), 0x140 +3.7k, +3.9k-4.6k at 6 more points,
+ * +9.6k or more elsewhere; 0x440 (+3.4k) it is. Re-sweep after any wake-path change. */
 DSCM_TEXT_COLOUR = DEFINED(DSCM_TEXT_COLOUR) ? DSCM_TEXT_COLOUR : 0x500;
 DSCM_DATA_COLOUR = DEFINED(DSCM_DATA_COLOUR) ? DSCM_DATA_COLOUR : 0;
 DSCM_CACHED_COLOUR = DEFINED(DSCM_CACHED_COLOUR) ? DSCM_CACHED_COLOUR : 0x140;
-DSCM_WAKE_COLOUR = DEFINED(DSCM_WAKE_COLOUR) ? DSCM_WAKE_COLOUR : 0x140;
+DSCM_WAKE_COLOUR = DEFINED(DSCM_WAKE_COLOUR) ? DSCM_WAKE_COLOUR : 0x440;
 /* the hot region's size limit (hot.ld today: 0x9d88) */
 DSCM_HOT_BUDGET = DEFINED(DSCM_HOT_BUDGET) ? DSCM_HOT_BUDGET : 0xB000;
 
