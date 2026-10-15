@@ -2408,6 +2408,16 @@ static void list_update(void)
 
 /* ---- rcheevos callbacks ---- */
 
+/* A read's bytes (1 to 4 for rcheevos' reads; n >= 1): byte by byte,
+ * inline (a call to libc's memcpy costs more than the copy). */
+static inline HOT __attribute__((always_inline)) void copy_read(uint8_t* buffer, const uint8_t* p, uint32_t n)
+{
+  uint32_t i;
+  buffer[0] = p[0];
+  for (i = 1; i < n; i++)
+    buffer[i] = p[i];
+}
+
 static HOT uint32_t RC_CCONV read_memory(uint32_t address, uint8_t* buffer, uint32_t num_bytes, rc_client_t* client)
 {
   slot_t* slot = S.evaluating;
@@ -2434,10 +2444,7 @@ static HOT uint32_t RC_CCONV read_memory(uint32_t address, uint8_t* buffer, uint
       S.seq_next = k + 1;
       w = t->seq[k];
       if (w < SEQ_LIVE) {
-        const uint8_t* p = slot->data + w;
-        buffer[0] = p[0];
-        for (i = 1; i < num_bytes; i++)
-          buffer[i] = p[i];
+        copy_read(buffer, slot->data + w, num_bytes);
         return num_bytes;
       }
       if (w == SEQ_LIVE) {
@@ -2474,7 +2481,7 @@ static HOT uint32_t RC_CCONV read_memory(uint32_t address, uint8_t* buffer, uint
         continue;
       S.target_cursor = k + 1 == n ? 0 : k + 1;
       if (g->length >= num_bytes) {
-        memcpy(buffer, g->bytes, num_bytes);
+        copy_read(buffer, g->bytes, num_bytes);
         return num_bytes;
       }
       failed = !g->length;
@@ -2487,7 +2494,7 @@ static HOT uint32_t RC_CCONV read_memory(uint32_t address, uint8_t* buffer, uint
     /* whole read inside one run of the snapshot's table, stored in order */
     lo = table_lower(t, address);
     if (table_run_read(t, lo, address, num_bytes)) {
-      memcpy(buffer, slot->data + t->where[lo], num_bytes);
+      copy_read(buffer, slot->data + t->where[lo], num_bytes);
       return num_bytes;
     }
 
@@ -2502,7 +2509,7 @@ static HOT uint32_t RC_CCONV read_memory(uint32_t address, uint8_t* buffer, uint
         continue;
       S.target_cursor = k + 1 == n ? 0 : k + 1;
       if (g->length >= num_bytes) {
-        memcpy(buffer, g->bytes, num_bytes);
+        copy_read(buffer, g->bytes, num_bytes);
         return num_bytes;
       }
       failed = !g->length;
@@ -2901,16 +2908,6 @@ COLD static int lag_capped(uint32_t n)
   return 0;
 }
 
-/* Words a..b of two snapshots hold the same watched bytes. */
-static WAKE int same_words(const uint8_t* x, const uint8_t* y, const uint32_t* mask, uint32_t a, uint32_t b)
-{
-  const word_t* p = (const word_t*)x;
-  const word_t* q = (const word_t*)y;
-  for (; a < b; a++)
-    if ((p[a] ^ q[a]) & mask[a])
-      return 0;
-  return 1;
-}
 
 /* Single words: a load and a store each. */
 static inline HOT void copy_words(word_t* d, const uint8_t* base, const uint32_t* src, uint32_t n)
@@ -3033,13 +3030,31 @@ COPY_OOL int copy_snapshot(const table_t* t, uint8_t* data, const mem_t* m)
 }
 
 /* The repeat check: snapshot a holds the same watched bytes and chain
- * targets as b (same table and memory map, as the callers check). */
-static WAKE_SMALL int snapshot_same(const slot_t* a, const slot_t* b)
+ * targets as b (same table and memory map, as the callers check). Word by
+ * word, four at a time (libc's memcmp is Thumb, one word a loop): the
+ * table's words where its mask has bits, then the targets whole (both
+ * snapshots are word-aligned and a whole number of words). */
+static WAKE int snapshot_same(const slot_t* a, const slot_t* b)
 {
   const table_t* t = a->table;
-  uint32_t words = t->words * 4;
-  return same_words(a->data, b->data, t->mask, 0, t->words)
-         && memcmp(a->data + words, b->data + words, a->size - words) == 0;
+  const word_t* p = (const word_t*)a->data;
+  const word_t* q = (const word_t*)b->data;
+  const uint32_t* mask = t->mask;
+  uint32_t n = t->words, m = (a->size >> 2) - n;
+
+  for (; n >= 4; n -= 4, p += 4, q += 4, mask += 4)
+    if (((p[0] ^ q[0]) & mask[0]) | ((p[1] ^ q[1]) & mask[1]) | ((p[2] ^ q[2]) & mask[2]) | ((p[3] ^ q[3]) & mask[3]))
+      return 0;
+  for (; n; n--)
+    if ((*p++ ^ *q++) & *mask++)
+      return 0;
+  for (; m >= 4; m -= 4, p += 4, q += 4)
+    if ((p[0] ^ q[0]) | (p[1] ^ q[1]) | (p[2] ^ q[2]) | (p[3] ^ q[3]))
+      return 0;
+  for (; m; m--)
+    if (*p++ != *q++)
+      return 0;
+  return 1;
 }
 
 /* Chain targets: only when the set has pointer chains (else 0, as
@@ -3612,6 +3627,9 @@ static int add_range(uint32_t address, uint32_t n)
  * read_memory serves from either snapshot that differs, with the same table
  * (the same words) and chains (the same targets). A target that moved or
  * changed counts at its old and its new address. Otherwise "unknown". */
+/* The bytes of a target's word that its length covers (little-endian). */
+static const uint32_t length_mask[8] = { 0, 0xFFu, 0xFFFFu, 0xFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu };
+
 static void changes_before(const slot_t* s, uint32_t frame)
 {
   static const rc_client_memory_range_t none;
@@ -3636,7 +3654,10 @@ static void changes_before(const slot_t* s, uint32_t frame)
     for (a = 0; a < S.chains.target_count; a++) {
       const target_t* g = &s->targets[a];
       const target_t* h = &S.prev_targets[a];
-      if (g->address == h->address && g->length == h->length && !memcmp(g->bytes, h->bytes, g->length))
+      /* g->address == h->address && g->length == h->length && !memcmp(g->bytes, h->bytes, g->length),
+       * a word at a time: a target's length is 0 to 4 (capture_read, peek) */
+      if (!((g->address ^ h->address) | (g->length ^ h->length) |
+            ((*(const word_t*)g->bytes ^ *(const word_t*)h->bytes) & length_mask[g->length & 7])))
         continue;
       if (add_range(h->address, h->length ? h->length : 1) != 0 ||
           add_range(g->address, g->length ? g->length : 1) != 0) {

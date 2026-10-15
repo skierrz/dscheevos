@@ -13,6 +13,18 @@ Which rcheevos DScheevos builds, and why. Checked 2026-10-12.
      - **Correction:** the first figures (Kirby game +63.5k -> +54.3k, write-backs 300 -> 155, "-15%", also in commit 23f736d) compared against unpadded stock, and the layout shift alone accounts for about two-thirds of those write-backs and over half of that game gain.
      - **Desktop** (Apple M5, clang -O2, real sets): neutral to slower, up to +6.5% evaluation time on TWEWY; there the guarded stores compile to real branches.
      - **Status:** DSi-only, kept in our fork. Upstream PR [RetroAchievements/rcheevos#562](https://github.com/RetroAchievements/rcheevos/pull/562) is being closed for these reasons.
+  (The change-driven, dependency and changed-memory patches after it, 09ea746..754965e, are not listed here yet.)
+  N. **skip unchanged direct reads** (rcheevos `e612011` on 754965e, `src/client/rc_client.c` +33 lines, one field in
+     `rc_client_internal.h`; research/optimize/evalfast.md): with `rc_client_set_changed_memory` (754965e), a direct memref
+     that didn't change last frame, was read in an earlier frame, and whose bytes are in none of at most 8 changed ranges is
+     not read again (its value and changed flag would stay as they are). Deserializing progress makes every memref be read
+     on the next frame. Our core passes 0 ranges on a repeat frame, so only last frame's changed memrefs are read.
+     - **Identical results:** tests/difftest run.sh (CD=1 CHANGES=1) and core.sh on all 16 real sets with real RAM dumps,
+       zero differences; a mutant (skips memrefs whose changed flag is set) shows differences on Kirby.
+     - **Measured (melonDS cache model, not hardware):** evaluation of an unchanged frame -10% (Platinum) to -44% (Black,
+       Digimon); Kirby -26%, MKDS -16%, Resident Evil -25%, MvDK -28%.
+     - **Upstream:** generic (any host that knows its changed memory), but it builds on the unmerged changed-memory API;
+       offer it together with that, as an issue, once the methods settle (CLAUDE.md).
 - `RCHEEVOS_VERSION_STRING` still says 12.5.0, so the user agent says `rcheevos/12.5.0` while we run 9 commits past it.
 - Latest release tag: **v12.5.0**. Upstream `develop` is 3 commits past us: `aed817f` (runtime types made internal), `23bcf47` (project files), `116d018` (a test script).
 
