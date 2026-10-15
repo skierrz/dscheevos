@@ -680,7 +680,7 @@ int module_init(const dscm_boot_t* boot)
   config.max_addresses = 4096;
   config.snapshot_slots = 1024;          /* ~17 s of frames with no idle time (loading, save writes) */
   config.snapshot_bytes = HEAP_ARENA_BYTES;  /* shared by queued frames: a few hundred bytes each, typically */
-  config.capture_at_halt = 1;            /* snapshot when the game halts, not in its VBlank interrupt */
+  config.capture_at_halt = DSC_CAPTURE_ONCE;  /* one snapshot a frame, at the first halt after the VBlank */
   config.idle_max_frames = 4;            /* then the network and a fresh snapshot get their turn */
 
   heap_arena_window(1);                  /* the arena goes where the session's replies are */
@@ -766,15 +766,6 @@ void module_vblank_copy(void)
 {
   refresh_dtcm(WP);
   dsc_vblank_copy();
-}
-
-/* Frames queued and not evaluated yet (dropped ones were never queued). */
-/* Out of line: its dsc_stats_t would be in module_idle's frame, on every wake. */
-static __attribute__((noinline)) uint32_t backlog(void)
-{
-  dsc_stats_t s;
-  dsc_get_stats(&s);
-  return s.frames_snapshotted - s.frames_evaluated - s.frames_discarded;
 }
 
 /* The core's counters for the status (and the in-game menu). */
@@ -968,11 +959,11 @@ WAKE_CODE int module_idle(int idle_loop)
    * (dsc_work_pending), and the network gets a pass only when busy or once
    * a frame. */
   if (work_wanted(WP)) {
-    /* Evaluation may take the rest of the frame: copy the memory the game
-     * halted with first, so the next VBlank has it even if the copy before
-     * the halt below comes too late. */
-    if (backlog())
-      wake_irq_restore(capture(WP));
+    /* The frame's one snapshot (DSC_CAPTURE_ONCE) at the first halt after
+     * the VBlank, before evaluation (which may take the rest of the frame),
+     * so that pass evaluates it too. Once the frame has it, a capture takes
+     * nothing. */
+    wake_irq_restore(capture(WP));
     idle_step_locked();
   }
   /* Last, the snapshot and the halt, with IRQs masked from one to the
