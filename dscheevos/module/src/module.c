@@ -738,6 +738,7 @@ int module_init(const dscm_boot_t* boot)
     strcpy(user_agent, "DScheevos/" DSC_VERSION " (Nintendo DSi) rcheevos/" RCHEEVOS_VERSION_STRING);
     nc.user_agent = user_agent;
     entropy_stir(&g_boot.unix_time, sizeof(g_boot.unix_time));
+    entropy_stir(g_boot.token, sizeof(g_boot.token));   /* the pool's secret part */
     ring = net_init(&nc);
     /* the link keeps the one copy of the PMK it needs */
     memset(nc.pmk, 0, sizeof(nc.pmk));

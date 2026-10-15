@@ -1,8 +1,8 @@
 /*
- * Entropy for TLS. The DS has no random number generator; packet arrival
- * and other events land at times the ARM9 can't predict, so their timing
- * (VCOUNT, the hardware timers) is stirred into a SHA-256 pool, together
- * with the console's MAC and the time at boot.
+ * Entropy for TLS. The DS has no random number generator. A SHA-256 pool
+ * takes the session's secret token, the console's MAC and the time at boot
+ * (module.c), and at every stir our own counters and the first bytes of the
+ * RX slot at the ring's tail (link_stir): never the game's hardware (VCOUNT, its timers).
  */
 #include "net.h"
 

@@ -92,12 +92,24 @@ int link_up(void)
   return g_connected && !dead && g_ring.attached;
 }
 
+/* Entropy from our own state only: VCOUNT and the hardware timers are the
+ * game's (we never read game hardware), so the sample is the ARM7's
+ * VBlank count (module memory), our frame counters and a call count. The
+ * secret part of the pool is the session token (module.c, at init); the
+ * first bytes of the RX slot at the ring's tail are stirred in too. */
+extern uint32_t dscm_vblank_count_read(void);
 void link_stir(void)
 {
-  uint32_t sample[2];
-  sample[0] = *(volatile uint16_t*)0x04000006;   /* VCOUNT */
-  sample[1] = *(volatile uint16_t*)0x04000100 | ((uint32_t)*(volatile uint16_t*)0x04000104 << 16); /* timers */
+  static uint32_t calls;
+  uint32_t sample[4];
+  sample[0] = dscm_vblank_count_read();
+  sample[1] = g_rx_frames;
+  sample[2] = g_tx_frames;
+  sample[3] = ++calls;
   entropy_stir(sample, sizeof(sample));
+  /* and the first bytes of the RX slot at the ring's tail: in pump_rx, the frame being received
+   * (stirred here, not in pump_rx, so the hot service loop keeps its size and layout) */
+  entropy_stir(g_ring.rx[g_ring.rx_tail % SHIM_RX_SLOTS].data, 64);
 }
 
 /* ---- TX ---- */
