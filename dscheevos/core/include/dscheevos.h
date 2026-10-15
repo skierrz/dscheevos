@@ -144,7 +144,8 @@ typedef struct dsc_config_t {
   uint32_t snapshot_slots;       /* most frames that can wait for evaluation; 0 = 2, max 1024 */
   uint32_t snapshot_bytes;       /* memory for queued snapshots; 0 = snapshot_slots * max_addresses * 4 */
   int spectator;                 /* 1: rc_client spectator mode, nothing is sent or journaled */
-  int capture_at_halt;           /* 1: dsc_capture() takes the snapshot, dsc_vblank() queues it */
+  int capture_at_halt;           /* 1: dsc_capture() takes the snapshot, dsc_vblank() queues it;
+                                    DSC_CAPTURE_ONCE: see below */
   uint32_t idle_max_frames;      /* frames one dsc_idle() call evaluates at most; 0 = all queued when it starts */
   int handover;                  /* 1: two evaluators share the rc_client (see "Hand-over" below); 0: dsc_idle() owns it */
   /* dsc_handover_policy (P1, "ARM7 first, ARM9 when behind"): the ARM9 wants
@@ -215,7 +216,14 @@ void dsc_vblank_copy(void);
 
 /* capture_at_halt: the game halted, interrupts disabled. Returns 0 if the
  * snapshot is ready for the next dsc_vblank(), 1 if it stopped for an
- * interrupt (call again at the next halt), -1 if nothing was taken. */
+ * interrupt (call again at the next halt), -1 if nothing was taken.
+ * capture_at_halt = DSC_CAPTURE_ONCE: one snapshot a frame, the first
+ * dsc_capture() after a VBlank that completes; it is that VBlank's frame
+ * (taken after the game's work that followed the VBlank, as a frontend
+ * that evaluates after each emulated frame sees it) and is queued at once.
+ * Later calls in the frame take nothing (-1). A frame with no completed
+ * capture before the next VBlank is evaluated with the last snapshot. */
+#define DSC_CAPTURE_ONCE 2
 int dsc_capture(void);
 
 /* Idle time. Returns the number of frames evaluated. */
