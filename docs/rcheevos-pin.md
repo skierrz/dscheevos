@@ -34,7 +34,8 @@ frame's work"**, 3 files (`src/runtime/rc_internal.h`, `src/client/rc_client.c`,
   one yield point in 8 (at most once per evaluation turn, as the console's gate captures once per wait) runs the next
   trace frame's capture and VBlank from inside the hook, in the middle of `rc_client_do_frame` or the index build. Result
   (2026-10-14, 1500 fuzzed frames per set from the real RAM dump): all 16 real sets that have a dump, 96 runs each, zero
-  differences, ~15,300 mid-evaluation captures per set (emulator-free host test). 7 sets were rerun on the final tree.
+  differences, ~15,300 mid-evaluation captures per set (emulator-free host test). Rerun on the branch's final tree
+  (c6bd0e1, 2026-10-14): all 16 sets, 96 runs each, zero differences.
 - **Later commits on the branch (same rule, same difftest):** fe7aeac yield points in the index's trigger walk (each
   condset, every 32 conditions) and per rich presence display; f5a0727 the index's comparison arrays sized once from the
   set's condition count (an upper bound, shrunk in place at the end) instead of grown by doubling, whose copies took up
