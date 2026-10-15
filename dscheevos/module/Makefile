@@ -78,7 +78,12 @@ ifeq ($(BW),1)
 TLS_YIELD := 1
 BW_ASFLAGS := -Wa,--defsym,BW_FIBER=1 -Wa,--defsym,TLS_YIELD=1
 RC_YIELD ?= dscm_yield_point
-CFLAGS += -DBW_FIBER -DBW_HALT_CAPTURE -DTLS_YIELD $(if $(RC_YIELD),-DRC_CLIENT_YIELD_HOOK=$(RC_YIELD)) -DDSC_ROOM_HOOK=dscm_room
+CFLAGS += -DBW_FIBER -DBW_HALT_CAPTURE -DTLS_YIELD -DDSC_IDLE_MAX $(if $(RC_YIELD),-DRC_CLIENT_YIELD_HOOK=$(RC_YIELD)) -DDSC_ROOM_HOOK=dscm_room
+HOTCHECK := 0
+endif
+# BW_PROTO=1: round 1's read-only gate prototype (no fiber)
+ifeq ($(BW_PROTO),1)
+CFLAGS += -DBW_PROTO -DDSC_IDLE_MAX
 HOTCHECK := 0
 endif
 HOTCHECK ?= $(if $(CACHED_COLOUR)$(WAKE_COLOUR)$(TEXT_COLOUR)$(DATA_COLOUR)$(LDSCRIPT)$(EXTRA_CFLAGS)$(EXTRA_LDFLAGS)$(filter-out file,$(origin DSC_FLAGS))$(filter-out 1,$(DATA_MIRROR))$(filter command line,$(origin STACK_GAP)),0,1)

@@ -1071,6 +1071,7 @@ WAKE_CODE int module_idle(int idle_loop)
 #define WP WAKE_PAGE
 
 
+#if defined(BW_FIBER) || defined(BW_PROTO)
 /* ---- LAB (coverage): the BIOS-wait gate ----
  * From bw_entry (start.s): the game's main thread called NitroSDK's
  * SVC_WaitVBlankIntr, its frame done; the stock wait follows when this
@@ -1266,6 +1267,10 @@ __attribute__((section(".text_cold"), noinline, target("arm"))) int module_wait(
 }
 #undef WP
 #define WP WAKE_PAGE
+#else
+/* the default build (no BW): the stock wait, and none of the gate's code (the hot layout as perf's) */
+__attribute__((section(".text_cold"), noinline)) int module_wait(void) { return 0; }
+#endif /* BW_FIBER || BW_PROTO */
 
 #ifdef BW_FIBER
 /* ---- LAB (coverage): preemptible evaluation in the BIOS wait ----
@@ -1422,13 +1427,20 @@ __attribute__((section(".text_cold"), noinline, target("arm"))) void dscm_yield_
   BWF.last_el = (uint32_t)el;
   wp = wake_page_arm();
   if (gap >= BW_YIELD_MARGIN && gap < LINES_PER_FRAME) {
-    if (gap > BW_GAP_MAX) {
+    /* a gap that crossed the VBlank holds the game's own VBlank handler too: noted apart (end site
+     * | 0x80000000), and not the unit's own length */
+    uint32_t crossed = (vblank_count(WP) != BWF.c0 || (REG_IF & 1)) ? 0x80000000u : 0;
+    if (crossed) {
+      if (gap > bw_diag[6])
+        bw_diag[6] = gap;
+    }
+    else if (gap > BW_GAP_MAX) {
       BW_GAP_MAX = gap;
       bw_diag[0] = gap;
       bw_diag[1] = BWF.site;
       bw_diag[2] = (uint32_t)__builtin_return_address(0);
     }
-    bw_gap_note(BWF.site, (uint32_t)__builtin_return_address(0), gap);
+    bw_gap_note(BWF.site, (uint32_t)__builtin_return_address(0) | crossed, gap);
   }
   BWF.site = (uint32_t)__builtin_return_address(0);
   if ((uint32_t)el < BWF.budget)

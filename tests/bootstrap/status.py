@@ -194,13 +194,13 @@ print(f"bw gate: waits {wk[7] & 0xFFFF}, overruns {wk[7] >> 16}, lines {wk[6]}, 
 md = re.search(r'0x([0-9a-f]+)\s+bw_diag\b', mp)
 if md:   # LAB coverage fiber build
     bd = struct.unpack_from('<8I', ram, int(md.group(1), 16) & 0x00FFFFFF)
-    print(f"bw diag: longest gap {bd[0]} lines from {bd[1]:08x} to {bd[2]:08x}, longest capture {bd[3]} lines, waits worked {bd[4]}, waits too short to start {bd[5]}")
+    print(f"bw diag: longest gap {bd[0]} lines from {bd[1]:08x} to {bd[2]:08x}, longest capture {bd[3]} lines, waits worked {bd[4]}, waits too short to start {bd[5]}, longest gap across a VBlank {bd[6]} lines")
     mg = re.search(r'0x([0-9a-f]+)\s+bw_gaps\b', mp)
     if mg:
         gp = struct.unpack_from('<32I', ram, int(mg.group(1), 16) & 0x00FFFFFF)
         for k in range(8):
             if gp[4 * k + 2]:
-                print(f"bw diag: gap {gp[4*k]:08x} -> {gp[4*k+1]:08x}: {gp[4*k+2]} times, longest {gp[4*k+3]} lines")
+                print(f"bw diag: gap {gp[4*k]:08x} -> {gp[4*k+1] & 0x7fffffff:08x}{' (across a VBlank)' if gp[4*k+1] >> 31 else ''}: {gp[4*k+2]} times, longest {gp[4*k+3]} lines")
 print('header magic %08x version %d vblank_count %d' % (hdr[15], hdr[1], hdr[9]))
 
 lst = notices = journal = None
