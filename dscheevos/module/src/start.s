@@ -420,6 +420,15 @@ flush_entry:
 	.global bw_entry
 	.type bw_entry, %function
 bw_entry:
+	.ifdef BW_FIBER
+	@ LAB busyloop: a 6-byte spin patch (movs r0, #0x5B; lsls r0, #19;
+	@ blx r0) lands here too, with lr = the instruction after it | 1, which
+	@ no call of the SDK wrapper can have (that address is the patch's own):
+	@ the spin gate. r0 is scratch in both (the BIOS call clobbers r0, r1).
+	ldr	r0, sg_lr_key
+	cmp	r0, lr
+	beq	sg_entry
+	.endif
 	mrs	r0, cpsr
 	and	r1, r0, #0x1F
 	cmp	r1, #0x1F                   @ SYS: NitroSDK threads
@@ -687,7 +696,9 @@ sg_line:
 	.global sg_pred
 sg_pred:
 	.word 0                         @ +44: predicates (the gate works only while each reads 0)
-	.space 36                       @ +48: 3 x { address, offset, size | 0x100 if the address holds a pointer }
+	.space 36                       @ +48: 3 x { address, offset, flags } (module.c sg_pred_ok)
+sg_lr_key:
+	.word 0xFFFFFFFF                @ +84: lr of a 6-byte patch's blx (the patched address + 6 | 1); none: -1
 
 @ Init: called once by nds-bootstrap's ARM9 before the game starts, with
 @ the session file in r0. Its stack is tiny, so run on the module stack.

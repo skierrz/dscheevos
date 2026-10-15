@@ -1077,7 +1077,7 @@ void dscm_yield_point(void);
 uint32_t bw_kind;
 uint32_t sg_regs[13];         /* start.s: the game's r2-r12, sp, lr at the spin gate */
 extern const uint32_t sg_line;
-extern const uint32_t sg_pred[10];   /* start.s: count, then { address, offset, size | 0x100 pointer } x 3 */
+extern const uint32_t sg_pred[10];   /* start.s: count, then { address, offset, flags: size | 0x100 pointer | 0x200 register | 0x400 minus the word at offset (flags >> 16) } x 3 */
 /* the loop's own exit or work condition, read only: every predicate reads 0
  * (e.g. Code Lyoko: its VBlank flag, its loader's two busy fields) */
 static __attribute__((section(".text_cold"), noinline, target("arm"))) int sg_pred_ok(void)
@@ -1085,6 +1085,13 @@ static __attribute__((section(".text_cold"), noinline, target("arm"))) int sg_pr
   uint32_t n = sg_pred[0], i;
   for (i = 0; i < n && i < 3; i++) {
     uint32_t a = sg_pred[1 + 3 * i], f = sg_pred[3 + 3 * i], v;
+    if (f & 0x200) {          /* the address is the game's register r<a> at the gate's entry (r2-r12) */
+      if (a < 2 || a > 12)
+        return 0;
+      a = sg_regs[a - 2];
+      if (a - 0x02000000u >= 0x00400000u)
+        return 0;
+    }
     if (f & 0x100) {
       a = *(volatile uint32_t*)a;
       if (a - 0x02000000u >= 0x00400000u)
@@ -1096,6 +1103,8 @@ static __attribute__((section(".text_cold"), noinline, target("arm"))) int sg_pr
     case 2: v = *(volatile uint16_t*)(a & ~1u); break;
     default: v = *(volatile uint32_t*)(a & ~3u); break;
     }
+    if (f & 0x400)            /* compare with the word at a + (f >> 16): equal counts as 0 (e.g. a ring empty) */
+      v -= *(volatile uint32_t*)((a - sg_pred[2 + 3 * i] + (f >> 16)) & ~3u);
     if (v)
       return 0;
   }
@@ -1108,6 +1117,8 @@ static __attribute__((section(".text_cold"), noinline, target("arm"))) uint32_t 
 #ifdef BW_FIBER
   if (bw_kind) {
     uint32_t d = sg_line;
+    if (!d)
+      return LINES_PER_FRAME;   /* no exit line (a thread's loop): the predicates and each VBlank end a visit */
     return v <= d ? d - v : LINES_PER_FRAME - v + d;
   }
 #endif
@@ -1164,8 +1175,6 @@ __attribute__((section(".text_cold"), noinline, target("arm"))) int module_wait(
     return 0;
   if (REG_IE & REG_IF & 1)
     return 0;          /* a VBlank is already requested: the stock wait returns at once */
-  if (bw_kind && !sg_pred_ok())
-    return 0;          /* LAB busyloop: the loop is about to exit, or its own work is due: stock */
   if (bw_left() < BW_MARGIN + 2)
     return 0;
   if (wake_swap(&H.busy, 1))
