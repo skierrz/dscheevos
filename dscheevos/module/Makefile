@@ -80,6 +80,9 @@ BW_ASFLAGS := -Wa,--defsym,BW_FIBER=1 -Wa,--defsym,TLS_YIELD=1
 RC_YIELD ?= dscm_yield_point
 CFLAGS += -DBW_FIBER -DBW_HALT_CAPTURE -DTLS_YIELD -DDSC_IDLE_MAX $(if $(RC_YIELD),-DRC_CLIENT_YIELD_HOOK=$(RC_YIELD)) -DDSC_ROOM_HOOK=dscm_room
 HOTCHECK := 0
+# the BIOS-wait code grows the wake region by 0x10 (module_idle's hook call): starting it 0x10 lower keeps
+# the wake core (dsc_capture, commit, ...) at the default build's addresses
+WAKE_COLOUR ?= 0x5B0
 endif
 # BW_PROTO=1: round 1's read-only gate prototype (no fiber)
 ifeq ($(BW_PROTO),1)
