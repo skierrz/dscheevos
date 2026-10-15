@@ -1304,6 +1304,12 @@ __attribute__((section(".text_cold"), noinline)) int module_wait(void) { return 
 #endif
 extern void bw_yield(int late);   /* start.s: late (BW_SKIP_LATE builds): the VBlank already came */
 uint32_t bw_ctx[11];          /* start.s: game r4-r11, sp, lr; the fiber's sp (0: not started) */
+/* LAB: the gate's own functions; BW_THUMB builds them as Thumb (fewer code lines a wait touches) */
+#ifdef BW_THUMB
+#define BW_GATE_CODE __attribute__((section(".text_cold"), noinline))
+#else
+#define BW_GATE_CODE __attribute__((section(".text_cold"), noinline, target("arm")))
+#endif
 static struct { uint32_t v0, left0, c0, f0, in, gap_v, site, budget, frames0, last_el, mask_cpsr; } BWF;
 /* LAB diagnostics (status.py "bw diag"): longest gap between yield checks
  * (lines) with the call sites that start and end it (1 = the wait's start),
@@ -1328,7 +1334,7 @@ static __attribute__((section(".text_cold"), noinline)) void bw_gap_note(uint32_
 #define BW_MIDYIELDS (dscm_irq.reserved2[0])  /* status "units": waits given back with work under way */
 #undef WP
 #define WP wp
-static __attribute__((section(".text_cold"), noinline, target("arm"))) int bwf_begin(void)
+static BW_GATE_CODE int bwf_begin(void)
 {
   wake_page_t* const wp = wake_page_arm();
   uint32_t cpsr;
@@ -1387,7 +1393,7 @@ static __attribute__((section(".text_cold"), noinline, target("arm"))) int bwf_b
 #endif
   return 1;
 }
-static __attribute__((section(".text_cold"), noinline, target("arm"))) uint32_t bwf_left(void)
+static BW_GATE_CODE uint32_t bwf_left(void)
 {
   wake_page_t* const wp = wake_page_arm();
   uint32_t el = lines_between(BWF.v0, REG_VCOUNT);
@@ -1396,7 +1402,7 @@ static __attribute__((section(".text_cold"), noinline, target("arm"))) uint32_t 
   return el < BWF.left0 ? BWF.left0 - el : 0;
 }
 static uint32_t bw_late;   /* bwf_end: the VBlank this wait was for came while the gate worked */
-static __attribute__((section(".text_cold"), noinline, target("arm"))) void bwf_end(void)
+static BW_GATE_CODE void bwf_end(void)
 {
   wake_page_t* const wp = wake_page_arm();
   uint32_t lines = lines_since(BWF.v0), f1;
@@ -1431,11 +1437,11 @@ static __attribute__((section(".text_cold"), noinline, target("arm"))) void bwf_
  * (the idle path, init, flush) it returns at once. */
 /* core DSC_ROOM_HOOK: room for a long step without yield points (the list rebuild): outside
  * the gate always; in it, only with BW_NET_LINES left */
-__attribute__((section(".text_cold"), noinline, target("arm"))) int dscm_room(void)
+BW_GATE_CODE int dscm_room(void)
 {
   return !BWF.in || bwf_left() >= BW_NET_LINES;
 }
-__attribute__((section(".text_cold"), noinline, target("arm"))) void dscm_yield_point(void)
+BW_GATE_CODE void dscm_yield_point(void)
 {
   wake_page_t* wp;
   int32_t el;
