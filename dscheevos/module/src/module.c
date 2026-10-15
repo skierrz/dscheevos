@@ -254,6 +254,7 @@ static uint32_t bw_midwork;
 static uint32_t bw_cap_est;
 extern volatile uint32_t dscm_bw_patched;   /* start.s header word 0x4C, set by nds-bootstrap at boot */
 static uint32_t bw_idle_last, bw_idle_run, bw_ever_warm, bw_load_last, bw_load_run;     /* idle path: the ARM7's VBlank count at its last wake; frames in a row with one */                    /* lines a capture needs (decaying max) */
+static uint32_t bw_cap_now;                    /* the idle path is in capture-only mode, IRQs masked (interrupt_pending) */
 static uint32_t bw_midwork_unused;                    /* the fiber gave a wait back in the middle of its work */
 #endif
 #define BW_UNITS_ALL (dscm_irq.reserved2[4])   /* LAB fiber build: bw_step calls (shown as "first unit overran") */
@@ -400,6 +401,14 @@ WAKE_CODE static int interrupt_pending(void)
     return 1;          /* a VBlank: the copy would be of two frames (vblank_poll queues it next) */
   if (!(REG_IE & REG_IF))
     return 0;
+#ifdef BW_FIBER
+  /* LAB coverage: the idle path's capture-only mode masks IRQs from its start to the halt, so the
+   * window below would open nothing and the copy would hold the game's IRQ off to its end (up to 54
+   * lines at Super Princess Peach's start, 8 frames lost): stop the copy instead (the stage keeps the
+   * frame's last completed capture), and the halt returns at once to take the IRQ */
+  if (bw_cap_now)
+    return 1;
+#endif
   before = REG_VCOUNT;
   wake_irq_restore(g_capture_cpsr);
   wake_irq_off();
@@ -1010,6 +1019,9 @@ WAKE_CODE int module_idle(int idle_loop)
   const int bw_cap = 0;
 #endif
   uint32_t bw_cpsr0 = bw_cap ? wake_irq_off() : 0;
+#ifdef BW_FIBER
+  bw_cap_now = bw_cap;
+#endif
   if (wake_swap(&H.busy, 1)) {
     if (bw_cap)
       wake_irq_restore(bw_cpsr0);
@@ -1062,6 +1074,9 @@ WAKE_CODE int module_idle(int idle_loop)
     /* else a VBlank came meanwhile and counted the pass */
     idle_frames(WP, wake_swap(&dscm_irq.idle_open, 0) ? lines_since(start) : 0);
     H.busy = 0;       /* IRQs masked: nothing runs before the halt */
+#ifdef BW_FIBER
+    bw_cap_now = 0;
+#endif
     wake_wfi();
     wake_irq_restore(bw_cap ? bw_cpsr0 : cpsr);
     return 1;   /* halted here */
