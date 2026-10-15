@@ -205,25 +205,44 @@ def load_io(base):
     return rows
 
 
+def nds_bootstrap_pc(cpu, pc):
+    """nds-bootstrap's own code (not the game's): the DSi-mode card engines (ce9 at 0x027FC000, ce7 at 0x037E0400) and
+    its ARM7 helpers below them (cheat engine 0x037DC000); retail/common/include/locations.h."""
+    p = int(pc, 16)
+    return (cpu == '9' and 0x027FC000 <= p < 0x02800000) or (cpu == '7' and 0x037C0000 <= p < 0x037F0000)
+
+
 def cmp_ipc(IA, IB):
     """IPC writes (IPCSYNC, FIFO send) per CPU: the commands each CPU gives the other (the ARM9's sound commands go
-    this way). Per CPU the whole sequence (frame ignored), then per frame."""
+    this way). Per CPU and writer class (game code, nds-bootstrap's own code) the whole sequence (frame ignored), then
+    per frame. The classes are kept apart because nds-bootstrap's card-engine handshakes write one IPCSYNC value
+    over and over while it polls, so their count and their interleaving with the game's writes follow the timing; for
+    them the sequence of distinct values (repeats folded) is compared instead, as information."""
     def per(rows):
         d = collections.defaultdict(list)
         for f, cpu, ts, pc, rw, addr, val, cnt in rows:
             if rw == 'w':
-                d[cpu].extend([(f, addr, val)] * cnt)
+                d[(cpu, 'nds-bootstrap' if nds_bootstrap_pc(cpu, pc) else 'game')].extend([(f, addr, val)] * cnt)
         return d
+    def fold(s):
+        o = []
+        for f, addr, val in s:
+            if not o or o[-1] != (addr, val):
+                o.append((addr, val))
+        return o
     a, b = per(IA), per(IB)
     out = {}
-    for cpu in sorted(set(a) | set(b)):
-        x, y = a.get(cpu, []), b.get(cpu, [])
+    for key in sorted(set(a) | set(b)):
+        x, y = a.get(key, []), b.get(key, [])
         k = min(len(x), len(y))
         j = next((i for i in range(k) if x[i][1:] != y[i][1:]), None)
         moved = sum(1 for i in range(j if j is not None else k) if x[i][0] != y[i][0])
-        out[cpu] = dict(n=(len(x), len(y)), seq_first=None if j is None else (j, x[j][0], x[j][1]), moved=moved,
-                        ok=j is None and len(x) == len(y) and moved == 0)
-    return dict(cpus=out, ok=all(v['ok'] for v in out.values()))
+        fx, fy = fold(x), fold(y)
+        fj = next((i for i in range(min(len(fx), len(fy))) if fx[i] != fy[i]), None)
+        out[key] = dict(n=(len(x), len(y)), seq_first=None if j is None else (j, x[j][0], x[j][1]), moved=moved,
+                        ok=j is None and len(x) == len(y) and moved == 0,
+                        folded=(len(fx), len(fy)), folded_ok=fj is None and len(fx) == len(fy))
+    return dict(cpus=out, ok=all(v['ok'] for (cpu, cls), v in out.items() if cls == 'game'))
 
 
 def cmp_reads(IA, IB):
@@ -249,7 +268,9 @@ def cmp_reads(IA, IB):
             f = min(x[j][0] if j < len(x) else 1 << 30, y[j][0] if j < len(y) else 1 << 30)
             firsts.append((f, k, j))
     firsts.sort()
-    return dict(streams=len(set(a) | set(b)), differing=len(firsts), first=firsts[:8])
+    game = [x for x in firsts if not nds_bootstrap_pc(x[1][0], x[1][1])]
+    return dict(streams=len(set(a) | set(b)), differing=len(firsts), first=firsts[:8], first_game=game[:8],
+                nb_differing=len(firsts) - len(game), nb_streams=sum(1 for k in set(a) | set(b) if nds_bootstrap_pc(k[0], k[1])))
 
 
 def cmp_pcm(base_a, base_b):
@@ -352,16 +373,19 @@ def main():
              sp['crossed_frame']))
     IA, IB = load_io(ref), load_io(run)
     ipc = cmp_ipc(IA, IB); res['ipc'] = ipc
-    for cpu, v in ipc['cpus'].items():
-        say('IPC from ARM%s (IPCSYNC/FIFO-send writes; the ARM9\'s sound commands go this way): %s; writes %d vs %d; %d moved to another frame' %
-            (cpu, 'sequence identical' if v['seq_first'] is None and v['n'][0] == v['n'][1] else
-             'sequence differs from write %s' % (v['seq_first'],), v['n'][0], v['n'][1], v['moved']))
+    for (cpu, cls), v in ipc['cpus'].items():
+        if cls == 'game':
+            say('IPC from ARM%s, game code (IPCSYNC/FIFO-send writes; the ARM9\'s sound commands go this way): %s; writes %d vs %d; %d moved to another frame' %
+                (cpu, 'PASS' if v['ok'] else 'FAIL (sequence %s)' % ('identical, per frame not' if v['seq_first'] is None and v['n'][0] == v['n'][1] else
+                 'differs from write %s' % (v['seq_first'],)), v['n'][0], v['n'][1], v['moved']))
+        else:
+            say('IPC from ARM%s, nds-bootstrap\'s own code (informational: polling handshakes): distinct-value sequence %s (%d vs %d); writes %d vs %d' %
+                (cpu, 'identical' if v['folded_ok'] else 'differs', v['folded'][0], v['folded'][1], v['n'][0], v['n'][1]))
     rd = cmp_reads(IA, IB); res['reads'] = rd
-    say('timing-sensitive reads by game code (VCOUNT/DISPSTAT/timers; diagnostic): %d of %d (cpu, pc, register) streams saw different values' %
-        (rd['differing'], rd['streams']))
-    for f, (cpu, pc, addr), j in rd['first'][:detail]:
-        tag = ' (nds-bootstrap ce7)' if cpu == '7' and 0x037E0000 <= int(pc, 16) < 0x037F0000 else ''
-        say('    frame %d: ARM%s pc %s%s reads %s (value #%d differs)' % (f, cpu, pc, tag, addr, j))
+    say('timing-sensitive reads (VCOUNT/DISPSTAT/timers; diagnostic): game code %d of %d (cpu, pc, register) streams saw different values; nds-bootstrap\'s own code %d of %d' %
+        (rd['differing'] - rd['nb_differing'], rd['streams'] - rd['nb_streams'], rd['nb_differing'], rd['nb_streams']))
+    for f, (cpu, pc, addr), j in rd['first_game'][:detail]:
+        say('    frame %d: ARM%s pc %s reads %s (value #%d differs)' % (f, cpu, pc, addr, j))
     pc = cmp_pcm(ref, run); res['pcm'] = pc
     if pc:
         say('sound samples (as close as possible): %.3f%% of %d differ, peak |d| %d, diff RMS %.1f dBFS vs signal %.1f%s' %

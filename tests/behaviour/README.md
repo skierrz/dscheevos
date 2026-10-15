@@ -24,9 +24,9 @@ bgate.py REF RUN                                 # PASS/FAIL per category, first
 | lag | melonDS's lag flag (no keypad read in the frame) and the profile's lag (no idle in the interval) | identical per frame |
 | input | the keypad values the game read per frame (ARM9 KEYINPUT; ARM7 KEYINPUT/EXTKEYIN), consecutive repeats folded | identical per frame (read counts are informational: polling) |
 | sound commands | ARM7 SPU register writes (register, size, value) per frame | identical per frame; time within the frame may differ |
-| IPC | IPCSYNC and FIFO-send writes per CPU per frame (the ARM9's sound commands travel this way) | identical per frame |
+| IPC | IPCSYNC and FIFO-send writes per CPU per frame (the ARM9's sound commands travel this way), the game's code apart from nds-bootstrap's own (card engines ce9 0x027FC000, ce7 0x037E0400 and its ARM7 helpers from 0x037C0000) | the game's writes identical per frame; nds-bootstrap's: informational (its handshakes write one value over and over while polling, so their count follows the timing), its distinct-value sequence shown |
 | sound samples | 48 kHz PCM | a figure, "as close as possible" |
-| timing-sensitive reads | VCOUNT, DISPSTAT, timer counters read by game code, per (cpu, pc, register) | diagnostic: where the game first saw a different value |
+| timing-sensitive reads | VCOUNT, DISPSTAT, timer counters read, per (cpu, pc, register); game code listed, nds-bootstrap's code counted apart | diagnostic: where the game first saw a different value |
 
 Memory is compared by 64-bit hashes of 4 KB blocks; `--bgate-dump` + bgdiff.py give byte addresses; `--watch-write
 ADDR:SIZE --watch-log FILE` + wdiff.py give the writers. No tool prints memory contents (the RA token must never be
