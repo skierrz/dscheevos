@@ -1382,9 +1382,12 @@ static __attribute__((section(".text_cold"), noinline, target("arm"))) void bwf_
     BW_FLAG_SET++;
   if (vblank_count(WP) != BWF.c0 || lines >= BWF.left0 || f1)
     BW_OVERRUNS++;
-  /* only the game's own VBlank handler having run (its flag set during this
-   * wait) proves the VBlank came: VCOUNT past 192 or the ARM7's count may not */
-  bw_late = f1;
+  /* the VBlank this wait was for came during the gate's work: the game's
+   * handler set its flag meanwhile, or the ARM7's VBlank count moved (it
+   * can lag the VBlank, never lead it). Not VCOUNT past 192 (the IRQ may not
+   * have been taken). With the flag already set at entry (Meteos), only the
+   * count tells. */
+  bw_late = f1 || vblank_count(WP) != BWF.c0;
   {
     volatile uint32_t* canary = (volatile uint32_t*)DSCM_DATA_ADDR(DSCM_HEAP_END);
     if (!(BW_STACK_BAD & 2)) {
