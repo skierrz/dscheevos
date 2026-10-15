@@ -1450,8 +1450,15 @@ __attribute__((section(".text_cold"), noinline, target("arm"))) void dscm_yield_
     bw_gap_note(BWF.site, (uint32_t)__builtin_return_address(0) | crossed, gap);
   }
   BWF.site = (uint32_t)__builtin_return_address(0);
+#ifdef BW_GAME_RAN
+  /* a gap over the margin: the game's IRQ handlers or the threads they woke ran since the last point
+   * (our units are shorter, research/optimize/biowait.md R4.2): give the wait back now */
+  if ((uint32_t)el < BWF.budget && gap < BW_YIELD_MARGIN)
+    return;
+#else
   if ((uint32_t)el < BWF.budget)
     return;
+#endif
   bwf_end();
   BW_MIDYIELDS++;
   bw_midwork = 1;
