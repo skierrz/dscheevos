@@ -38,5 +38,15 @@ Reading:
   previous-frame rule (g_idle.last against the game's running average, DSC_DEFER_LATE=24); built, not run.
 - MKDS not run (stopped).
 
-Next: run DSC_DEFER_LATE=24 on Tetris/Platinum; then a masked-slice evaluation (yield points, lock only while
+DEFER24 (previous-frame rule, DSC_DEFER_LATE=24), run 2026-10-16 afternoon:
+| run | game cost on-off | screens top/bottom | lag (idle) |
+|---|---|---|---|
+| LOCK0-tetris (control) | +1898 | FAIL 5 / FAIL 4 | PASS 20 = 20 |
+| DEFER24-tetris | +1895 | FAIL 4 / FAIL 2 | PASS 20 = 20 |
+| LOCK0-platinum (control) | +5140 | PASS / PASS | PASS 3 = 3 |
+| DEFER24-platinum | +5360 | FAIL 1 / PASS | PASS 3 = 3 |
+It barely fired: the module still ran full passes in Tetris's heavy stretch (3929-3939). Screens moved by about as much
+as one state to the next does. Dropped as built; not worth more without a counter showing why the rule misses.
+
+Next: then a masked-slice evaluation (yield points, lock only while
 masked) on top of copy-once, measuring the IRQ hold-off per slice first.
