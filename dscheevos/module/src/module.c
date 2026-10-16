@@ -43,6 +43,41 @@ WAKE_INLINE void wake_wfi(void)
 {
   __asm__ volatile("mcr p15, 0, %0, c7, c0, 4" : : "r"(0) : "memory");
 }
+
+/* LAB footprint (research/identical/footprint.md): ARM946E-S cache lockdown
+ * around our idle work. DSC_LOCKDOWN = the lockdown base written to CP15
+ * c9,c0,0 (D) and c9,c0,1 (I): ways below it keep the game's lines (hits
+ * still occur in every way; refills go to the ways from the base up).
+ * DSC_LOCK_MODE 1: locked for the whole wake; 2: the full pass only when it
+ * is expected to end before VBlank (else it runs unlocked, as today).
+ * DSC_DEFER_LATE = N: no full pass in a VBlank interval whose first idle
+ * wake came N lines or more after the VBlank, or after a lag frame (the game
+ * is near its limit: leave its caches alone); the snapshot is still taken
+ * at every halt and the frames wait in the queue. */
+#ifdef DSC_LOCKDOWN
+#ifndef DSC_LOCK_MODE
+#define DSC_LOCK_MODE 1
+#endif
+WAKE_INLINE uint32_t lock_read(void)
+{
+  uint32_t d, i;
+  __asm__ volatile("mrc p15, 0, %0, c9, c0, 0\n\tmrc p15, 0, %1, c9, c0, 1" : "=r"(d), "=r"(i));
+  return d | i;
+}
+WAKE_INLINE void lock_write(uint32_t v)
+{
+  __asm__ volatile("mcr p15, 0, %0, c9, c0, 0\n\tmcr p15, 0, %0, c9, c0, 1" : : "r"(v) : "memory");
+}
+#endif
+/* DSC_LOCK_MODE 3: locked only while CPSR.I is set (the capture), so no game
+ * code (IRQ handler or thread) can ever run under our lockdown. */
+#if defined(DSC_LOCKDOWN) && DSC_LOCK_MODE == 3
+#define LOCK_MASKED_ON(wp) do { if ((wp)->irq.reserved2[0]) lock_write((wp)->irq.reserved2[0]); } while (0)
+#define LOCK_MASKED_OFF(wp) do { if ((wp)->irq.reserved2[0]) lock_write(0); } while (0)
+#else
+#define LOCK_MASKED_ON(wp) ((void)0)
+#define LOCK_MASKED_OFF(wp) ((void)0)
+#endif
 WAKE_INLINE uint32_t wake_swap(volatile uint32_t* p, uint32_t v)
 {
   uint32_t old;
@@ -375,8 +410,10 @@ WAKE_CODE static int interrupt_pending(void)
   if (!(REG_IE & REG_IF))
     return 0;
   before = REG_VCOUNT;
+  LOCK_MASKED_OFF(wp);
   wake_irq_restore(g_capture_cpsr);
   wake_irq_off();
+  LOCK_MASKED_ON(wp);
   /* a VBlank: the copy would be of two frames (vblank_poll queues it next) */
   return lines_between(before, REG_VCOUNT) >= 2 || vblank_count(WP) != dscm_irq.last_vblank;
 }
@@ -407,8 +444,10 @@ WAKE_INLINE uint32_t capture(wake_page_t* wp)
   vblank_poll(WP);
   dsc_drain();
   g_capture_cpsr = wake_irq_off();
+  LOCK_MASKED_ON(wp);
   vblank_poll(WP);
   dsc_capture();
+  LOCK_MASKED_OFF(wp);
   return g_capture_cpsr;
 }
 #undef WP
@@ -918,6 +957,39 @@ int dscm_idle_step(void)
   return r;
 }
 
+#ifdef DSC_DEFER_LATE
+/* LAB footprint: decided at the interval's first wake with work, from the
+ * frame before (g_idle.last: lines the idle thread had in it, 0 for a lag
+ * frame) against the game's own running average (g_defer_avg, 16 x lines):
+ * a frame with DSC_DEFER_LATE lines less idle than usual means the game is
+ * near its limit, and the next one probably is too, so this interval gets
+ * no full pass (the first wake after VBlank is often in the middle of the
+ * game's frame work). */
+static uint32_t g_defer_frame = 0xFFFFFFFFu, g_defer_seen = 0xFFFFFFFFu, g_defer_avg;
+uint32_t dscm_deferred_passes;
+#undef WP
+#define WP wp
+WAKE_INLINE int defer_pass(wake_page_t* wp, uint32_t start)
+{
+  (void)start;
+  if (g_frames != g_defer_seen) {          /* first wake with a full pass in this interval */
+    uint32_t last = g_idle.last;
+    g_defer_seen = g_frames;
+    if (!g_defer_avg)
+      g_defer_avg = last * 16;
+    if (last + DSC_DEFER_LATE < g_defer_avg / 16)
+      g_defer_frame = g_frames;
+    g_defer_avg = g_defer_avg - g_defer_avg / 16 + last;   /* ~16-frame average */
+  }
+  if (g_defer_frame != g_frames || backlog() >= 8)   /* at most ~8 frames behind */
+    return 0;
+  dscm_deferred_passes++;
+  return 1;
+}
+#undef WP
+#define WP WAKE_PAGE
+#endif
+
 /* Called on the module's own stack from halt_entry, in the game's idle thread.
  * NitroSDK switches threads when an IRQ returns, so any game thread that wakes
  * (the main loop at VBlank, a loader thread at a card IRQ) preempts this work
@@ -949,6 +1021,17 @@ WAKE_CODE int module_idle(int idle_loop)
   if (wake_swap(&H.busy, 1))
     return 0;
   H.halts_idle++;
+#ifdef DSC_LOCKDOWN
+  /* a game that uses lockdown itself keeps it: we leave CP15 alone */
+  uint32_t lk = lock_read() == 0 ? (uint32_t)DSC_LOCKDOWN : 0;
+#if DSC_LOCK_MODE == 3
+  dscm_irq.reserved2[0] = lk;
+  lk = 0;
+#else
+  if (lk)
+    lock_write(lk);
+#endif
+#endif
   /* IRQs stay on: only the idle thread touches these (no IRQ work of ours) */
   /* the game's MPU is set up once it idles: is the 0x0C000000 mirror
    * cached (SDK5)? vblank_count() reads past the cache either way */
@@ -972,10 +1055,30 @@ WAKE_CODE int module_idle(int idle_loop)
     /* Evaluation may take the rest of the frame: copy the memory the game
      * halted with first, so the next VBlank has it even if the copy before
      * the halt below comes too late. */
+#ifdef DSC_DEFER_LATE
+    if (defer_pass(WP, start))
+      goto snapshot;
+#endif
     if (backlog())
       wake_irq_restore(capture(WP));
+#if defined(DSC_LOCKDOWN) && DSC_LOCK_MODE == 2
+    {
+      /* expected pass length (eval_lines is 16 x lines, smoothed) against
+       * the lines left before the VBlank that preempts it */
+      uint32_t left = lines_between(REG_VCOUNT, 192);
+      if (lk && dscm_g_status.eval_lines / 16 + 4 >= left)
+        lock_write(0);
+      idle_step_locked();
+      if (lk)
+        lock_write(lk);
+    }
+#else
     idle_step_locked();
+#endif
   }
+#ifdef DSC_DEFER_LATE
+snapshot:
+#endif
   /* Last, the snapshot and the halt, with IRQs masked from one to the
    * other: the idle thread runs only when every game thread is blocked, so
    * this is the game's memory when it stopped, and no game code can run
@@ -992,6 +1095,10 @@ WAKE_CODE int module_idle(int idle_loop)
     /* else a VBlank came meanwhile and counted the pass */
     idle_frames(WP, wake_swap(&dscm_irq.idle_open, 0) ? lines_since(start) : 0);
     H.busy = 0;       /* IRQs masked: nothing runs before the halt */
+#ifdef DSC_LOCKDOWN
+    if (lk)
+      lock_write(0);
+#endif
     wake_wfi();
     wake_irq_restore(cpsr);
     return 1;   /* halted here */
