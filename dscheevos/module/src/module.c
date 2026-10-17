@@ -1015,6 +1015,14 @@ WAKE_CODE int module_idle(int idle_loop)
 #ifdef DSC_LOCKDOWN
   /* a game that uses lockdown itself keeps it: we leave CP15 alone */
   uint32_t lk = lock_read() == 0 ? (uint32_t)DSC_LOCKDOWN : 0;
+#ifdef DSC_LOCK_ADAPT
+  /* lockdown width from the backlog (frames waiting): 3 ways locked while we
+   * keep up, 2 when DSC_LOCK_ADAPT or more wait, none (today's) at 4x that */
+  if (lk) {
+    uint32_t b = dsc_backlog();
+    lk = b < DSC_LOCK_ADAPT ? 3u : b < 4u * DSC_LOCK_ADAPT ? 2u : 0u;
+  }
+#endif
 #if DSC_LOCK_MODE == 3
   dscm_irq.reserved2[0] = lk;
   lk = 0;
