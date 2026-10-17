@@ -124,8 +124,8 @@ Reading:
   held.
 - SH: only HBlank handlers run locked. An HBlank handler has to finish inside a line (~2,100 ARM9 cycles) or the game
   breaks on stock hardware, so its stretch under the lockdown is bounded by construction. Longest handler run equal to
-  the control in all four games (MKDS 21600 -> 21656, Kirby 30874 -> 30956). Game code with the lockdown set: none
-  outside IRQ mode; in IRQ mode only Kirby's HBlank handlers (119 a frame, 226 -> 239 cycles a run).
+  the control in all four games (MKDS 21600 -> 21656, Kirby 30874 -> 30956). Game code with the lockdown set outside
+  IRQ mode: only the parked-pass model artefact noted above (MKDS 0.7 a frame, as under A); in IRQ mode only Kirby's HBlank handlers (119 a frame, 226 -> 239 cycles a run).
 - Where a game takes no HBlank IRQs, SH is exactly A (Tetris, Platinum, MKDS: identical numbers). Kirby: A -62%, SH
   -73%; the rest of the gap to the oracle is its other IRQs (VBlank, IPC) unlocking.
 - Adaptive width fixes MKDS throughput: COADSH evaluated 5010 of 5010 (fixed 3 ways: 4628, 382 behind at the end) at
