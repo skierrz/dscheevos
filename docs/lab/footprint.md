@@ -138,3 +138,28 @@ Shape for the real thing: lockdown base 3 (2 when behind, none when far behind) 
 vector that clears it unless the only pending source is HBlank; a patch in the SDK thread switch that clears it when
 the incoming thread is not the idle thread; relock at our pass's resume points. The stub and the switch patch are new
 hook points in the game (not in nds-bootstrap's current four).
+
+## Owner ruling and masked slices (2026-10-17)
+
+Owner: no IRQ-entry stub, no thread-switch patch: the read-only rule stands (a write path into the game is a cheat
+vector). That leaves lockdown only where no game code can run: with IRQs masked.
+
+Masked-slice evaluation needs a unit of our work short enough to hold IRQs off for. The unit is one rc_client_do_frame
+(no yield points inside rcheevos). Its length, co3 control, 600 intervals (ev9 at entry 02d87bb8 and the three return
+sites; ARM7 timestamps x2 = ARM9 cycles at 67 MHz; one line = 2,130):
+
+| game | calls | min | p50 | p90 | max |
+|---|---|---|---|---|---|
+| Platinum | 601 | 48k | 53k | 66k | 105k |
+| Kirby | 600 | 82k | 94k | 115k | 450k |
+| Tetris | 600 | 151k | 169k | 174k | 8.2M (one-off) |
+| MKDS | 424 | 148k | 974k | 1.02M | 1.07M |
+
+Wall time includes IRQs and other threads, but even the minimum (an uninterrupted call) is 23-71 lines. Holding IRQs
+off for one call delays VBlank, timers and every HBlank (Kirby takes 119 a frame) by tens of lines: not viable. Getting
+under a line needs yield points inside rcheevos' evaluation, which the rcheevos rule rules out.
+
+Result: under the read-only rule, cache lockdown is closed beyond the masked capture (LOCKCAP, already covered by
+copy-once). The cost has to come down by touching fewer lines (layout, data placement, less work per frame), not by
+fencing them. The stub design (SH above: -62% to -73%, lag and longest handler equal to stock) stays here as evidence
+only.
