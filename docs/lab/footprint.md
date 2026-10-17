@@ -96,3 +96,45 @@ Reading:
 
 Next: unlock at the thread switch instead of IRQ entry (handlers run locked, bounded; only a switch to a game thread
 unlocks); lockdown width chosen by backlog (3 ways when keeping up, 2 or 0 when behind).
+
+## Unlock at the thread switch; adaptive width (2026-10-16 evening, footprint2-lab)
+
+Runner models (melonDS 896d3c6f): --dsc-unlock-on-switch keeps the lockdown through IRQ handlers and clears it when
+OSThreadInfo.current (found from the pointer at 0x02FFFFA0/0x027FFFA0) leaves the thread that set it, as a patch in the
+SDK's thread switch would; our code relocks when it runs again outside IRQ mode. --dsc-unlock-irq-mask M: an IRQ entry
+with IE & IF & M also clears it (a stub at the game's IRQ entry that tests the source). Module DSC_LOCK_ADAPT=3 (coad):
+lock 3 ways while fewer than 3 frames wait, 2 ways below 12, none above. Every runner change replays CO3OFF-tetris
+byte-identical. S = switch only, SV = switch + VBlank (mask 1), SH = switch + every source but HBlank (mask fffffffd).
+COAD has its own control (COADOFF: same binary, lockdown ignored).
+
+| game | control CO3OFF | A (IRQ entry) | S | SV | SH | oracle | COADOFF | COADSH |
+|---|---|---|---|---|---|---|---|---|
+| Tetris | +1959 | +856 | +848 | +850 | +856 | +856 | +2067 | +877 |
+| Platinum | +5604 | +1532 | +1479 | +1478 | +1532 | +1532 | +5701 | +1669 |
+| Kirby | +26639 | +10169 | +6926 | +6948 | +7323 | +2153 | +29078 | +8384 |
+| MKDS | +10306 | +4553 (behind) | +45417 (behind, 33 dropped) | +45532 (same) | +4553 (behind) | +4588 (behind) | +10560 | +7363 (keeps up) |
+
+Lag (idle) equal to the reference in every run. Screens: PASS or the 1-2 frame noise of the controls, except COAD
+Tetris (9/8 against its control's 12/10).
+
+Reading:
+- Running every handler locked (S) is unsafe: MKDS has a ~21.6k-cycle IRQ handler (timer 1 or IPC, not VBlank: SV did
+  not change it) that thrashes the one free D way when it lands in our pass: longest handler run 21.6k -> 140k cycles,
+  +45k a frame, and the slower pass dropped 33 frames. The game's timing moved by 2 ms in those frames even though lag
+  held.
+- SH: only HBlank handlers run locked. An HBlank handler has to finish inside a line (~2,100 ARM9 cycles) or the game
+  breaks on stock hardware, so its stretch under the lockdown is bounded by construction. Longest handler run equal to
+  the control in all four games (MKDS 21600 -> 21656, Kirby 30874 -> 30956). Game code with the lockdown set: none
+  outside IRQ mode; in IRQ mode only Kirby's HBlank handlers (119 a frame, 226 -> 239 cycles a run).
+- Where a game takes no HBlank IRQs, SH is exactly A (Tetris, Platinum, MKDS: identical numbers). Kirby: A -62%, SH
+  -73%; the rest of the gap to the oracle is its other IRQs (VBlank, IPC) unlocking.
+- Adaptive width fixes MKDS throughput: COADSH evaluated 5010 of 5010 (fixed 3 ways: 4628, 382 behind at the end) at
+  +7.4k against +10.6k, i.e. -30%. Light sets stay at 3 ways (Tetris/Platinum: same as fixed). Kirby COAD +8.4k vs +7.3k
+  is the layout move plus the odd 2-way wake.
+- The control divergence seen before (CO3OFF Tetris 800+ screen frames) is layout-specific: COADOFF Tetris, same
+  module with a slightly different layout, has 12/10.
+
+Shape for the real thing: lockdown base 3 (2 when behind, none when far behind) around the pass; a stub at the IRQ
+vector that clears it unless the only pending source is HBlank; a patch in the SDK thread switch that clears it when
+the incoming thread is not the idle thread; relock at our pass's resume points. The stub and the switch patch are new
+hook points in the game (not in nds-bootstrap's current four).
