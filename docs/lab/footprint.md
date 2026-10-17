@@ -163,3 +163,17 @@ Result: under the read-only rule, cache lockdown is closed beyond the masked cap
 copy-once). The cost has to come down by touching fewer lines (layout, data placement, less work per frame), not by
 fencing them. The stub design (SH above: -62% to -73%, lag and longest handler equal to stock) stays here as evidence
 only.
+
+## Cache-set confinement (2026-10-17, in progress)
+
+What-if (runner --whatif-module-isets/-dsets, -ibase): module memory uses only some cache sets, as a layout that puts our
+code (and data) at chosen offsets in each way would. Read-only by construction: only where our own module sits.
+
+Pre-registered before the quarter sweep's results (owner: don't overfit to a few games):
+- Development games: Kirby, MKDS, Platinum, Tetris. Held out (never used to choose anything): Black, Phoenix Wright,
+  Digimon World DS (behaviour gate), Zelda Spirit Tracks and Phantom Hourglass (gamecost.sh).
+- Candidate: code-only confinement (data can't be confined: stack and rcheevos' heap blocks are contiguous and larger
+  than a D quarter's 256-byte windows).
+- Choice rule: the I quarter with the lowest mean of (cost / control cost) over the four development games; ties to
+  the lower base. Then one held-out run per game with that quarter against its own control, reported whatever it shows.
+- Accept only if no held-out game is worse than its control by more than run noise (~0.1% of a frame).
