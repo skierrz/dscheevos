@@ -214,3 +214,41 @@ needs a sweep per game. Not pursued.
 
 Also seen: Spirit Tracks' control (today's footprint) already diverges from the reference in lag (16 intervals from
 frame 9227), the same timing-tipping effect as the Tetris/Platinum controls earlier.
+
+## Where Kirby's cost goes: the network pass at every wake (2026-10-17)
+
+Runner --evict-attr (melonDS footprint2-lab): each module refill that evicts a game line remembers the module PC; the
+game's later re-miss (shadow cache says it would have hit) charges its extra cycles to that PC. Attribution runs replay
+the control byte-identical. Kirby (co3 control, +26.6k): charged 41.8k/interval, 96% I-side; rcheevos evaluation
+~1-2k of it. The rest is dispatch code: idle_step_locked 9.9k, the halt entry 8.3k, module_idle 7.7k,
+dsc_work_pending 4.0k, net_service + link_paused 4.4k. Six I sets (8, 19, 20, 24, 26, 27) carry 88%: a dozen of our
+lines re-missed ~58 times an interval each, against Kirby's per-line handler code.
+
+Why: over the full window idle_step_locked runs 62 times a frame (median 81, ~ every idle wake) while
+rc_client_do_frame runs once. From frame 3855 on, H.requests = 1 and H.net_busy = 1: a request waits for an answer and
+the network is busy, and work_wanted() asks for a full pass at every wake while either is set ("so an unlock goes out
+at once"). Under --dsc-nonet the answer never comes, which is the DSi with no Wi-Fi or RA unreachable. Kirby split by
+phase (gamecost.py on each part): no request pending +2.9k (0.26%), request pending +34.3k (3.07%).
+
+Every earlier Kirby number in this lab includes that phase; comparisons between variants still hold (same phase in
+both), the absolute level doesn't.
+
+Fix (module, read-only by construction): DSC_NET_PER_FRAME drops H.requests and H.net_busy from work_wanted(): a busy
+network or a waiting request gets the frame's first pass (idle_step_locked services it on every pass it runs), not one
+per wake. Each build with its own state (a state holds the module image; a first try loaded the control's state for
+both and measured the control twice):
+
+| game | control (npf0) | DSC_NET_PER_FRAME | change |
+|---|---|---|---|
+| Kirby | +15.9k | +2.4k | -85% |
+| Pokemon Black | +26.9k | +5.2k | -81% |
+| MKDS | +11.1k | +11.0k | = |
+| Platinum | +5.6k | +5.3k | = |
+| Tetris | +2.0k | +1.9k | = (screens 771/1218 -> 5/4) |
+| Phoenix Wright | +3.3k | +3.2k | = |
+| Digimon World DS | +2.1k | +2.2k | = |
+| Phantom Hourglass | +10.9k | +10.6k | = |
+
+All frames evaluated, lag equal to the reference in every run. Network items of the suite (wifidrop with 4 unlocks
+sent and 2 rejoins, offline journal 1+2, hardcore online, spectator) PASS on both builds; award spacing identical
+(10/10/15 s), last TLS handshake 8,933 vs 8,834 ms (+1%: up to a frame per round trip).

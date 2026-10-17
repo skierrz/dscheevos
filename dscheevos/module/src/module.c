@@ -874,7 +874,16 @@ __attribute__((section(".text_cold"), noinline)) void module_flush(void)
 #define WP wp
 WAKE_INLINE int work_wanted(wake_page_t* wp)
 {
+#ifdef DSC_NET_PER_FRAME
+  /* LAB footprint: a request in flight or a busy network gets the frame's
+   * first pass only (idle_step_locked services it whenever a pass runs), not
+   * a pass at every wake: with no network (or none answering) net_busy and
+   * requests stay set, and a pass on each of Kirby's ~80 wakes a frame cost
+   * the game 3% of a frame, against 0.26% without one waiting. */
+  return g_frames != H.pass_frame || H.more || H.reset_pending || H.progress_stale;
+#else
   return g_frames != H.pass_frame || H.more || H.requests || H.net_busy || H.reset_pending || H.progress_stale;
+#endif
 }
 #undef WP
 #define WP WAKE_PAGE
