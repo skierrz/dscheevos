@@ -252,3 +252,35 @@ both and measured the control twice):
 All frames evaluated, lag equal to the reference in every run. Network items of the suite (wifidrop with 4 unlocks
 sent and 2 rejoins, offline journal 1+2, hardcore online, spectator) PASS on both builds; award spacing identical
 (10/10/15 s), last TLS handshake 8,933 vs 8,834 ms (+1%: up to a frame per round trip).
+
+## The same fix on perf's code (branch netpace off perf 59e9978b, not committed; 2026-10-17)
+
+Two versions, patches in docs/lab/patches/: netpace-perframe (H.requests and H.net_busy out of work_wanted, as
+DSC_NET_PER_FRAME above) and netpace-linkgated (H.requests out; H.net_busy = net_busy() && link_up()). Both shrink
+module_idle and idle_step_locked (work_wanted is inlined in both), moving the wake block by 0x18 and hot code by
+0x10-0x18: the hot-layout firewall fails. "pad" builds add exactly that gap in module.ld/hot.ld so every hot symbol keeps
+perf's address (layout identical to hot-layout.ref; logic change only).
+
+| | perf | perframe pad / unpadded | linkgated pad / unpadded |
+|---|---|---|---|
+| online (gamecost.sh, mock server), Kirby | +17.6k | +28.0k / +28.2k | +28.0k / +28.0k |
+| online, MKDS | +17.0k | +15.1k / +27.6k (*) | +14.7k / +19.2k (*) |
+| online, Pokemon Black | +34.4k | +32.5k / +30.3k | +32.4k / +30.6k |
+| no network (behaviour gate), Kirby | +37.9k | - / +26.4k | +43.8k / +37.5k |
+| no network, Pokemon Black | +36.7k | - / +29.7k | +36.2k / +36.0k |
+
+(*) shadow unchanged and game CPI down: the game took a different path (more game instructions), not our cache use.
+
+Reading:
+- perf copies the snapshot at every wake (copy-once is stagefix phase 2, not on perf): that D-side copy (wake.core,
+  ~21.7k charged on Kirby online) is the same in every row, so the network pass is a smaller share here than in the lab.
+- Online Kirby is worse with the change even at perf's exact layout. Attribution (online, identical layout): I-side
+  charged 8.7k -> 15.4k, from module_idle (0.8k -> 5.9k) and the halt entry (0.3k -> 2.1k). Same module time per
+  interval, same network work. In perf, online, the pass at every wake is cheaper for Kirby than the light wakes that
+  replace it: what Kirby pays is which of our lines run between its per-line handler runs, not how much we run.
+- The link-gated version keeps per-wake passes while the link is up, yet online Kirby is unchanged from the broad
+  version (so H.requests alone, link up, drives perf's per-wake passes online), and offline it loses the gain.
+- Verdict: neither version goes to perf. On Kirby the cost of the per-wake path is a cache-set collision effect that
+  doing less work can make worse; the lab's -85% (copy-once base, offline) does not carry over to perf online. The
+  dependable result is the diagnosis: with no answer coming, a pass at every wake costs Kirby/Black ~3% of a frame,
+  and any fix has to be judged online and offline, at a fixed layout, on more than Kirby.

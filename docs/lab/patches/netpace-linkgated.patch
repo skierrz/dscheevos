@@ -1,0 +1,45 @@
+diff --git a/dscheevos/module/src/module.c b/dscheevos/module/src/module.c
+index 6b10bd55..d369afc1 100644
+--- a/dscheevos/module/src/module.c
++++ b/dscheevos/module/src/module.c
+@@ -839,12 +839,18 @@ __attribute__((section(".text_cold"), noinline)) void module_flush(void)
+  * under the game's MPU then). */
+ 
+ /* Work only once a frame or when something is waiting (see module_idle):
+- * all of it read from H, one cache line. */
++ * all of it read from H, one cache line. The network counts while it is
++ * busy with the link up (H.net_busy); a request waiting on a link that is
++ * down or rejoining gets the frame's first pass instead: a pass at every
++ * wake there can't move it, and it cost the game up to 3% of a frame
++ * (Kirby, Pokemon Black: 80+ wakes a frame) for as long as no answer came,
++ * i.e. with no Wi-Fi or a rejoin that doesn't succeed (branch
++ * footprint2-lab, docs/lab/footprint.md). */
+ #undef WP
+ #define WP wp
+ WAKE_INLINE int work_wanted(wake_page_t* wp)
+ {
+-  return g_frames != H.pass_frame || H.more || H.requests || H.net_busy || H.reset_pending || H.progress_stale;
++  return g_frames != H.pass_frame || H.more || H.net_busy || H.reset_pending || H.progress_stale;
+ }
+ #undef WP
+ #define WP WAKE_PAGE
+@@ -890,7 +896,7 @@ static int idle_step_locked(void)
+    * frame for lwIP's timers and frames from the access point. */
+   if (H.net_started && (new_frame || H.net_busy || H.requests)) {
+     net_service(millis());
+-    H.net_busy = net_busy() != 0;
++    H.net_busy = net_busy() && link_up();   /* see work_wanted */
+     dscm_g_status.net_state = net_state();
+     dscm_g_status.net_detail = net_detail();
+     dscm_g_status.tls_handshake_ms = net_handshake_ms();
+@@ -962,8 +968,8 @@ WAKE_CODE int module_idle(int idle_loop)
+   /* The idle thread wakes at every IRQ, often many times a frame (20-40 in
+    * Kirby Super Star Ultra). A full pass runs on the first wake after a
+    * VBlank, and on any wake with work waiting: frames to evaluate, answers,
+-   * a reset, the network in the middle of something (work_wanted, from one
+-   * cache line). Every other wake only takes the snapshot and halts,
++   * a reset, the network in the middle of something with the link up
++   * (work_wanted, from one cache line). Every other wake only takes the snapshot and halts,
+    * touching as few lines as it can (H, g_idle, dscm_irq). Nothing a full
+    * pass would do on such a wake is skipped: dsc_idle() would find nothing
+    * (dsc_work_pending), and the network gets a pass only when busy or once
