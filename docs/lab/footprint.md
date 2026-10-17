@@ -177,3 +177,40 @@ Pre-registered before the quarter sweep's results (owner: don't overfit to a few
 - Choice rule: the I quarter with the lowest mean of (cost / control cost) over the four development games; ties to
   the lower base. Then one held-out run per game with that quarter against its own control, reported whatever it shows.
 - Accept only if no held-out game is worse than its control by more than run noise (~0.1% of a frame).
+
+Results (co3 binary, its control = same binary with lockdown ignored; game cost on - off, cycles at 67 MHz):
+
+What-if variants on the development games (Q = quarter of the sets: I 16 of 64, D 8 of 32):
+
+| variant | Kirby | MKDS | Platinum | Tetris |
+|---|---|---|---|---|
+| control CO3OFF | +26.6k | +10.3k | +5.6k | +2.0k |
+| v1: all our accesses folded, game lines we read too (not buildable) | +44.6k | +3.5k | +1.2k | +1.1k |
+| v2: module memory, wake block/views line/stack top exempt | +29.1k | +5.5k | +4.1k | +1.5k |
+| v3: all module memory, code and data | +44.3k | +3.6k | +2.0k | +1.0k |
+| v4: module code only, sets 0-15 | +33.8k | +4.9k | +3.3k | +1.3k |
+| v4, sets 16-31 | +93.0k | +4.9k | +3.8k | +0.8k |
+| v4, sets 32-47 (chosen: mean ratio 0.46) | +4.7k | +5.8k | +3.3k | +1.0k |
+| v4, sets 48-63 | +29.1k | +6.3k | +3.4k | +1.1k |
+
+Every run kept up (all frames evaluated); lag equal to the reference throughout.
+
+Held out, v4 at sets 32-47 against each game's own control:
+
+| game | control | confined | change |
+|---|---|---|---|
+| Pokemon Black | +27.2k (I 14.7k) | +52.4k (I 45.0k) | x1.9 worse |
+| Phantom Hourglass | +11.1k | +8.6k | -23% |
+| Phoenix Wright | +3.3k | +2.0k | -37% |
+| Digimon World DS | +2.2k | +1.3k | -42% |
+| Spirit Tracks | +24.0k | +2.5k | not comparable: both runs diverge from the reference (lag 16 / 14 intervals, screens) |
+
+Verdict by the pre-registered rule: rejected (Black is far worse than its control). Concentrating our code in 16 sets
+turns the cost into a bet on whether those sets overlap the game's own hot code: Kirby ranges x0.18 to x3.5 by quarter
+alone, and the quarter that wins on the development games doubles Black. Today's layout spreads our lines over every
+set, which is costlier on average but has no cliff. A per-game quarter (a table keyed by ROM hash, chosen in melonDS)
+would avoid the cliff only as far as the model's set-level behaviour matches the DSi, which nothing has checked; and it
+needs a sweep per game. Not pursued.
+
+Also seen: Spirit Tracks' control (today's footprint) already diverges from the reference in lag (16 intervals from
+frame 9227), the same timing-tipping effect as the Tetris/Platinum controls earlier.
