@@ -22,6 +22,8 @@ case $game in
   layton)   rom="Professor Layton and the Curious Village (USA, Australia).nds"; id=9518; sc=layton; s=3500;;
   phoenix)  rom="Phoenix Wright - Ace Attorney (USA).nds"; id=12747; sc=phoenix; s=750;;
   digimon)  rom="Digimon World DS (USA).nds"; id=16153; sc=digimon; s=5500;;
+  zeldast)  rom="Legend of Zelda, The - Spirit Tracks (USA, Australia) (En,Fr,Es).nds"; id=9898; sc=zeldast; s=6900;;
+  zeldaph)  rom="Legend of Zelda, The - Phantom Hourglass (USA) (En,Fr,Es).nds"; id=14323; sc=zeldaph; s=6900;;
   *) echo "unknown game $game"; exit 2;;
 esac
 rom=$L/$rom; [ -f "$rom" ] || { echo "no ROM $rom"; exit 2; }
