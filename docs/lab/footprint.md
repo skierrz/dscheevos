@@ -432,3 +432,7 @@ The launcher resumes its own TLS session across its requests and hands it to the
 session at the end of the session file then its length; dscm_boot_t unchanged because nds-bootstrap checks its size).
 The module's first connection then resumes: last TLS handshake 166 ms (before 6.4-8.8 s); no full key exchange in the
 game's first seconds. Suite network items PASS. Official-only launcher: branch official-only 15179b3b.
+
+Evalfast + every set's heap uncached (build-efunc): Digimon 0 frames dropped from boot (uncached without evalfast: 26;
+eval_lines 768 vs 1583), game cost +2.0k (control +2.1k). Candidate catalogue configuration: evalfast + all heaps
+uncached + the sweep's placement; queued on the full catalogue against copyonce-net.
