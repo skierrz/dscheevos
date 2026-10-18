@@ -1,0 +1,131 @@
+diff --git a/dscheevos/core/include/dscheevos.h b/dscheevos/core/include/dscheevos.h
+index ca5839a9..9633e209 100644
+--- a/dscheevos/core/include/dscheevos.h
++++ b/dscheevos/core/include/dscheevos.h
+@@ -248,6 +248,9 @@ int dsc_work_pending(void);
+  * as dsc_capture and dsc_idle do first. Lets the platform do that work with
+  * interrupts enabled before a capture that runs with them masked. */
+ void dsc_drain(void);
++/* capture once only: the newest frame is captured and committed (nothing for
++ * dsc_capture/dsc_drain to do until the next VBlank). */
++int dsc_frame_done(void);
+ 
+ /* DS: before dsc_init, which view of RAM the core's own state is used
+  * through: 0x02000000 (cached) or 0x0C000000 (the mirror). No-op elsewhere. */
+diff --git a/dscheevos/core/src/dscheevos.c b/dscheevos/core/src/dscheevos.c
+index b3d1b93f..9fa51e28 100644
+--- a/dscheevos/core/src/dscheevos.c
++++ b/dscheevos/core/src/dscheevos.c
+@@ -4106,6 +4106,14 @@ WAKE void dsc_drain(void)
+     drain();
+ }
+ 
++/* For the module's fast idle wake: with capture once, the newest frame has
++ * its capture and is committed, so until the next VBlank a capture (and a
++ * drain) would take nothing. */
++WAKE int dsc_frame_done(void)
++{
++  return S.initialized && S.active && S.config.capture_at_halt == DSC_CAPTURE_ONCE && Q.taken == Q.frames;
++}
++
+ COLD uint32_t dsc_arena_used(void)
+ {
+   uint32_t tail;
+diff --git a/dscheevos/core/tests/test_core.c b/dscheevos/core/tests/test_core.c
+index 46efe9b9..ff232e4e 100644
+--- a/dscheevos/core/tests/test_core.c
++++ b/dscheevos/core/tests/test_core.c
+@@ -143,10 +143,16 @@ static void once_vblank(void)
+   while ((r = dsc_capture()) == 1)
+     ;
+   CHECK(r == 0 || r == -1);
++  if (r == 0) {
++    CHECK(!dsc_frame_done() || handover_mode);   /* sealed, not yet committed: the next drain does that */
++    dsc_drain();
++    CHECK(dsc_frame_done());   /* committed: the module's fast wake may skip the rest of the frame */
++  }
+   if (chaos && chaos_rnd() % 3 == 0) {
+     uint8_t saved[24];
+     uint32_t where[24];
+     scramble(saved, where, 24);
++    CHECK(dsc_frame_done());
+     CHECK(dsc_capture() == -1);   /* the frame has its snapshot */
+     unscramble(saved, where, 24);
+     once_extra++;
+@@ -648,17 +654,22 @@ static void test_capture_once_takes_first_complete_capture(void)
+   frames(3);
+   dsc_get_stats(&before);
+   (dsc_vblank)();
++  CHECK(!dsc_frame_done());    /* a VBlank: the fast wake must not skip this frame's capture */
+   ram[0x10] = 5;               /* the game's work after the VBlank */
+   put32(0x100, 0x02000040);
+   ram[0x44] = 7;
+   stop_in = 0;
+   CHECK(dsc_capture() == 1);   /* stopped: retried at the next halt */
+   stop_in = -1;
++  CHECK(!dsc_frame_done());
+   CHECK(dsc_capture() == 0);
++  dsc_drain();                 /* as the module's capture() does before the next copy */
++  CHECK(dsc_frame_done());
+   ram[0x10] = 0;               /* it runs on and halts again */
+   put32(0x100, 0x02000020);
+   ram[0x44] = 0;
+   CHECK(dsc_capture() == -1);
++  CHECK(dsc_frame_done());
+   dsc_idle();
+   CHECK(was_unlocked(1001));
+   CHECK(was_unlocked(1002));
+@@ -666,6 +677,7 @@ static void test_capture_once_takes_first_complete_capture(void)
+   stop_in = 0;
+   CHECK(dsc_capture() == 1);
+   stop_in = -1;
++  CHECK(!dsc_frame_done());
+   dsc_idle();
+   dsc_get_stats(&after);
+   CHECK(after.frames_evaluated == before.frames_evaluated + 1);   /* it waits for its capture */
+diff --git a/dscheevos/module/src/module.c b/dscheevos/module/src/module.c
+index dbfd0b05..21dbd1e7 100644
+--- a/dscheevos/module/src/module.c
++++ b/dscheevos/module/src/module.c
+@@ -168,7 +168,8 @@ typedef struct dscm_irq_t {
+   volatile uint32_t idle_cut_lines;
+   uint32_t idle_cut;
+   uint32_t frames_missed;
+-  uint32_t reserved2[5];
++  uint32_t fast_ok;              /* the last wake left the frame captured and nothing waiting (module_idle) */
++  uint32_t reserved2[4];
+ } dscm_irq_t;
+ /* Idle lines per frame, from the idle thread, with IRQs masked: at each
+  * pass's start and end it closes the frames that ended since (VBlanks
+@@ -947,6 +948,23 @@ WAKE_CODE int module_idle(int idle_loop)
+   if (wake_swap(&H.busy, 1))
+     return 0;
+   H.halts_idle++;
++  /* The fast wake: most wakes in IRQ-heavy games (HBlank, timers: 200-300 a
++   * frame in Kirby, Pokemon Black) come after the frame's capture, with
++   * nothing waiting. Each line of ours they run is one the game's handlers
++   * evict and we evict back, at every wake. If the last wake left the frame
++   * captured and nothing waiting, and no VBlank came since (the ARM7's count,
++   * read past the cache), there is nothing to do: halt. IRQs masked from the
++   * check to the halt, as below. */
++  if (dscm_irq.fast_ok) {
++    uint32_t cpsr = wake_irq_off();
++    if (vblank_count(WP) == dscm_irq.last_vblank && !work_wanted(WP)) {
++      H.busy = 0;
++      wake_wfi();
++      wake_irq_restore(cpsr);
++      return 1;
++    }
++    wake_irq_restore(cpsr);
++  }
+   /* IRQs stay on: only the idle thread touches these (no IRQ work of ours) */
+   /* the game's MPU is set up once it idles: is the 0x0C000000 mirror
+    * cached (SDK5)? vblank_count() reads past the cache either way */
+@@ -985,6 +1003,7 @@ WAKE_CODE int module_idle(int idle_loop)
+    * Star Ultra's streaming for a minute (tests/perf/AB.md). */
+   {
+     uint32_t cpsr = capture(WP);
++    dscm_irq.fast_ok = dsc_frame_done() && !work_wanted(WP);
+     start = dscm_irq.idle_start;
+     /* else a VBlank came meanwhile and counted the pass */
+     idle_frames(WP, wake_swap(&dscm_irq.idle_open, 0) ? lines_since(start) : 0);

@@ -333,3 +333,20 @@ Two classes:
 3. Network robustness (all games, whenever the server can't be reached): the request timeout didn't cover DNS, connect
    or the TLS handshake (only C_READY), so a silent server held a request (and the queue behind it) until lwIP gave up
    on TCP, with a handshake step (~23 allocations) every pass. Fix in progress: fail after 25 s without progress.
+
+## Stall timeout (kept) and fast wake (dropped), copyonce-net (2026-10-18)
+
+| | online Kirby | online Black | online Platinum (eq. work) | online MKDS (eq. work) | offline Kirby | offline Black | offline MKDS |
+|---|---|---|---|---|---|---|---|
+| 39714f8a (network once a frame) | +2.4k | +5.3k | +23.1k | +12.2k | +2.4k | +5.1k | +10.8k |
+| + stall timeout (66a50d8c) | +2.5k | +4.7k | +23.1k | +12.3k | +2.5k | +4.6k | +10.9k |
+| + fast wake (patches/fastwake.patch) | +2.7k | +5.8k | +25.1k | +11.7k | +2.8k | +5.4k | +9.9k |
+
+Fast wake (halt at once when the frame is captured, nothing waits and no VBlank came: one uncached read and the H
+line) did what it was built for: Kirby's light wakes 21.4 -> 9.1 I lines and 2.8 -> 1.0 own D lines each. The game
+cost didn't follow (Kirby, Black, Platinum up; MKDS, Tetris down; held-out Phoenix/Digimon/PH equal). Below ~20 lines a
+wake, the light path no longer sets the cost; what is left is the pass. Dropped (patch kept, with its core test for
+dsc_frame_done).
+
+Stall timeout: committed 66a50d8c (correctness first: a silent server no longer holds the request queue), cost equal
+or lower; network suite items PASS.
