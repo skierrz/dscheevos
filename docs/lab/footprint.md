@@ -486,3 +486,46 @@ Verdict: the candidate is better than the control on max, p90, over-1% count and
 the control, and the hard goal (every game under 1%) is not met. Next: --evict-attr on Mario Party DS, Mario Hoops,
 Starfy, MKDS; the 28 title-only sets are still synthetic (Mario Party, Mario Hoops among them), so their numbers are
 provisional until the official sets are measured.
+
+## Official sets for the title-matched games (2026-10-18, owner OK to fetch with the RA token)
+
+Fetched r=achievementsets by game id with f=3 (official only, as the official-only launcher asks) for the 29 games
+measured with the synthetic set: 25 sets (all core only, 0 Flags 5), stored as private/sets/sets-<id>-title.json.
+4 have no RA game ("Unknown game"): Club Penguin Herbert's Revenge, Clubhouse Games, Code Lyoko, Drawn to Life: The
+Next Chapter; they stay synthetic. The 31 hash-matched set files do contain Flags 5 entries, but rc_client never
+loads unofficial achievements, so every measurement here is official-only. The 25 games were re-run on the control
+(copyonce-net build-st, df05fefeb9d1) and the candidate (build-efuncw140); tags ctl-official, efuncw140-official,
+merged into the full runs as ctl-merged / efuncw140-merged.
+
+Mario Party DS can't be measured with its official set: the session load before the game's first OS_Halt takes
+7.1G cycles (~106 s at 67 MHz; synthetic set 0.25G, ~3.7 s), so the game starts at frame 8963 and only 36 intervals
+of the 9000-frame run are in the window. The set has one achievement ("Wheel of Fortune", official) of 2311 conditions
+(50.8 KB of MemAddr, a long AddSource chain on 9 addresses); the next largest is 735 bytes. Same in both builds. A
+~2-minute stall at boot is a user-facing problem in its own right, separate from game cost. Next: where the load time
+goes (rcheevos parse vs our session load), on the host first.
+
+Synthetic vs official, same build: the synthetic set was not "typical" for these games. Control shadow, synthetic ->
+official: Mario Hoops 1.94 -> 2.44, Super Scribblenauts 0.94 -> 0.57, Kirby Mass Attack 0.90 -> 0.59, SpongeBob 0.75 ->
+0.38, PMD Sky 0.23 -> 0.46, SM64DS 0.16 -> 0.31. Frames dropped in the control vanish with the official sets: SM64DS
+3357 -> 0, M&L BIS 660 -> 150, LEGO SW 377 -> 0, MvDK2 156 -> 0, PMD Blue 81 -> 0, SpongeBob 68 -> 0, Club Penguin 55 -> 0,
+Mario Hoops 29 -> 0, Yoshi 2 -> 0. So run 2's "evalfast fixes dropped frames" was mostly about the synthetic set.
+
+Candidate vs control with official sets (60 games: 56 real sets, 4 synthetic, Mario Party DS not measurable):
+
+| | median | p90 | max | over 1% | over 0.1% | games with frames dropped (total) |
+|---|---|---|---|---|---|---|
+| control | 0.27% | 0.99% | 2.44% | 5 | 46 | 5 (4590) |
+| candidate | 0.27% | 0.78% | 2.43% | 2 | 46 | 4 (4419) |
+| oshalt only (49): control / candidate | 0.31% / 0.32% | 1.16% / 0.78% | 2.44% / 2.43% | 5 / 2 | | |
+
+- Over 1%, control: Mario Hoops 2.44, Platinum 2.26, Starfy 1.77, Cory 1.18, MKDS 1.16. Candidate: Starfy 2.43, MKDS 1.09.
+- Better: Mario Hoops -1.82 (2.44 -> 0.62 with its official set; with the synthetic set it went 1.94 -> 2.97: the I-side
+  lottery depends on the set too), Platinum -1.49, Drawn to Life 2 / Cory / Rhythm -0.24, Scribblenauts -0.14, PMD Sky
+  -0.10. Worse: Starfy +0.66, Kirby +0.08, 12 more under 0.06. 24 better, 14 worse, median change 0.
+- Frames dropped: M&L BIS 150 -> 0; RE ~2440, MvDK ~1450, Layton ~435, Nine Hours ~95 in both (not ours to fix by
+  evaluation speed; next to look at).
+- Lag: unchanged (window on-off sums -25 / -89, whole run +197 / +50, all within the games' own run-to-run spread).
+
+Verdict with official sets: the candidate is better on p90 and over-1% count (5 -> 2), equal on median and max,
+fewer frames dropped. Still not every game under 1%: Starfy 2.43% (worse than control), MKDS 1.09%, and Mario Party DS
+unmeasured.
