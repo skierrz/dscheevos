@@ -1,5 +1,5 @@
-/* "Skip unofficial achievements": off, the achievementsets request is exactly
- * what rcheevos builds; on, "&f=3" is appended and nothing else changes. */
+/* Official achievements only: the achievementsets request is what rcheevos
+ * builds plus "&f=3"; every other request is sent exactly as built. */
 #include "request.h"
 #include "rc_api_runtime.h"
 #include "rc_api_user.h"
@@ -24,16 +24,12 @@ int main(void)
   params.game_hash = "4432098e35a63d0f2ff7bdbc7a848e3c";
   CHECK(rc_api_init_fetch_game_sets_request(&req, &params) == RC_OK);
 
-  /* off: the very bytes rcheevos built */
-  out = request_post(req.post_data, 0, buf, sizeof(buf));
-  CHECK(out == req.post_data);
-
-  /* on: rcheevos' bytes, then &f=3 */
-  out = request_post(req.post_data, 1, buf, sizeof(buf));
+  /* rcheevos' bytes, then &f=3 */
+  out = request_post(req.post_data, buf, sizeof(buf));
   snprintf(expect, sizeof(expect), "%s&f=3", req.post_data);
   CHECK(out == buf && !strcmp(out, expect));
   CHECK(!strncmp(out, req.post_data, strlen(req.post_data)));
-  printf("rcheevos: %s\nskip on:  %s\n", req.post_data, out);
+  printf("rcheevos: %s\nsent:     %s\n", req.post_data, out);
 
   /* only achievementsets */
   memset(&start, 0, sizeof(start));
@@ -41,10 +37,10 @@ int main(void)
   start.api_token = "Tok3n";
   start.game_id = 11732;
   CHECK(rc_api_init_start_session_request(&req2, &start) == RC_OK);
-  CHECK(request_post(req2.post_data, 1, buf, sizeof(buf)) == req2.post_data);
-  CHECK(request_post(NULL, 1, buf, sizeof(buf)) == NULL);
+  CHECK(request_post(req2.post_data, buf, sizeof(buf)) == req2.post_data);
+  CHECK(request_post(NULL, buf, sizeof(buf)) == NULL);
   /* no room: sent as rcheevos built it */
-  CHECK(request_post(req.post_data, 1, buf, 8) == req.post_data);
+  CHECK(request_post(req.post_data, buf, 8) == req.post_data);
 
   rc_api_destroy_request(&req);
   rc_api_destroy_request(&req2);

@@ -5,9 +5,12 @@
 #include <stddef.h>
 
 /* The post data to send for an rcheevos request. Unchanged (the same
- * pointer) unless skip_unofficial is set and it is an achievementsets
- * request: then "&f=3" is appended in buf, so the server sends only the
- * promoted (core) achievements, the only ones rc_client loads anyway. */
-const char* request_post(const char* post, int skip_unofficial, char* buf, size_t size);
+ * pointer) except for an achievementsets request: then "&f=3" is appended in
+ * buf, so the server sends only official (promoted) achievements, in the core
+ * set and in official subsets alike. DScheevos supports official achievements
+ * only, and rc_client never loads unofficial ones anyway: they would only
+ * make the download and the session file bigger (Pokemon Platinum: 311 KB
+ * with them, 197 KB without; the session file holds 256 KB). */
+const char* request_post(const char* post, char* buf, size_t size);
 
 #endif

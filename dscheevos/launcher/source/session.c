@@ -48,7 +48,6 @@ void session_log_request(const char* post, int status)
     log_line("%s: network error: %s", n ? api : "request", net_error());
 }
 
-static int g_skip_unofficial;   /* the setting, for server_call */
 
 static int request_kind(const char* post)
 {
@@ -86,7 +85,7 @@ static void RC_CCONV server_call(const rc_api_request_t* request, rc_client_serv
     return;
   }
 
-  http_request(request->url, request_post(request->post_data, g_skip_unofficial, post, sizeof(post)),
+  http_request(request->url, request_post(request->post_data, post, sizeof(post)),
                request->content_type, &r);
   session_log_request(request->post_data, r.status);
   memset(&response, 0, sizeof(response));
@@ -138,7 +137,6 @@ static rc_client_t* make_client(const dsc_settings_t* settings)
 {
   char ua[128], clause[64];
   rc_client_t* client = rc_client_create(read_memory, server_call);
-  g_skip_unofficial = settings->skip_unofficial;
   if (!client)
     return NULL;
   if (strcmp(settings->host, "https://retroachievements.org") != 0)
