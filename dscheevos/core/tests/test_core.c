@@ -69,6 +69,7 @@ static uint32_t millis(void) { return now_ms; }
  * capture followed by one of other memory that an interrupt stops (the
  * frame keeps the complete one). None of these may change any result. */
 static int halt_mode, chaos;
+static int handover_mode;
 static uint32_t idle_budget;   /* config.idle_max_frames */
 static int stop_in = -1;      /* polls until the fake interrupt; -1: none */
 static int vblank_in = -1;    /* polls until a VBlank comes in the middle of a copy; -1: none */
@@ -109,8 +110,60 @@ static void unscramble(const uint8_t* saved, const uint32_t* where, int n)
   }
 }
 
+/* Capture once (halt_mode DSC_CAPTURE_ONCE): the VBlank, then the game's
+ * work after it (none here: the tests set memory before dsc_vblank()), then
+ * its halts. The first capture that completes is the frame's. With chaos: a
+ * capture stopped part-way first, a halt later in the frame after the game
+ * ran on (takes nothing), or, when memory is the same as at the last
+ * capture, no halt at all or only a stopped capture (a lag frame). */
+static int once_extra, once_stale;
+static void once_vblank(void)
+{
+  int r;
+  (dsc_vblank)();
+  if (chaos && !handover_mode && seen_valid && chaos_rnd() % 3 == 0 && !memcmp(ram, seen_ram, sizeof ram) && !memcmp(dtcm, seen_dtcm, sizeof dtcm)) {
+    once_stale++;
+    if (chaos_rnd() % 2)
+      return;                     /* no halt before the next VBlank */
+    stop_in = (int)(chaos_rnd() % 12);
+    r = dsc_capture();
+    stop_in = -1;
+    if (r == 1) {
+      chaos_stops++;
+      return;                     /* stopped, and the next VBlank came */
+    }
+    return;                       /* or complete (the same memory) */
+  }
+  if (chaos && chaos_rnd() % 3 == 0) {
+    stop_in = (int)(chaos_rnd() % 12);
+    if (dsc_capture() == 1)
+      chaos_stops++;
+    stop_in = -1;
+  }
+  while ((r = dsc_capture()) == 1)
+    ;
+  CHECK(r == 0 || r == -1);
+  if (chaos && chaos_rnd() % 3 == 0) {
+    uint8_t saved[24];
+    uint32_t where[24];
+    scramble(saved, where, 24);
+    CHECK(dsc_capture() == -1);   /* the frame has its snapshot */
+    unscramble(saved, where, 24);
+    once_extra++;
+  }
+  if (chaos) {
+    memcpy(seen_ram, ram, sizeof ram);
+    memcpy(seen_dtcm, dtcm, sizeof dtcm);
+    seen_valid = 1;
+  }
+}
+
 static void test_vblank(void)
 {
+  if (halt_mode == DSC_CAPTURE_ONCE) {
+    once_vblank();
+    return;
+  }
   if (halt_mode) {
     if (chaos && seen_valid && chaos_rnd() % 3 == 0 && !memcmp(ram, seen_ram, sizeof ram) && !memcmp(dtcm, seen_dtcm, sizeof dtcm)) {
       if (chaos_rnd() % 2) {
@@ -557,7 +610,7 @@ static void test_evaluates_frozen_snapshot(void)
 static void test_stopped_capture_keeps_completed_one(void)
 {
   dsc_stats_t before, after;
-  if (!halt_mode)
+  if (halt_mode != 1)
     return;
   start_with(1, 1024, 0);
   frames(3);
@@ -579,6 +632,50 @@ static void test_stopped_capture_keeps_completed_one(void)
   dsc_get_stats(&after);
   CHECK(after.frames_stale == before.frames_stale);
   CHECK(after.captures_stopped == before.captures_stopped + 1);
+  dsc_shutdown();
+}
+
+/* Capture once: the first capture after the VBlank that completes is the
+ * frame's (a stopped one is retried); later halts in the frame take
+ * nothing; a frame with no completed capture is evaluated with the last
+ * snapshot. */
+static void test_capture_once_takes_first_complete_capture(void)
+{
+  dsc_stats_t before, after;
+  if (halt_mode != DSC_CAPTURE_ONCE)
+    return;
+  start_with(1, 1024, 0);
+  frames(3);
+  dsc_get_stats(&before);
+  (dsc_vblank)();
+  ram[0x10] = 5;               /* the game's work after the VBlank */
+  put32(0x100, 0x02000040);
+  ram[0x44] = 7;
+  stop_in = 0;
+  CHECK(dsc_capture() == 1);   /* stopped: retried at the next halt */
+  stop_in = -1;
+  CHECK(dsc_capture() == 0);
+  ram[0x10] = 0;               /* it runs on and halts again */
+  put32(0x100, 0x02000020);
+  ram[0x44] = 0;
+  CHECK(dsc_capture() == -1);
+  dsc_idle();
+  CHECK(was_unlocked(1001));
+  CHECK(was_unlocked(1002));
+  (dsc_vblank)();              /* a frame whose only capture stops */
+  stop_in = 0;
+  CHECK(dsc_capture() == 1);
+  stop_in = -1;
+  dsc_idle();
+  dsc_get_stats(&after);
+  CHECK(after.frames_evaluated == before.frames_evaluated + 1);   /* it waits for its capture */
+  (dsc_vblank)();
+  CHECK(dsc_capture() == 0);
+  dsc_idle();
+  dsc_get_stats(&after);
+  CHECK(after.frames_stale == before.frames_stale + 1);
+  CHECK(after.frames_evaluated == before.frames_evaluated + 3);
+  CHECK(after.captures_stopped == before.captures_stopped + 2);
   dsc_shutdown();
 }
 
@@ -649,6 +746,12 @@ static void test_dropped_frames_are_reported(void)
   ram[0x20] = 2; dsc_vblank();
   ram[0x20] = 4; dsc_vblank();  /* no idle time for three changing VBlanks: one must be dropped */
   dsc_idle();
+  if (halt_mode == DSC_CAPTURE_ONCE) {
+    /* the last one waits for a capture (one at a later halt, with room
+     * again, would still be its own); none comes before the next VBlank */
+    (dsc_vblank)();
+    dsc_idle();
+  }
   dsc_get_stats(&s);
   CHECK(s.frames_dropped == 1);
   CHECK(degraded >= 1);
@@ -1440,9 +1543,12 @@ static int compare_with_rcheevos(const char* const* triggers, int n, int frames_
   }
   if (handover_mode)
     handover_catch_up();
-  else
+  else {
     while (dsc_idle())    /* catch up (several calls with idle_max_frames) */
       ;
+    if (halt_mode == DSC_CAPTURE_ONCE)
+      dsc_flush();        /* the last frame, if it waits for a capture */
+  }
   dsc_get_stats(stats);
   CHECK(stats->frames_dropped == 0);
   CHECK(stats->frames_evaluated == (uint32_t)frames_to_run);
@@ -2632,6 +2738,7 @@ static void run_all(void)
   }
   use_map = 1;
   RUN(test_stopped_capture_keeps_completed_one);
+  RUN(test_capture_once_takes_first_complete_capture);
   RUN(test_pointer_chains_match_rcheevos);
   RUN(test_recall_chain_reads_live);
   RUN(test_live_read_next_to_failed_chain_read);
@@ -2694,6 +2801,15 @@ int main(void)
   printf("capture at halt: %d stale frames, %d stopped captures, %d replaced captures, %d VBlanks during a copy, %d frames kept their capture\n",
     chaos_stale, chaos_stops, chaos_extra, chaos_vblank_in_copy, chaos_kept);
   CHECK(chaos_stale > 50 && chaos_stops > 100 && chaos_extra > 100 && chaos_vblank_in_copy > 20 && chaos_kept > 100);
+  {
+    int stops = chaos_stops;
+    printf("-- capture once a frame\n");
+    halt_mode = DSC_CAPTURE_ONCE;
+    run_all();
+    printf("capture once: %d frames with no capture or a stopped one, %d stopped captures, %d later halts\n",
+      once_stale, chaos_stops - stops, once_extra);
+    CHECK(once_stale > 50 && chaos_stops - stops > 100 && once_extra > 100);
+  }
   printf("%d checks, %d failed\n", checks, failures);
   return failures ? 1 : 0;
 }
