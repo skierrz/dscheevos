@@ -830,12 +830,18 @@ __attribute__((section(".text_cold"), noinline)) void module_flush(void)
  * under the game's MPU then). */
 
 /* Work only once a frame or when something is waiting (see module_idle):
- * all of it read from H, one cache line. */
+ * all of it read from H, one cache line. A request in flight or a busy
+ * network is not such a wait: it is serviced in the frame's first pass and
+ * any other pass that runs. A pass at every wake for it cost the game up to
+ * 3% of a frame (Kirby, Pokemon Black: 80+ wakes a frame) for as long as no
+ * answer came (no Wi-Fi, server unreachable), against at most a frame of
+ * latency on an unlock; online it measured the same or less (branch
+ * footprint2-lab, docs/lab/footprint.md). */
 #undef WP
 #define WP wp
 WAKE_INLINE int work_wanted(wake_page_t* wp)
 {
-  return g_frames != H.pass_frame || H.more || H.requests || H.net_busy || H.reset_pending || H.progress_stale;
+  return g_frames != H.pass_frame || H.more || H.reset_pending || H.progress_stale;
 }
 #undef WP
 #define WP WAKE_PAGE
@@ -877,8 +883,9 @@ static int idle_step_locked(void)
   }
 
   /* Then the network: achievements come first. Every pass while something
-   * is in flight or waiting (so an unlock goes out at once), else once a
-   * frame for lwIP's timers and frames from the access point. */
+   * is in flight or waiting, else once a frame for lwIP's timers and frames
+   * from the access point. A pass runs at least once a frame (work_wanted),
+   * so a waiting request is serviced every frame. */
   if (H.net_started && (new_frame || H.net_busy || H.requests)) {
     net_service(millis());
     H.net_busy = net_busy() != 0;
@@ -953,12 +960,11 @@ WAKE_CODE int module_idle(int idle_loop)
   /* The idle thread wakes at every IRQ, often many times a frame (20-40 in
    * Kirby Super Star Ultra). A full pass runs on the first wake after a
    * VBlank, and on any wake with work waiting: frames to evaluate, answers,
-   * a reset, the network in the middle of something (work_wanted, from one
-   * cache line). Every other wake only takes the snapshot and halts,
+   * a reset (work_wanted, from one cache line). Every other wake only takes the snapshot and halts,
    * touching as few lines as it can (H, g_idle, dscm_irq). Nothing a full
    * pass would do on such a wake is skipped: dsc_idle() would find nothing
-   * (dsc_work_pending), and the network gets a pass only when busy or once
-   * a frame. */
+   * (dsc_work_pending), and the network is serviced in the frame's first
+   * pass (and any other that runs). */
   if (work_wanted(WP)) {
     /* The frame's one snapshot (DSC_CAPTURE_ONCE) at the first halt after
      * the VBlank, before evaluation (which may take the rest of the frame),
