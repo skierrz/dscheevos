@@ -350,3 +350,24 @@ dsc_frame_done).
 
 Stall timeout: committed 66a50d8c (correctness first: a silent server no longer holds the request queue), cost equal
 or lower; network suite items PASS.
+
+## evalfast-p2 on copyonce-net (2026-10-18, branch copyonce-net-ef, not committed)
+
+Merged evalfast-p2 (017e0d30 + rcheevos e612011; its WAKE_COLOUR 0x440) onto copyonce-net 66a50d8c. Expected the long-pass
+games to get cheaper (shorter passes, fewer resumes). They didn't:
+
+| game | copyonce-net | + evalfast | |
+|---|---|---|---|
+| Platinum late window (online, eq. work) | +23.1k | +39.6k | I-cache 5.9k -> 27.5k, same 371 resumes/interval |
+| Platinum early window (offline) | +5.5k | +5.7k | |
+| MKDS online eq. / offline | +12.3k / +10.9k | +11.5k / +10.6k | |
+| Kirby online eq. / offline | +5.0k / +2.5k | +5.4k / +3.2k | |
+| Black online eq. / offline | +7.8k / +4.6k | +7.0k / +4.6k | |
+| Phantom Hourglass, Phoenix, Digimon | | equal | |
+
+All frames evaluated in every run. The Platinum loss is the I-side layout lottery (same resumes, twice the cost each),
+not evalfast's logic; it still rules evalfast out on this base for now.
+
+Also found (Platinum late window, any build): module time with IRQs masked 158k cycles/interval (the copy), 20.6k of it
+with a game IRQ waiting; longest single hold-off p50 2.9k, max 5.9k cycles (1.5-3 lines, 486 IRQ runs/interval). The
+behaviour gate's early window sees 4 cycles. Late-game windows need behaviour checks, not only cost.
