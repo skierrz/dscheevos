@@ -284,3 +284,25 @@ Reading:
   doing less work can make worse; the lab's -85% (copy-once base, offline) does not carry over to perf online. The
   dependable result is the diagnosis: with no answer coming, a pass at every wake costs Kirby/Black ~3% of a frame,
   and any fix has to be judged online and offline, at a fixed layout, on more than Kirby.
+
+## On copy-once: the network fix holds (2026-10-18; branch copyonce-net = perf + stagefix 1432411 + 39714f8a)
+
+Same eight games, copy-once base (perf merged with stagefix phase 2) vs the fix. Online = gamecost.sh with the mock
+server (last 1500 intervals of each census script); offline = behaviour gate, --dsc-nonet, each build its own state.
+"pad" = the fix with the base's exact hot layout; the committed build (unpadded, hot-accept) was measured too.
+
+| game | online base | online fix (pad / committed) | offline base | offline fix (pad / committed) |
+|---|---|---|---|---|
+| Kirby | +2.8k | +2.7k / +2.4k | +15.9k | +2.8k / +2.5k |
+| Pokemon Black | +5.4k | +5.4k / +5.3k | +26.8k | +5.3k / +5.1k |
+| MKDS (online at equal work) | +12.0k | +6.8k / +12.2k | +11.1k | +10.2k / - |
+| Platinum (online at equal work) | +23.0k | +23.9k / +23.1k | +5.6k | +5.4k / - |
+| Tetris | drift (instructions +34% in one run) | - | +2.1k | +1.9k / - |
+| Phoenix Wright | +2.4k | +2.4k / +2.5k | +3.3k | +3.2k / - |
+| Digimon World DS | +2.2k | +2.1k / +2.2k | +2.1k | +2.1k / - |
+| Phantom Hourglass | +10.6k | +10.6k / +10.7k | +10.9k | +10.5k / - |
+
+Copy-once alone takes online Kirby from +17.6k (perf) to +2.8k and Black from +34.4k to +5.4k; the network fix then
+removes the offline penalty. The link-gated variant did nothing here (CNLG rows: Kirby +15.7k, Black +26.0k offline).
+Committed 39714f8a on copyonce-net (pushed); suite network items PASS on that exact binary. Not a perf merge: stagefix
+phase 2 still waits on its owner gate (real unlocks).
