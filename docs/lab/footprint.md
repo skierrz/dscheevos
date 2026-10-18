@@ -436,3 +436,53 @@ game's first seconds. Suite network items PASS. Official-only launcher: branch o
 Evalfast + every set's heap uncached (build-efunc): Digimon 0 frames dropped from boot (uncached without evalfast: 26;
 eval_lines 768 vs 1583), game cost +2.0k (control +2.1k). Candidate catalogue configuration: evalfast + all heaps
 uncached + the sweep's placement; queued on the full catalogue against copyonce-net.
+
+## Placement sweep and catalogue run 3 (2026-10-18)
+
+Sweep (10-game dev subset, evalfast on copyonce-net, TEXT_COLOUR 0x500; mean / max shadow I+D, cycles): 0x140
+17.6k / 34.2k, 0x740 19.0k / 45.0k, 0x540 20.0k / 37.8k, 0x440 (shipped) 20.5k / 47.0k, 0x040 21.4k / 42.8k, 0x340
+21.7k / 50.6k, 0x240 25.1k / 66.7k, 0x640 25.6k / 54.6k. Chosen by the pre-registered rule: WAKE_COLOUR 0x140.
+Builds (../dscheevos-conet3 959db333): build-efw140 (evalfast, 0x140), build-efuncw140 (the same + every set's heap
+uncached, DSCM_HEAP_UNCACHED_MAX 4 MB). Both on the full catalogue (tags efw140, efuncw140).
+
+Validation, efw140 vs ef (0x440) on the 51 held-out games (shadow I+D):
+
+| | median | p90 | max | over 1% | over 0.1% | games with frames dropped |
+|---|---|---|---|---|---|---|
+| ef (0x440) | 2547 (0.23%) | 7576 (0.68%) | 9578 (0.86%) | 0 | 38 | 8 |
+| efw140 (0x140) | 2528 (0.23%) | 7681 (0.69%) | 9581 (0.86%) | 0 | 38 | 9 (Drawn to Life SpongeBob 1 frame) |
+
+Read literally, the pre-registered rule ("not worse" on median, p90, max, over-1%) FAILS: p90 +105 cycles and max +3
+cycles (0.009% and 0.0003% of a frame). Both are an order of magnitude below the run noise this lab has used before
+(~0.1% of a frame); no held-out game moved more than 0.05%. What the validation does show: the held-out games
+are insensitive to WAKE_COLOUR (6 better, 6 worse, median change 0). Every game over 1% is in the dev subset, so the
+held-out set can neither confirm nor refute the placement gain; it only shows 0x140 costs the other games nothing
+beyond noise. Not a generalisation result. Accepting it is the owner's call (the rule had no tolerance written down).
+
+Candidate stack, efuncw140 (evalfast + all heaps uncached + 0x140) vs control ctl-copyonce-net, all 61 games:
+
+| | median | p90 | max | over 1% | over 0.1% | games with frames dropped (total frames) |
+|---|---|---|---|---|---|---|
+| control | 0.25% | 0.99% | 5.51% | 6 | 48 | 13 (9225) |
+| candidate | 0.26% | 0.91% | 3.05% | 4 | 48 | 9 (4569) |
+| oshalt only (50): control / candidate | 0.30% / 0.32% | 1.18% / 0.99% | 5.51% / 3.05% | 6 / 4 | | |
+
+- Over 1%, control: Mario Party DS 5.51 (synth), Platinum 2.26, Mario Hoops 1.94 (synth), Starfy 1.77, Cory 1.18,
+  MKDS 1.16. Candidate: Mario Party DS 3.05 (synth), Mario Hoops 2.97 (synth), Starfy 2.43, MKDS 1.09.
+- Better: Mario Party -2.45, Platinum -1.49 (2.26 -> 0.78; uncached heap, efw140 alone 2.23), Kirby Mass Attack, Drawn
+  to Life 2, Cory, Rhythm ~-0.25 each. Worse: Mario Hoops +1.03, Starfy +0.66, WarioWare DIY +0.17, WarioWare
+  Touched +0.12, 20 more by under 0.1%. 17 better, 24 worse, median change 0.
+- Uncached heap on top of efw140 changes only Platinum (-1.45) and MKDS (-0.06); everything else within 0.01%.
+  Digimon: 0 frames dropped (evalfast keeps up uncached, as in the single-game check).
+- Frames dropped (whole run): SM64DS 3357 -> 10, M&L BIS 660 -> 78, LEGO SW 377 -> 0, MvDK2 156 -> 51, PMD Blue 81 -> 10,
+  SpongeBob 68 -> 1, Club Penguin 55 -> 0, Mario Hoops 29 -> 0, Yoshi 2 -> 0. Unchanged by every build so far: RE
+  ~2440, MvDK ~1450, Layton ~435, Nine Hours ~95 (not evalfast-bound; next to look at).
+- Lag (game-made, window and whole run, off vs on): no build adds lag; differences are +-1-3 intervals except games
+  whose own logic diverges between runs (NSMB, Tetris, Animal Crossing), same in the control. results.tsv's lag_on was
+  never filled (gamecost prints "on  (" with two spaces); fixed in catalogue.sh, read from the logs for this run.
+
+Verdict: the candidate is better than the control on max, p90, over-1% count and frames dropped, equal on median
+(+0.01%). It is still a lottery per game: two of the four games left over 1% (Mario Hoops, Starfy) are worse than
+the control, and the hard goal (every game under 1%) is not met. Next: --evict-attr on Mario Party DS, Mario Hoops,
+Starfy, MKDS; the 28 title-only sets are still synthetic (Mario Party, Mario Hoops among them), so their numbers are
+provisional until the official sets are measured.

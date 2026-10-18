@@ -52,7 +52,7 @@ eq = num(r'at equal work[^:]*: ([+-]?\d+) cycles', g)
 si = num(r'^\s+I-cache\s+(-?\d+)', g); sd = num(r'^\s+D-cache\s+(-?\d+)', g)
 st = re.findall(r"'snapshotted': (\d+), 'evaluated': (\d+), 'dropped': (\d+)", ab)
 snap, ev, dr = st[-1] if st else ('-', '-', '-')
-lag = re.findall(r'achievements (off|on) \(\s*\d+ intervals,\s*(\d+) lag\)', g)
+lag = re.findall(r'achievements (off|on)\s+\(\s*\d+ intervals,\s*(\d+) lag\)', g)
 lagd = dict(lag)
 print('\t'.join([slug, cls, kind, cost, eq, si, sd, snap, ev, dr, lagd.get('off', '-'), lagd.get('on', '-')]))
 EOF
