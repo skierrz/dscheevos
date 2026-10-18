@@ -127,6 +127,12 @@ static int setup(const char** error)
   return 0;
 }
 
+/* The last handshake's session, for resumption: requests to the same host
+ * skip the key exchange (seconds of public-key arithmetic on the DS). */
+static mbedtls_ssl_session g_saved;
+static int g_have_saved;
+static char g_saved_host[64];
+
 tls_t* tls_open(int fd, const char* host, const char** error)
 {
   tls_t* t;
@@ -145,12 +151,27 @@ tls_t* tls_open(int fd, const char* host, const char** error)
     goto fail;
   }
   mbedtls_ssl_set_bio(&t->ssl, t, bio_send, bio_recv, NULL);
+  if (g_have_saved && !strcmp(g_saved_host, host))
+    mbedtls_ssl_set_session(&t->ssl, &g_saved);
   while ((r = mbedtls_ssl_handshake(&t->ssl)) != 0) {
     if (r != MBEDTLS_ERR_SSL_WANT_READ && r != MBEDTLS_ERR_SSL_WANT_WRITE) {
       *error = (mbedtls_ssl_get_verify_result(&t->ssl) != 0)
         ? "TLS: the server's certificate isn't trusted" : "TLS: secure connection failed";
       goto fail;
     }
+  }
+  {
+    mbedtls_ssl_session s;
+    mbedtls_ssl_session_init(&s);
+    if (strlen(host) < sizeof(g_saved_host) && mbedtls_ssl_get_session(&t->ssl, &s) == 0) {
+      if (g_have_saved)
+        mbedtls_ssl_session_free(&g_saved);
+      g_saved = s;     /* the session's buffers move with it */
+      g_have_saved = 1;
+      strcpy(g_saved_host, host);
+    }
+    else
+      mbedtls_ssl_session_free(&s);
   }
   return t;
 fail:
@@ -182,4 +203,12 @@ void tls_close(tls_t* t)
   mbedtls_ssl_close_notify(&t->ssl);
   mbedtls_ssl_free(&t->ssl);
   free(t);
+}
+
+size_t tls_session_save(const char* host, unsigned char* buf, size_t size)
+{
+  size_t len = 0;
+  if (!g_have_saved || strcmp(g_saved_host, host) || mbedtls_ssl_session_save(&g_saved, buf, size, &len) != 0)
+    return 0;
+  return len;
 }

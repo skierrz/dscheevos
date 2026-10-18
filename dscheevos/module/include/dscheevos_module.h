@@ -230,6 +230,10 @@ typedef struct dscm_boot_t {
  * the player chose in nds-bootstrap before launch (kept for the session) */
 #define DSCM_CLOCK_CPU_133  0x01      /* ARM9 at 133 MHz (BOOST_CPU, or DSI_MODE = 2 on a DS game) */
 #define DSCM_CLOCK_VRAM     0x02      /* BOOST_VRAM */
+#define DSCM_BOOT_TLS_SESSION 0x04    /* the file ends with the launcher's TLS session with host (mbedtls_ssl_session_save,
+                                         DSCM_SESSION_PAD'ed) and then its length (u32): the module's first connection
+                                         resumes it instead of a full handshake. A secret, like token. Not in
+                                         dscm_boot_t, whose size nds-bootstrap checks */
 #define DSCM_BOOT_UTC_KNOWN 0x02      /* utc_offset_q is valid: the launcher measured it against the server's clock */
 
 /* The DS clock keeps local time with no time zone; read as UTC it is off by

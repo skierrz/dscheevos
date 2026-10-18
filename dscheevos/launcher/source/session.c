@@ -3,6 +3,7 @@
 #include "log.h"
 #include "net.h"
 #include "request.h"
+#include "tls.h"
 #include "dscheevos_module.h"
 
 #include "mbedtls/x509_crt.h"
@@ -354,6 +355,8 @@ int session_write(const dsc_settings_t* settings, const char* rom_path, const ch
   static char ca_pem[8192];
   static unsigned char ca_der[8192];
   size_t ca_len = 0;
+  static unsigned char tls_session[4096];
+  size_t tls_len = 0;
   FILE* f;
   FILE* ca;
   int i;
@@ -428,6 +431,26 @@ int session_write(const dsc_settings_t* settings, const char* rom_path, const ch
       offset += DSCM_SESSION_PAD(ca_len);
     }
   }
+  /* our TLS session with the server, so the module's first connection
+   * resumes it (the host's name, as tls_open got it: no scheme, no port) */
+  {
+    char name[64];
+    const char* h = settings->host;
+    size_t n;
+    if (!strncmp(h, "https://", 8)) {
+      h += 8;
+      n = strcspn(h, ":/");
+      if (n < sizeof(name)) {
+        memcpy(name, h, n);
+        name[n] = '\0';
+        tls_len = tls_session_save(name, tls_session, sizeof(tls_session));
+      }
+    }
+    if (tls_len) {
+      boot.flags |= DSCM_BOOT_TLS_SESSION;
+      offset += DSCM_SESSION_PAD(tls_len) + 4;   /* then its length */
+    }
+  }
   boot.file_size = offset;
   if (offset > DSCM_SESSION_MAX) {
     /* the set needs more memory than the module has (docs/architecture.md, "Big sets") */
@@ -449,6 +472,12 @@ int session_write(const dsc_settings_t* settings, const char* rom_path, const ch
   if (ca_len) {
     fwrite(ca_der, 1, ca_len, f);
     fwrite(pad, 1, DSCM_SESSION_PAD(ca_len) - ca_len, f);
+  }
+  if (tls_len) {
+    uint32_t len = (uint32_t)tls_len;
+    fwrite(tls_session, 1, tls_len, f);
+    fwrite(pad, 1, DSCM_SESSION_PAD(tls_len) - tls_len, f);
+    fwrite(&len, 1, 4, f);
   }
   i = ferror(f);
   fclose(f);
