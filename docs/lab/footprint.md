@@ -529,3 +529,6 @@ Candidate vs control with official sets (60 games: 56 real sets, 4 synthetic, Ma
 Verdict with official sets: the candidate is better on p90 and over-1% count (5 -> 2), equal on median and max,
 fewer frames dropped. Still not every game under 1%: Starfy 2.43% (worse than control), MKDS 1.09%, and Mario Party DS
 unmeasured.
+
+Owner ruling (2026-10-18): WAKE_COLOUR 0x140 accepted. The held-out differences (p90 +105 cycles, max +3) are within
+run noise; future pre-registrations state their tolerance (default: run noise, ~0.1% of a frame).
