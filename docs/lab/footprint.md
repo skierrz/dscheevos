@@ -371,3 +371,39 @@ not evalfast's logic; it still rules evalfast out on this base for now.
 Also found (Platinum late window, any build): module time with IRQs masked 158k cycles/interval (the copy), 20.6k of it
 with a game IRQ waiting; longest single hold-off p50 2.9k, max 5.9k cycles (1.5-3 lines, 486 IRQ runs/interval). The
 behaviour gate's early window sees 4 cycles. Late-game windows need behaviour checks, not only cost.
+
+## Catalogue run 1 (2026-10-18, tests/perf/catalogue.sh; 64 census games, 61 measured)
+
+Metric: shadow I+D (cycles the game lost to our cache use; raw and equal-work cost also move when a game's own logic
+diverges between runs). Window: last 1500 intervals of each census script (gameplay games) or of 3000 generic-menu
+intervals. Online (mock server). Builds: control = copyonce-net 66a50d8c; unc-all = the same with every set's heap
+uncached (DSCM_HEAP_UNCACHED_MAX 4 MB).
+
+| class | games | median | p90 | max | over 1% | over 0.1% | frames dropped (games) |
+|---|---|---|---|---|---|---|---|
+| oshalt (SDK idle halt) | 50 | 0.30% | 1.18% | 5.51% | 6 | 48 | 12 |
+| bios (BIOS wait) | 9 | 0.00% (no evaluation) | | | 0 | 0 | 1 |
+| busy | 2 | 0.00% (no evaluation) | | | 0 | 0 | 0 |
+
+Not measured: Animal Crossing, SoulSilver, TWEWY (sets too big for the module).
+Set kinds: 31 games have a set matched by ROM hash ("real"); 28 have an RA set only by title (our dump's hash isn't
+listed), measured with the synthetic typical set (provisional).
+
+Over 1% (control): Mario Party DS 5.51% (synthetic; D 52k), Platinum 2.26%, Mario Hoops 1.94% (synthetic), Legendary
+Starfy 1.77%, Cory in the House 1.18%, MKDS 1.16%. Near: Phantom Hourglass 0.99%, Drawn to Life 2 0.95% (synth),
+Super Scribblenauts 0.94% (synth), Kirby Mass Attack 0.90% (synth).
+
+unc-all changes only the sets over 160 KB: Platinum 2.26% -> 0.79%, Rhythm Heaven 0.76% -> 0.38%, NSMB 0.27% -> 0.24%,
+Digimon 0.20% -> 0.17% but 26 frames dropped during boot (control 0; uncached evaluation 46% of each frame there, up to
+91%). Everything else identical. A size threshold can't pick: Platinum (304 KB) keeps up uncached, Digimon (194 KB)
+doesn't.
+
+Frames dropped in the CONTROL (whole run, boot included): SM64DS 3357, RE 2449, MvDK 1457, Mario & Luigi BIS 660,
+Layton 440, LEGO Star Wars 377, MvDK2 156, Nine Hours 94, PMD Blue 81, Drawn to Life SpongeBob 68, Club Penguin 55,
+Mario Hoops 29, Yoshi's Island 2. Achievement frames never evaluated: a correctness gap, separate from cost.
+
+Attribution (online): Cory in the House = long-pass class (16.8 resumes x 790 cycles, evaluation code). Legendary Starfy:
+IRQ-heavy (420 IRQ runs, 222 resumes) plus ~2k charged to mbedtls bignum: the module's first connection does a full
+TLS handshake (the launcher's TLS session isn't handed over); one per game session (ev9: one ecdh_calc_secret in the
+run), here inside the window. Lever (all games): hand the launcher's session ticket to the module so the first
+connection resumes.
