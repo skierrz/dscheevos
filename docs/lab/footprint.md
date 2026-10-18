@@ -407,3 +407,28 @@ IRQ-heavy (420 IRQ runs, 222 resumes) plus ~2k charged to mbedtls bignum: the mo
 TLS handshake (the launcher's TLS session isn't handed over); one per game session (ev9: one ecdh_calc_secret in the
 run), here inside the window. Lever (all games): hand the launcher's session ticket to the module so the first
 connection resumes.
+
+## Catalogue run 2: evalfast on copyonce-net (2026-10-18)
+
+Build: copyonce-net + evalfast-p2 (lab branch copyonce-net-ef 959db333; WAKE_COLOUR 0x440, TEXT_COLOUR 0x500).
+- Frames dropped (whole run): SM64DS 3357 -> 8, LEGO Star Wars 377 -> 0, M&L BIS 660 -> 79, MvDK2 156 -> 53, PMD Blue
+  81 -> 4, Drawn to Life SpongeBob 68 -> 0, Club Penguin 55 -> 0, Mario Hoops 29 -> 0, Yoshi 2 -> 0. Games with drops
+  13 -> 8. The rest (Layton, MvDK, RE, Nine Hours) unchanged.
+- Shadow I+D, 50 oshalt games: median change +94 cycles (8 better, 17 worse), p90 1.18% -> 1.05%, max 5.51% -> 4.19%.
+  Swings both ways: Mario Party DS 5.51 -> 3.11, Cory 1.18 -> 0.93, Rhythm 0.76 -> 0.50; Platinum 2.26 -> 4.19, Starfy
+  1.77 -> 2.87, Mario Hoops 1.94 -> 3.12. The I-side layout lottery: every code change reshuffles which game lines
+  ours collide with.
+- The shipped placement knobs (WAKE_COLOUR, TEXT_COLOUR) were chosen on Kirby alone. Next: choose them on the catalogue.
+
+Pre-registered placement sweep (before results): dev subset of 10 games (Mario Party DS, Platinum, Mario Hoops,
+Legendary Starfy, Cory, MKDS, Phantom Hourglass, Super Scribblenauts, Rhythm Heaven, Kirby), WAKE_COLOUR in
+0x040..0x740 step 0x100 (0x440 = shipped, from run 2), TEXT_COLOUR 0x500. Choice: lowest mean shadow over the subset,
+ties to the lower max. Validation: the chosen colour on the full catalogue vs 0x440; judged on the 51 games outside
+the subset.
+
+## TLS session handover (branch tls-resume c601a121, off perf)
+
+The launcher resumes its own TLS session across its requests and hands it to the module (flag DSCM_BOOT_TLS_SESSION,
+session at the end of the session file then its length; dscm_boot_t unchanged because nds-bootstrap checks its size).
+The module's first connection then resumes: last TLS handshake 166 ms (before 6.4-8.8 s); no full key exchange in the
+game's first seconds. Suite network items PASS. Official-only launcher: branch official-only 15179b3b.
