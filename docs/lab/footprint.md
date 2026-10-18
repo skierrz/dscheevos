@@ -306,3 +306,30 @@ Copy-once alone takes online Kirby from +17.6k (perf) to +2.8k and Black from +3
 removes the offline penalty. The link-gated variant did nothing here (CNLG rows: Kirby +15.7k, Black +26.0k offline).
 Committed 39714f8a on copyonce-net (pushed); suite network items PASS on that exact binary. Not a perf merge: stagefix
 phase 2 still waits on its owner gate (real unlocks).
+
+## What the costly games say about the whole catalogue (2026-10-18, copyonce-net 39714f8a, offline profiles)
+
+Footprint (lines our code touches per stretch of module code between two game instructions) and eviction attribution:
+
+| game | stretches/interval light / pass | I lines per light / per pass | own D lines per pass | game cost | charged I / D |
+|---|---|---|---|---|---|
+| Kirby | 321 / 32 | 21 / 29 | 9 | +2.4k | 5.6k / 1.3k |
+| Pokemon Black | 226 / 83 | 21 / 24 | 9 | +5.1k | 7.6k / 2.6k |
+| MKDS | 1.5 / 4.3 | 11 / 189 | 33 | +10.8k | 14.8k / 3.3k |
+| Phantom Hourglass | 7.3 / 1.9 | 20 / 294 | 42 | +10.6k | 13.5k / 4.2k |
+| Pokemon Platinum | 1.4 / 1.1 | 9 / 471 | 1,247 | +5.5k | 6.5k / 4.2k |
+
+(I-cache 256 lines, D-cache 128 lines.)
+
+Two classes:
+1. Long-pass games (MKDS, Phantom Hourglass, Platinum): one evaluation pass touches more lines than the cache holds,
+   so it replaces the game's whole working set; the game then pays about one full refill (~10k cycles) every time it
+   resumes after such a pass. Cost ~ (resumes after a pass) x min(our footprint, cache), nearly independent of how much
+   work the pass does. Levers: fewer resumes inside a pass (shorter passes in wall time), a pass footprint below the
+   cache size (only for light sets), never two big passes a frame.
+2. IRQ-heavy games (Kirby, Black: HBlank/timer IRQs, 225-320 idle wakes a frame): ~21 I lines per light wake (halt
+   entry, module_idle, the capture and drain checks that run even when the frame's capture is done). Lever: a minimal
+   fast path for "captured, nothing waiting: halt" in a handful of lines. Every game with per-line or timer IRQs gains.
+3. Network robustness (all games, whenever the server can't be reached): the request timeout didn't cover DNS, connect
+   or the TLS handshake (only C_READY), so a silent server held a request (and the queue behind it) until lwIP gave up
+   on TCP, with a handshake step (~23 allocations) every pass. Fix in progress: fail after 25 s without progress.
