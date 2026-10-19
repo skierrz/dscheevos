@@ -12,11 +12,12 @@
 
 #ifndef DSCM_HEAP_UNCACHED_MAX
 /* Bytes of the set reply up to which evaluation runs uncached (see the
- * policy in module_init). 160 KB: the biggest real sets measured to keep
- * every frame evaluated uncached (Pokemon Black 155 KB, Mario Kart DS 114 KB;
- * research/optimize/opt-heavy.md). Bigger sets (Platinum 304 KB, SoulSilver
- * 598 KB, TWEWY 1 MB) are not measured uncached yet: they stay cached. */
-#define DSCM_HEAP_UNCACHED_MAX (160u * 1024u)
+ * policy in module_init). 4 MB: every set the module can hold. Catalogue
+ * (2026-10-18, docs/lab/footprint.md on footprint2-lab, with the direct-read
+ * skip): only sets over the old 160 KB limit change, Platinum's game cost
+ * 2.23% -> 0.78% of a frame; every frame still evaluated (Digimon 0 dropped;
+ * without the direct-read skip it dropped 26 boot frames uncached). */
+#define DSCM_HEAP_UNCACHED_MAX (4u * 1024u * 1024u)
 #endif
 #include <string.h>
 

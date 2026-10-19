@@ -34,11 +34,15 @@ MEMORY {
  * 0x140 its middle (+3.0k). Word-wise snapshot_same and the direct-read skip
  * (research/optimize/evalfast.md) grew the wake path: Kirby +3.4k-3.7k at
  * 0x3c0-0x4c0 (5 points in a row), 0x140 +3.7k, +3.9k-4.6k at 6 more points,
- * +9.6k or more elsewhere; 0x440 (+3.4k) it is. Re-sweep after any wake-path change. */
+ * +9.6k or more elsewhere; 0x440 (+3.4k) was chosen on Kirby alone. Catalogue sweep (2026-10-18,
+ * docs/lab/footprint.md on footprint2-lab): 0x040-0x740 step 0x100 on a 10-game dev subset, mean
+ * game shadow 0x140 17.6k (max 34.2k), 0x440 20.5k (47.0k), worst 0x640 25.6k; the 51 held-out
+ * games within run noise. 0x140 it is (owner, 2026-10-18). Re-sweep on the catalogue after any
+ * wake-path change, never on one game. */
 DSCM_TEXT_COLOUR = DEFINED(DSCM_TEXT_COLOUR) ? DSCM_TEXT_COLOUR : 0x500;
 DSCM_DATA_COLOUR = DEFINED(DSCM_DATA_COLOUR) ? DSCM_DATA_COLOUR : 0;
 DSCM_CACHED_COLOUR = DEFINED(DSCM_CACHED_COLOUR) ? DSCM_CACHED_COLOUR : 0x140;
-DSCM_WAKE_COLOUR = DEFINED(DSCM_WAKE_COLOUR) ? DSCM_WAKE_COLOUR : 0x440;
+DSCM_WAKE_COLOUR = DEFINED(DSCM_WAKE_COLOUR) ? DSCM_WAKE_COLOUR : 0x140;
 /* the hot region's size limit (hot.ld today: 0x9d88) */
 DSCM_HOT_BUDGET = DEFINED(DSCM_HOT_BUDGET) ? DSCM_HOT_BUDGET : 0xB000;
 
