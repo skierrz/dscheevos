@@ -6,7 +6,7 @@ Status: **spec, pending the owner's yes** (2026-10-12). Docs only. Background: t
 
 Start a game with achievements when the console can't reach RetroAchievements, in **casual only**, using what the launcher fetched the last time this exact ROM started online. Unlocks are kept and sent at the next online start with their real times. Hardcore never starts offline.
 
-RA's rule this must meet (section A): "Unlocks created while offline must be securely cached and sync to RetroAchievements when connectivity returns." Nothing in RA's list forbids starting offline. rcheevos stays unmodified: we replay real server replies, never write our own.
+RA's rule this must meet (section A): "Unlocks created while offline must be securely cached and sync to RetroAchievements when connectivity returns." Nothing in RA's list forbids starting offline. No rcheevos patch touches requests or replies: we replay real server replies, never write our own.
 
 ## How rc_client is fed
 
