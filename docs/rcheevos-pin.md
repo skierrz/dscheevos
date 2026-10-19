@@ -50,7 +50,7 @@ Our code uses four of these commits (`ca7746b`, `e3f7b7d`, `f87c0de`, `683197d`)
 
 ## Carrying local patches (rule changed 2026-10-12)
 
-The owner's rule now allows rcheevos changes only where evaluation results are proven identical to stock rcheevos (differential tests on every real set with real RAM dumps), kept minimal and offered upstream. Never a reimplementation. How to carry such a patch:
+The owner's rule now allows rcheevos changes only where evaluation results are proven identical to stock rcheevos (differential tests on every real set with real RAM dumps), kept minimal and carried on our fork. Never a reimplementation, and never sent upstream: no PRs, issues or comments on RetroAchievements/rcheevos (owner, 2026-10-19). How to carry such a patch:
 
 - **Where:** a fork, `skierrz/rcheevos`, on a branch named after its base, e.g. `dscheevos-v12.6.0` = the upstream tag plus our patch commits on top. The submodule points at the fork's commit. Each patch is one small commit, and each is opened as a pull request upstream with the same diff, linked from its commit message. (Patch files applied at build time were the alternative. They keep the submodule pristine, but they need applying in nine Makefiles and the launcher's 24 wrapper files. The fork branch is simpler and just as visible, since `git diff <tag>..` shows every byte we changed.)
 - **What CI checks:**
@@ -59,5 +59,5 @@ The owner's rule now allows rcheevos changes only where evaluation results are p
   - the differential suite passes ("Evaluating one set on two CPUs" in `docs/compliance.md`): patched rcheevos with each patch's feature off is identical to stock, and with it on, identical on every real set;
   - the float-operand digest, if that build flag is in use.
 - **Moving the base:** rebase the patch commits onto the new tag, rerun everything above, and drop any patch upstream has taken.
-- **Version string:** unchanged. `RCHEEVOS_VERSION_STRING` and the user agent's rcheevos part stay upstream's. Our build is identified by `DScheevos/<version>`, and `SOURCES.txt` and the release notes name the base tag, the fork commit and each patch with its upstream pull request.
+- **Version string:** unchanged. `RCHEEVOS_VERSION_STRING` and the user agent's rcheevos part stay upstream's. Our build is identified by `DScheevos/<version>`, and `SOURCES.txt` and the release notes name the base tag, the fork commit and each patch.
 - **Builds and the launcher wrappers:** the comment in `dscheevos/launcher/rcheevos/*.c` says `Built from the rcheevos submodule (docs/rcheevos-pin.md).` (it said "unmodified" until the first patch landed).
