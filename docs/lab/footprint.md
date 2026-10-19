@@ -682,3 +682,22 @@ same set/script/window as the catalogue (Starfy 2.85%, MKDS 1.04% here). Charges
 - Reading: Starfy under 1% needs ~3x less module work between its IRQs, not a placement change (confinement was
   rejected on 2026-10-17); halving the capture's executed lines would save ~3k (2.85% -> ~2.6%) and reshuffle every
   game's layout. MKDS is within reach of general evaluation speed-ups.
+
+## Cutting module work between IRQs: what's left in the current method (2026-10-19)
+
+Starfy (stack + tls-resume, catalogue window): module idle work 271k cycles a frame (24%, ~72 scanlines); at ~1.6 game
+IRQs a scanline that, plus ~52 idle wakes a frame, gives its ~252 resumes. --profile-idle-pcs by function:
+rc_client_do_frame (own body, incl. our change-driven code) 19.6%, module_idle 16.2%, dsc_capture 11.4%, changes_before
+8.4%, run_chains 4.9%, rc_client_cd_skip 4.9%, snapshot_same 4.5%, halt_entry 3.9%, read_memory 2.9%; condition
+evaluation proper (rc_test_*, rc_evaluate_*) ~4%. module_idle's own cycles are the per-wake bookkeeping (52 wakes a
+frame, a swp lock, H fields and the stack in the uncached mirror at 37-74 cycles an access, ~1.7k a wake).
+
+Levers inside the method and their size:
+- One diff pass instead of two (snapshot_same at commit and changes_before at evaluation both compare the new and
+  the previous snapshot word by word, uncached): ~-9% of module time net, ~-0.25% of a frame on Starfy. Folding it
+  into the capture copy would lengthen the IRQ-masked copy (hold-off already up to 5.6k cycles): not that way.
+- Wake path: already touches the minimum lines; its cost is uncached latency (~1.7k x 52), a few % of module time.
+- Every code change reshuffles layout: Starfy alone moved +0.20 to +0.66% between builds this week, more than any
+  single lever above is worth, so none of them can be judged on the catalogue one at a time.
+Starfy under 1% needs ~3x less ARM9 module work per frame, which inside the method means evaluation leaving the ARM9
+(the arm7eval route, parked; WORKLIST: method decisions wait for the owner).
