@@ -628,3 +628,27 @@ ctl-merged = control, `stack` = with the load fix; frames at 59.83 Hz). Emulator
   The port is fork branch upstream-memref-index; loadcmp vs develop 76/76 identical; write-up in the planning
   repo, research/upstream/rcheevos-memref-index.md. Not sent upstream (owner, 2026-10-19: no PRs or issues on
   RetroAchievements/rcheevos).
+
+## Why RE, MvDK, Layton and Nine Hours drop frames in every build (2026-10-19)
+
+"dropped" = frames never evaluated (core commit(): the backlog passed MAX_SLOTS = 1024 frames, ~17 s, or no copy to
+repeat). Under docs/dropped-frames.md each gap turns a hardcore session casual, so this is worse than cost.
+The module captures only at the game's first idle halt after a VBlank (read-only rule: nothing in the IRQ path), so a
+frame with no halt is evaluated later as a repeat of the last copy, and a long enough no-halt stretch overflows.
+
+- Longest run of frames with no game halt (catalogue run `stack`, prof csv; achievements off / on): MvDK 2,261 /
+  2,364 (~38 s), Layton 1,455 / 1,456 (~24 s), Nine Hours 174 / 458, RE 76 / 77 but RE waits in the BIOS (bios
+  class): the module's VBlank work didn't run for 5,678 frames in a row. The no-halt stretches are the games' own
+  (same lag off and on): MvDK 2,563 lag intervals both, Layton 1,685 both, Nine Hours 1,425 / 1,428.
+- Nine Hours timeline (launcher run with a RAM dump every 200 frames; 60 dropped this run): evaluation stalls at
+  ~1,800 frames from frame ~3,800 to ~4,800 (game frames ~1,700-2,800, a stretch where the game lags 80-100 of every
+  100 frames) while frames queue; the backlog passes 1,024 when the game recovers; the 60 drops land at 4,800-5,000.
+  Idle work in that stretch (--profile-idle-pcs, runs stopped at game frames 1,650 and 2,850, difference): 220.9M
+  cycles, over half of it a full TLS handshake (mbedtls_mpi_core_mla 17.8%, gcd_modinv_odd 13.1%, P-256, malloc/
+  free). `stack` lacks tls-resume (c601a121, launcher hands its TLS session to the module: first handshake 6-9 s ->
+  166 ms), so the module's first connection does full ECDHE on the ARM9 just when idle time is scarce.
+- Causes: Nine Hours = the first-connection handshake (fix: tls-resume, to verify); MvDK, Layton = the game itself
+  doesn't halt for 24-38 s (no capture point under the read-only rule; the only lever is a longer repeat backlog,
+  i.e. evaluating up to ~40 s of frames with stale memory instead of a gap: an owner/compliance call); RE = BIOS
+  waits (idle-coverage's BIOS-wait hook P1a, half built since 2026-10-13). The round-2 idle-coverage design's
+  in-IRQ capture would cover all of these but is ruled out by the read-only rule.
