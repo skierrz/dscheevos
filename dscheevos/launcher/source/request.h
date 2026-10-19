@@ -1,4 +1,4 @@
-/* Glue between rcheevos' requests and the wire (rcheevos stays unmodified). */
+/* Glue between rcheevos' requests and the wire (no rcheevos patch touches requests; docs/rcheevos-pin.md). */
 #ifndef DSC_REQUEST_H
 #define DSC_REQUEST_H
 
