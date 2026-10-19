@@ -667,3 +667,18 @@ checkout's launcher (GC_REPO), tags stack-tls (the 4 drop games) and stack-tls-a
   Nine Hours 0.27 -> 0.18; Starfy +0.20 (layout outside the hot code again).
 - Lag: unchanged except NSMB, whose lag varies between runs with achievements OFF too (window 119-272 across six
   runs of the same stock game), so it's the game's own run-to-run variation.
+
+## Where Starfy's and MKDS's cost goes on `stack` (2026-10-19)
+
+Runner --evict-attr (melonDS footprint2-lab b0371901, rebuilt in private/lab/melon-fp), `stack` + tls-resume module,
+same set/script/window as the catalogue (Starfy 2.85%, MKDS 1.04% here). Charges cover the whole profiled run.
+
+- Starfy: charged 16.4k/interval (I 10.9k, D 5.5k): dsc_capture I 36%, module_idle D 12%, dsc_capture D 12%,
+  rc_client_do_frame I 4%, the rest spread. IRQ-heavy: 420 game IRQs a frame, the game resumes after module code 252
+  times a frame at ~127 cycles of refill each, which is its whole window cost (~32k). dsc_capture is 3.3 KB of code,
+  ~2 KB (62 lines) of it executed per capture.
+- MKDS: charged 17.0k/interval (I 13.9k, D 3.1k), spread: rc_client_do_frame 10%, dsc_capture 9%, dsc_idle 8%,
+  run_chains 7%, module_idle 5%, changes_before 3%.
+- Reading: Starfy under 1% needs ~3x less module work between its IRQs, not a placement change (confinement was
+  rejected on 2026-10-17); halving the capture's executed lines would save ~3k (2.85% -> ~2.6%) and reshuffle every
+  game's layout. MKDS is within reach of general evaluation speed-ups.
