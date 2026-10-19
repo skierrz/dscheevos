@@ -17,7 +17,7 @@ Status: **done**, **partial**, **missing**, or **n/a** (the feature doesn't exis
 | Requirement | Status | Where / what's left |
 |---|---|---|
 | Achievement list reachable in the client | **done** | In-game menu > "Achievements..." (`nds-bootstrap: arm9_igm/dscheevosMenu.c`): a summary page (game, mode, totals, this session's unlocks, network), then every achievement of the set with its state, points and measured progress, and a detail page with the description. The module publishes the list (`dscm_list_t`, ABI v6). |
-| Triggers evaluate correctly | **done** | rcheevos `rc_client`, upstream plus one store-elimination patch proven identical to stock on every real set (`docs/rcheevos-pin.md`; any patch must be proven identical, kept minimal and offered upstream: "Evaluating one set on two CPUs"). `tests/games` checks unlock frames against rcheevos reading live memory every frame, with and without a 10 s backlog. |
+| Triggers evaluate correctly | **done** | rcheevos `rc_client`, upstream plus one store-elimination patch proven identical to stock on every real set (`docs/rcheevos-pin.md`; any patch must be proven identical, kept minimal and kept on our fork: "Evaluating one set on two CPUs"). `tests/games` checks unlock frames against rcheevos reading live memory every frame, with and without a 10 s backlog. |
 | Measured and Trigger (challenge) indicators shown in the list and during play | **partial** | In the list: measured progress and an active-challenge mark per achievement, plus the active challenges and leaderboard trackers on the summary page. During play (DSi): Wi-Fi LED cues from the module's notices: 3 blinks per unlock, 1 per measured-progress update, 2 per leaderboard start/fail/submit, held while a challenge is primed. Nothing is drawn over the game; whether RA accepts this is question 1 in `docs/ra-questions.md`. |
 | Rich presence works | **done** | rc_client pings every 2 minutes during play. A hardcore session always keeps the Wi-Fi connection for it; Casual does when "Send unlocks during play" is on. |
 | Leaderboards work | **partial** | Evaluated, submitted and queued offline like unlocks; trackers and results show in the in-game menu. No on-screen tracker or start/fail notice during play (see the indicators row). |
@@ -183,7 +183,7 @@ Question (2026-10-12, eval-speed's ARM7 lane, `evalspeed-team/arm7-notes.md`): m
 - the server reads that version, so a nonstandard string risks being parsed as unknown;
 - results are proven identical to that version.
 
-The patched build is identified by **our** version: `DScheevos/<version>` names one exact rcheevos commit and patch set. `SOURCES.txt` and the release notes list the upstream base, our fork commit and each patch with its upstream pull request. Say so when applying to RA (C asks for disclosure).
+The patched build is identified by **our** version: `DScheevos/<version>` names one exact rcheevos commit and patch set. `SOURCES.txt` and the release notes list the upstream base, our fork commit and each patch with its fork commit and its proof. Say so when applying to RA (C asks for disclosure).
 
 ## Request options
 
