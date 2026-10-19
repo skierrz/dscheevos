@@ -57,6 +57,7 @@ static struct {
   int have_saved;
   uint32_t handshake_ms;      /* last handshake, wall time (diagnostics) */
   uint32_t handshake_start;
+  uint32_t last_progress;     /* g_now when the server last answered (connected, data): net_service */
 } C;
 
 static struct {
@@ -121,6 +122,7 @@ static err_t on_recv(void* arg, struct tcp_pcb* pcb, struct pbuf* p, err_t err)
     C.remote_closed = 1;
     return ERR_OK;
   }
+  C.last_progress = g_now;
   if (C.rxq) pbuf_cat(C.rxq, p);
   else C.rxq = p;
   return ERR_OK;
@@ -146,6 +148,7 @@ static err_t on_connected(void* arg, struct tcp_pcb* pcb, err_t err)
     return ERR_OK;
   }
   link_stir();
+  C.last_progress = g_now;
   C.state = C.https ? C_HANDSHAKE : C_READY;
   return ERR_OK;
 }
@@ -611,6 +614,19 @@ void net_service(uint32_t now_ms)
   }
   if (R.state == R_NONE)
     return;
+  /* Until the connection is ready, request_step's timeout doesn't run: a
+   * server that stops answering during DNS, the connect or the TLS
+   * handshake (Wi-Fi up, no internet behind it) would hold the request,
+   * and every request queued after it, until lwIP gave up on TCP, with a
+   * handshake step every pass meanwhile. Fail it once the server has been
+   * silent that long; a slow handshake that still gets answers goes on. */
+  if (C.state != C_READY && C.state != C_NONE
+      && g_now - ((int32_t)(C.last_progress - R.started) > 0 ? C.last_progress : R.started) > REQUEST_TIMEOUT_MS) {
+    g_detail = 0x601;
+    fail_request();
+    g_state = DSCM_NET_STATE_ERROR;
+    return;
+  }
   g_state = DSCM_NET_STATE_SENDING;
   if (conn_step() < 0) {
     fail_request();

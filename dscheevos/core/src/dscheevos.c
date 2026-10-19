@@ -3191,17 +3191,39 @@ static WAKE_SMALL void commit(int staged)
   S.items_in++;
 }
 
-/* The VBlanks the IRQ queued, oldest first, into the ring. Idle time:
- * called before anything that looks at the ring or the stage. */
-WAKE_INL void drain(void)
+/* The newest frame drain() commits. With DSC_CAPTURE_ONCE the newest
+ * queued frame waits for its capture (dsc_capture seals it) until a newer
+ * one is queued: then it is committed without one, as a lag frame. */
+WAKE_INL uint32_t drain_end(void)
 {
   uint32_t n = Q.frames;
+  if (S.config.capture_at_halt == DSC_CAPTURE_ONCE && n != Q.taken && Q.sealed != n)
+    n--;
+  return n;
+}
+
+/* The VBlanks the IRQ queued, oldest first, into the ring, up to frame n. */
+WAKE_INL void drain_to(uint32_t n)
+{
   while (Q.taken != n) {
     uint32_t f = Q.taken + 1;
     commit(Q.sealed == f);
     PUBLISH_BARRIER();
     Q.taken = f;
   }
+}
+
+/* Idle time: called before anything that looks at the ring or the stage. */
+WAKE_INL void drain(void)
+{
+  drain_to(drain_end());
+}
+
+/* Before a lifecycle change or a flush: every frame counted so far, a
+ * frame still waiting for its capture too (without one). */
+static void drain_all(void)
+{
+  drain_to(Q.frames);
 }
 
 static inline __attribute__((always_inline)) void queue_frame(void)
@@ -3359,11 +3381,16 @@ WAKE int dsc_capture(void)
   uint32_t size, head, map;
   uint8_t* data;
   target_t* targets;
-  int same, chains, staged;
+  int same, chains, staged, once;
 
   if (!S.active || !S.config.capture_at_halt)
     return -1;
   drain();
+  /* capture once: the newest queued frame is committed once it has its
+   * capture; until a VBlank queues the next, nothing more to take */
+  once = S.config.capture_at_halt == DSC_CAPTURE_ONCE;
+  if (once && Q.taken == Q.frames)
+    return -1;
   /* A capture completed earlier in this frame (the stage) stays the
    * frame's until this one completes: this one is copied to the other
    * place, so if it stops (an interrupt, the VBlank) the stage is still
@@ -3468,6 +3495,12 @@ WAKE int dsc_capture(void)
   S.stage_same = same;
   S.stage_prev = S.slot_head - 1;
   PUBLISH_BARRIER();
+  if (once) {
+    /* the newest frame's snapshot: the next drain() (interrupts on)
+     * commits it; Q.stage stays 0 */
+    Q.sealed = Q.frames;
+    return 0;
+  }
   /* nonzero: the capture's number, so a reader of Q (the runner's
    * --everyframe logger) sees which capture the stage is */
   Q.stage = S.pstats.captures ? S.pstats.captures : 1;
@@ -3916,7 +3949,7 @@ int dsc_idle(void)
    * touching more memory (rcheevos' own timers run once a frame below). */
   {
     uint32_t clock = S.platform.frame ? S.platform.frame() : S.platform.millis();
-    if (clock == S.idle_clock && Q.frames == Q.taken && S.items_in == S.items_out && S.http_answered == S.http_taken
+    if (clock == S.idle_clock && drain_end() == Q.taken && S.items_in == S.items_out && S.http_answered == S.http_taken
         && S.a9_want == S.a9_acquired)    /* hand-over: wanted and not held yet, ask (arm9_turn) */
       return 0;
     S.idle_clock = clock;
@@ -3997,7 +4030,7 @@ COLD uint32_t dsc_backlog(void)
   if (!S.initialized)
     return 0;
   /* lifecycle entries count too: one each */
-  return (Q.frames - Q.taken) + (S.items_in - S.items_out);
+  return (drain_end() - Q.taken) + (S.items_in - S.items_out);
 }
 
 COLD int dsc_flush(void)
@@ -4005,7 +4038,7 @@ COLD int dsc_flush(void)
   int n;
   if (!S.initialized)
     return 0;
-  drain();
+  drain_all();
   if (!arm9_turn())
     return -1;
   S.flushing = 1;
@@ -4055,7 +4088,7 @@ void dsc_http_done(void* handle, int http_status, const char* body, size_t body_
 
 int dsc_work_pending(void)
 {
-  return S.initialized && (Q.frames != Q.taken || S.items_in != S.items_out || S.http_answered != S.http_taken);
+  return S.initialized && (drain_end() != Q.taken || S.items_in != S.items_out || S.http_answered != S.http_taken);
 }
 
 void dsc_state_view(uint32_t high_byte)
@@ -4114,7 +4147,7 @@ COLD void dsc_reset(void)
   /* no stage for the next VBlank (it holds memory from before the reset),
    * then the frames already counted: they come before the reset */
   Q.stage = 0;
-  drain();
+  drain_all();
   sync_restore();
   if (S.active)
     push_event(QEV_RESET);     /* rc_client_reset once the frames before it are evaluated */
@@ -4128,7 +4161,7 @@ COLD void dsc_hardcore_off(void)
   if (!S.initialized)
     return;
   mode = ring_lock();
-  drain();
+  drain_all();
   push_event(QEV_HARDCORE_OFF);
   ring_unlock(mode);
 }
