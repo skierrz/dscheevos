@@ -429,6 +429,7 @@ static uint32_t frame_count(void) { return g_frames; }
 
 extern void dscm_publish_net_ring(void* ring);
 extern void https_add_ca(const char* pem, uint32_t len);
+extern void https_resume_session(const char* saved, uint32_t len);
 
 static const char* request_kind(const char* post)
 {
@@ -749,6 +750,13 @@ int module_init(const dscm_boot_t* boot)
     /* still in the session: nothing writes the arena before the first frame */
     if (g_boot.ca_length && g_boot.ca_offset <= g_boot.file_size && g_boot.ca_length <= g_boot.file_size - g_boot.ca_offset)
       https_add_ca(g_replies + g_boot.ca_offset, g_boot.ca_length);
+    if ((g_boot.flags & DSCM_BOOT_TLS_SESSION) && g_boot.file_size >= sizeof(dscm_boot_t) + 4) {
+      /* the file's last blob, then its length */
+      uint32_t len;
+      memcpy(&len, g_replies + g_boot.file_size - 4, 4);
+      if (len && len < g_boot.file_size && DSCM_SESSION_PAD(len) <= g_boot.file_size - sizeof(dscm_boot_t) - 4)
+        https_resume_session(g_replies + g_boot.file_size - 4 - DSCM_SESSION_PAD(len), len);
+    }
     dscm_publish_net_ring((void*)DSCM_PHYS(ring));
     dscm_g_status.net_state = DSCM_NET_STATE_CONNECTING;
     H.net_started = 1;

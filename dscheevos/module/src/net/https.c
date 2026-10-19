@@ -268,6 +268,22 @@ void https_add_ca(const char* der, uint32_t len)
   dsc_parse_der_list(&g_cas, (const unsigned char*)der, len, 0);
 }
 
+/* The launcher's TLS session with the same server (mbedtls_ssl_session_save):
+ * the first connection resumes it, as later ones resume their own, so the
+ * game's first seconds carry no key exchange (seconds of public-key
+ * arithmetic in idle time). A session the server no longer knows just gets a
+ * full handshake. */
+void https_resume_session(const char* saved, uint32_t len)
+{
+  if (C.have_saved)
+    return;
+  mbedtls_ssl_session_init(&C.saved);
+  if (mbedtls_ssl_session_load(&C.saved, (const unsigned char*)saved, len) == 0)
+    C.have_saved = 1;
+  else
+    mbedtls_ssl_session_free(&C.saved);
+}
+
 /* Advance the connection one step. Returns 1 when ready for requests. */
 static int conn_step(void)
 {
