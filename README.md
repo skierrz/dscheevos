@@ -32,7 +32,7 @@ Design: `docs/architecture.md`. Measurements: `docs/rcheevos-arm9-footprint.md`.
 - `tests/module`: the module in DSi mode in melonDS
 - `tests/bootstrap`, `tests/launcher`: retail games through nds-bootstrap, and the full launcher chain. These need your own firmware and game dumps, so they run locally.
 
-rcheevos is a submodule pointing at [skierrz/rcheevos](https://github.com/skierrz/rcheevos) (branch `dscheevos-683197d`): upstream `683197d` plus twelve patches: stores skipped when they wouldn't change a value, modified memrefs recalculated only when their inputs change, an indexed memref deduplication at load (also for long AddSource chains and while sizing a definition), and opt-in change-driven evaluation. A patch is allowed only where its evaluation results are proven identical to stock rcheevos on every real set, and it has to be kept minimal and documented publicly. Every patch, its measurements and how it's carried are in `docs/rcheevos-pin.md`.
+rcheevos is a submodule pointing at [skierrz/rcheevos](https://github.com/skierrz/rcheevos) (branch `dscheevos-683197d-stack`): upstream `683197d` plus thirteen patches: stores skipped when they wouldn't change a value, modified memrefs recalculated only when their inputs change, an indexed memref deduplication at load (also for long AddSource chains and while sizing a definition), opt-in change-driven evaluation, and direct reads skipped when their memory didn't change. A patch is allowed only where its evaluation results are proven identical to stock rcheevos on every real set, and it has to be kept minimal and documented publicly. Every patch, its measurements and how it's carried are in `docs/rcheevos-pin.md`.
 
 ## Licence
 
