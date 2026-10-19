@@ -23,7 +23,7 @@ RC_FILES := client/rc_client.c \
   api/rc_api_common.c api/rc_api_info.c api/rc_api_runtime.c api/rc_api_user.c \
   util/md5.c util/rc_compat.c util/rc_util.c util/rc_version.c
 
-.PHONY: all clean core
+.PHONY: all clean core loaddump
 all: $(BUILD)/difftest-run-stock $(BUILD)/difftest-run-patched $(BUILD)/difftest-run-patched-tsan
 core: $(BUILD)/difftest-run-core $(BUILD)/difftest-run-core-noflags
 
@@ -73,6 +73,16 @@ $(BUILD)/difftest-stats-patched: run.c sha256.h
 	./mkstats.sh $(PATCHED) $(BUILD)/stats-patched
 	$(CC) $(CFLAGS) $(RC_DEFS) $(CD_DEF) $(CHG_DEF) -DDIFFTEST_STATS -I$(BUILD)/stats-patched/include -I$(BUILD)/stats-patched/src run.c \
 	  $(addprefix $(BUILD)/stats-patched/src/,$(RC_FILES)) -lm -o $@
+
+# load-structure dumps (loadcmp.sh)
+loaddump: $(BUILD)/loaddump-stock $(BUILD)/loaddump-patched
+$(BUILD)/loaddump-stock: loaddump.c $(BUILD)/stock/.ok
+	$(CC) -O1 -w $(RC_DEFS) -I$(BUILD)/stock/include -I$(BUILD)/stock/src loaddump.c \
+	  $(addprefix $(BUILD)/stock/src/,$(RC_FILES)) -lm -o $@
+$(BUILD)/loaddump-patched: loaddump.c $(addprefix $(PATCHED)/src/,$(RC_FILES)) $(PATCHED)/src/runtime/rc_internal.h
+	@mkdir -p $(BUILD)
+	$(CC) -O1 -w $(RC_DEFS) -I$(PATCHED)/include -I$(PATCHED)/src loaddump.c \
+	  $(addprefix $(PATCHED)/src/,$(RC_FILES)) -lm -o $@
 
 clean:
 	rm -rf $(BUILD)
