@@ -532,3 +532,55 @@ unmeasured.
 
 Owner ruling (2026-10-18): WAKE_COLOUR 0x140 accepted. The held-out differences (p90 +105 cycles, max +3) are within
 run noise; future pre-registrations state their tolerance (default: run noise, ~0.1% of a frame).
+
+## Mario Party DS session load: rcheevos' memref deduplication (2026-10-18)
+
+Cause: rcheevos' load, quadratic in one achievement's length. "Wheel of Fortune" is 2,311 conditions, a SubSource /
+AddSource chain repeating `0xP154f55` / `0xL154f55` (9 addresses); each step is a modified memref whose parent is the
+step before (~2,300 of them, depth 0 to ~2,300). Every new memref is deduplicated against the ones already made:
+- Shared list (the game's, indexed since e01c29c): the index hash follows modified memrefs 2 levels deep, so the steps
+  of the chain look alike and share a few hashes; each new step probes past all earlier ones.
+- Sizing pass: rc_client parses every definition twice; the first pass dedups into a preparse scratch list with no
+  index, a linear scan over the definition's own memrefs.
+Not ours: the module's heap wraps, the core's chain compiler and the rest of the session load are linear (host,
+realsets harness built natively: core load 27.6 ms vs rc_client alone 23-28 ms).
+
+How it was found: host rc_client load of each official title-matched set vs that game's "module before it" in
+ctl-official. Every game sits at 170-250M DS cycles per host millisecond (cached and uncached heaps alike: sets over 160 KB run cached); Mario Party
+was 23.4 ms on the host (others <=5 ms for sets up to 200 KB) and 304M cycles/ms. `sample` on the host: the time was
+in rc_alloc_modified_memref / rc_operands_are_equal / rc_memrefs_index_insert under rc_operand_addsource.
+
+Fix (rcheevos fork, branch dscheevos-683197d-loadfix, two commits on 754965e; dscheevos branch mp-loadfix off perf
+bumps the submodule; docs/rcheevos-pin.md has the patch notes):
+1. c61a484: mix a modified memref's `depth` into the index hash (depth is compared by rc_operands_are_equal, so
+   matching entries still share a hash).
+2. 84d26e7: preparse lists get the same index after 64 entries; rc_destroy_preparse_state frees it.
+
+| | host rc_client load (M5) | melonDS: module before the game | game starts (frame of first OS_Halt; off 1552) |
+|---|---|---|---|
+| before | 23.5 ms | 7,111M cycles (106 s) | 8963 |
+| depth hash only | 10.9 ms | - | - |
+| both | 3.7 ms | 700M cycles (10.5 s) | 3242 |
+
+Mario Party's load is now in line with its size (host 0.030 ms/KB, SM64DS 0.025; on the DS 0.70G vs SM64DS 1.12G,
+PMD Blue 1.01G). Other sets on the host: MvDK Mini-Land Mayhem 10.6 -> 4.2 ms, Layton 6.2 -> 4.1, Platinum 8.8 -> 7.0,
+SoulSilver 23.1 -> 18.3, none slower beyond noise. The module (control copyonce-net build-st recipe, reproduced
+byte-identical: df05fefeb9d1; with the patch bede937b3e6d) grows by 104 bytes of code; hot layout unchanged.
+
+Game cost, now measurable (control + patch, tag ctl-loadfix): Mario Party DS shadow I+D 1.09% of a frame (raw +0.72%,
+equal work +0.93%; I 7.7k / D 4.4k cycles), 0 frames dropped, lag 5 -> 5. So it is over 1% on the control, like
+Starfy and MKDS, and needs a candidate run (the full stack) like the others.
+
+Identical results (CLAUDE.md rule):
+- tests/difftest/loadcmp.sh (new, branch mp-loadfix): loads each set with stock 683197d and the patched tree and
+  compares what the load built (memref lists, modified memrefs' operands, every condition's operands as list indexes):
+  all 76 set files identical (also identical to the previous pin 754965e). Sensitivity: a mutant that skips dedup in
+  indexed preparse lists differs on 6 sets.
+- run.sh (inert, 10,000 fuzzed frames x 8 scripts x 2 session replies x hardcore on/off) and core.sh (2,000 frames,
+  plain / hand-over / no flags) on the 16 sets with real RAM dumps, patched tree 84d26e7 vs stock 683197d: 16/16 sets,
+  512 run.sh runs and 1,152 core.sh runs, zero differences. The change-driven / changed-memory variants were not rerun
+  (the patch touches only the load; loadcmp shows the loaded structures are identical).
+
+What's left: the load still stalls the boot ~10 s for Mario Party and up to ~17 s for SM64DS (most games 1-5 s), on
+top of the launcher's own wait. It tracks the host rc_client load at about 200M ARM9 cycles (3 s) per host millisecond, so it is mostly rcheevos' parse (not split per game on the DS).
+Separate question; options in the hand-back.
