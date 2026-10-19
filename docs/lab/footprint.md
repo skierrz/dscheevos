@@ -612,3 +612,18 @@ the direct-read skip e612011 with the load fix cherry-picked after it (58027f6, 
 - Lag: catalogue.sh's lag_on now filled; window lag on - off summed over all games 0, whole run +14 intervals.
 
 Over 1% on `stack`: Starfy, MKDS. Mario Party DS just under. Next: --evict-attr on Starfy (IRQ-heavy class) and MKDS.
+
+## Boot delay across the catalogue, before and after the load fix (2026-10-19)
+
+How much later the game's first OS_Halt comes with DScheevos than without (melonDS, same runs as the catalogue:
+ctl-merged = control, `stack` = with the load fix; frames at 59.83 Hz). Emulator numbers, not hardware.
+
+- 64 games: none slower; 44 within 2 frames. Median change 0.
+- Big wins: Mario Party DS 124 -> 28 s, MvDK and MvDK Mini-Land Mayhem 62 -> 27 s, Platinum 41 -> 32 s, Rhythm
+  Heaven 40 -> 34 s, Layton 32 -> 22 s, M&L Partners in Time 22 -> 17 s, Cooking Mama 18 -> 14 s.
+- Floor 7-13 s for every game; still 26-34 s for Rhythm Heaven, Platinum, Digimon, Mario Party DS, SM64DS and both
+  MvDK. The rest scales with rcheevos' parse: the next lever for boot time.
+- Host (Apple M5, upstream develop dfdc64e vs the same series ported, rc_runtime activation of all 76 sets):
+  948.5 -> 201.7 ms total, Animal Crossing 301 -> 53 ms, HG/SS 153 -> 16 ms, Rhythm Heaven 66 -> 6.5 ms; none slower.
+  The port is fork branch upstream-memref-index; loadcmp vs develop 76/76 identical; draft PR for the owner in
+  the planning repo, research/upstream/rcheevos-memref-index-pr.md.
