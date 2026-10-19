@@ -584,3 +584,31 @@ Identical results (CLAUDE.md rule):
 What's left: the load still stalls the boot ~10 s for Mario Party and up to ~17 s for SM64DS (most games 1-5 s), on
 top of the launcher's own wait. It tracks the host rc_client load at about 200M ARM9 cycles (3 s) per host millisecond, so it is mostly rcheevos' parse (not split per game on the DS).
 Separate question; options in the hand-back.
+
+## The candidate as a branch: `stack` (2026-10-19)
+
+Branch `stack` e668b634 (pushed, not merged), off `mp-loadfix` (perf + the Mario Party DS load fix), with copyonce-net
+(stagefix phase 2 + network wake fix + stall timeout) and evalfast-p2 merged, and two new defaults: WAKE_COLOUR 0x140
+and DSCM_HEAP_UNCACHED_MAX 4 MB (every set's heap uncached). rcheevos: fork branch `dscheevos-683197d-stack` 1a0269a =
+the direct-read skip e612011 with the load fix cherry-picked after it (58027f6, 1a0269a).
+
+- Host tests: core 33,381 checks, module 54 + 33, 0 failed. hotcheck: all 161 hot symbols at the same addresses as
+  build-efuncw140 (the measured candidate); hot-layout.ref regenerated.
+- rcheevos gate, the shipped tree as one vs stock 683197d: loadcmp 76 set files 0 differ; run.sh CD=1 CHANGES=1 on the
+  16 real-dump sets 2,560 runs and core.sh 1,152 runs, zero differences.
+- Catalogue (tag stack, official sets where fetched; 61 games, 60 comparable with efuncw140-merged + Mario Party DS):
+
+| | median | p90 | max | over 1% | games with frames dropped |
+|---|---|---|---|---|---|
+| control (ctl-merged) | 0.27% | 0.99% | 2.44% | 5 | 5 |
+| candidate efuncw140-merged | 0.27% | 0.78% | 2.43% | 2 | 4 |
+| `stack` | 0.27% | 0.80% | 2.66% | 2 (Starfy 2.66, MKDS 1.11) | 4 (RE, MvDK, Layton, Nine Hours) |
+
+- `stack` vs efuncw140-merged: 58 games within 0.04%; Starfy 2.43 -> 2.66 (I 18.3k -> 20.4k, D 8.9k -> 9.4k), Nintendogs
+  0.78 -> 0.90 (I +0.7k, D +0.7k). Hot code identical, so this is the lottery outside it: the load fix's bigger load
+  functions shift the non-hot code after them, and its preparse index changes heap addresses. Not evaluation work.
+- Mario Party DS measurable with its official set: 0.98% (I 8.1k, D 2.9k), game from frame 3241 (no module 1552;
+  session load 0.70G cycles, ~10.5 s), 0 frames dropped.
+- Lag: catalogue.sh's lag_on now filled; window lag on - off summed over all games 0, whole run +14 intervals.
+
+Over 1% on `stack`: Starfy, MKDS. Mario Party DS just under. Next: --evict-attr on Starfy (IRQ-heavy class) and MKDS.
