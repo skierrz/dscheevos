@@ -3848,7 +3848,10 @@ static inline __attribute__((always_inline)) int owner_pass(uint32_t budget, int
         if (T.frame_begin)
           T.frame_begin(S.eval_frame);
 #endif
-#ifdef DSC_CHANGED_RANGES
+#if defined(DSC_LAB_NO_EVAL)
+        /* LAB (not for merge): the ARM9's cost with evaluation elsewhere: frames are queued,
+         * captured and consumed as usual, but not evaluated here */
+#elif defined(DSC_CHANGED_RANGES)
         changes_before(S.evaluating, next->frame + k);
         rc_client_do_frame(S.client);
         changes_after(S.evaluating, next->frame + k);
