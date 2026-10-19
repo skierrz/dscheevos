@@ -4,7 +4,7 @@ Which rcheevos DScheevos builds, and why. Checked 2026-10-12.
 
 ## Where we are
 
-- Submodule `external/rcheevos`: upstream `develop` at `683197d` ("restructure src folder", 2026-10-04) plus ten patches (listed below), on the fork `skierrz/rcheevos` branch `dscheevos-683197d`. `git describe` of the base: `v12.5.0-9-g683197d`.
+- Submodule `external/rcheevos`: upstream `develop` at `683197d` ("restructure src folder", 2026-10-04) plus thirteen patches (listed below), on the fork `skierrz/rcheevos` branch `dscheevos-683197d-stack` (`dscheevos-683197d` without the direct-read skip and the load fix). `git describe` of the base: `v12.5.0-9-g683197d`.
 - Patches (each one commit, proven identical to stock with `tests/difftest` on every real set):
   1. **clean stores** (`src/runtime/rc_condset.c` only): a condition's `is_true`, a ResetNextIf'd zero `current_hits` and a condset's `is_paused` are stored only when they change. Same values everywhere; an unchanged store no longer dirties a data-cache line (on the DSi each dirty line costs a write-back when evicted). ARM code: `ldrb; cmp; strbne`, +2 instructions per condition, no branch.
      - **Measured (2026-10-13, melonDS cache model, not hardware), against stock with identical code layout** (a padded stock build, because the patch shifts the code after it by 0x18 bytes):
