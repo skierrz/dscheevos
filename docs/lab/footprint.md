@@ -652,3 +652,18 @@ frame with no halt is evaluated later as a repeat of the last copy, and a long e
   i.e. evaluating up to ~40 s of frames with stale memory instead of a gap: an owner/compliance call); RE = BIOS
   waits (idle-coverage's BIOS-wait hook P1a, half built since 2026-10-13). The round-2 idle-coverage design's
   in-IRQ capture would cover all of these but is ruled out by the read-only rule.
+
+## tls-resume merged into `stack` (2026-10-19)
+
+`stack` 457c84b6 = the previous stack + tls-resume (c601a121: the launcher hands its TLS session to the module).
+Hot layout unchanged (hotcheck, 161 symbols). Host tests pass; launcher rebuilt. Catalogue runs used the stack
+checkout's launcher (GC_REPO), tags stack-tls (the 4 drop games) and stack-tls-all (all 64).
+
+- Frames dropped: Nine Hours 94 -> 0 (its full first handshake took 16.5 s of wall time in a scarce-idle stretch;
+  resumed: 2.7 s there); MvDK 1,443 -> 1,338 (handshake 3.0 s -> 0.27 s; the rest is its own 38 s no-halt stretch);
+  Layton 433 and RE 2,437 unchanged (own no-halt stretch / BIOS waits). Games dropping frames: 4 -> 3.
+- Catalogue vs `stack` (61 games): median 0.27 -> 0.26%, p90 0.80 -> 0.72%, max 2.66 -> 2.85% (Starfy), over 1%:
+  2 (Starfy 2.85, MKDS 1.10). 29 better, 6 worse; Nintendogs 0.90 -> 0.35 (its window held the full handshake),
+  Nine Hours 0.27 -> 0.18; Starfy +0.20 (layout outside the hot code again).
+- Lag: unchanged except NSMB, whose lag varies between runs with achievements OFF too (window 119-272 across six
+  runs of the same stock game), so it's the game's own run-to-run variation.
