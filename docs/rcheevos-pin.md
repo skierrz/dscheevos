@@ -13,7 +13,19 @@ Which rcheevos DScheevos builds, and why. Checked 2026-10-12.
      - **Correction:** the first figures (Kirby game +63.5k -> +54.3k, write-backs 300 -> 155, "-15%", also in commit 23f736d) compared against unpadded stock, and the layout shift alone accounts for about two-thirds of those write-backs and over half of that game gain.
      - **Desktop** (Apple M5, clang -O2, real sets): neutral to slower, up to +6.5% evaluation time on TWEWY; there the guarded stores compile to real branches.
      - **Status:** DSi-only, kept in our fork. Upstream PR [RetroAchievements/rcheevos#562](https://github.com/RetroAchievements/rcheevos/pull/562) is being closed for these reasons.
-  - **Load time for long AddSource chains** (2026-10-18, two commits on branch `dscheevos-683197d-loadfix`, after `754965e`; `src/runtime/rc_memref.c`, `rc_alloc.c`, `rc_internal.h`). Mario Party DS's official set has one achievement ("Wheel of Fortune") of 2,311 conditions: a SubSource/AddSource chain repeating 9 addresses, ~2,300 modified memrefs, each step's parent the step before. Loading it took 7.1G cycles (~106 s at 67 MHz) before the game started.
+  (The change-driven, dependency and changed-memory patches after it, 09ea746..754965e, are not listed here yet.)
+  N. **skip unchanged direct reads** (rcheevos `e612011` on 754965e, `src/client/rc_client.c` +33 lines, one field in
+     `rc_client_internal.h`; research/optimize/evalfast.md): with `rc_client_set_changed_memory` (754965e), a direct memref
+     that didn't change last frame, was read in an earlier frame, and whose bytes are in none of at most 8 changed ranges is
+     not read again (its value and changed flag would stay as they are). Deserializing progress makes every memref be read
+     on the next frame. Our core passes 0 ranges on a repeat frame, so only last frame's changed memrefs are read.
+     - **Identical results:** tests/difftest run.sh (CD=1 CHANGES=1) and core.sh on all 16 real sets with real RAM dumps,
+       zero differences; a mutant (skips memrefs whose changed flag is set) shows differences on Kirby.
+     - **Measured (melonDS cache model, not hardware):** evaluation of an unchanged frame -10% (Platinum) to -44% (Black,
+       Digimon); Kirby -26%, MKDS -16%, Resident Evil -25%, MvDK -28%.
+     - **Upstream:** generic (any host that knows its changed memory), but it builds on the unmerged changed-memory API;
+       offer it together with that, as an issue, once the methods settle (CLAUDE.md).
+  - **Load time for long AddSource chains** (2026-10-18, two commits on branch `dscheevos-683197d-loadfix`, after `754965e`; on the shipped stack cherry-picked after `e612011` as `58027f6` and `1a0269a`, branch `dscheevos-683197d-stack`; `src/runtime/rc_memref.c`, `rc_alloc.c`, `rc_internal.h`). Mario Party DS's official set has one achievement ("Wheel of Fortune") of 2,311 conditions: a SubSource/AddSource chain repeating 9 addresses, ~2,300 modified memrefs, each step's parent the step before. Loading it took 7.1G cycles (~106 s at 67 MHz) before the game started.
     1. **Hash a modified memref's depth in the memref index** (`c61a484`): the index hash followed modified memrefs only 2 levels deep, so the chain's steps shared a few hashes and every new step probed past all the earlier ones. `depth` is compared by `rc_operands_are_equal`, so equal entries still share a hash.
     2. **Index large preparse memref lists too** (`84d26e7`): rc_client's sizing pass parses each definition into a scratch list that had no index, so a definition's own memrefs were deduplicated by a linear scan (quadratic in that definition). A preparse list now gets the same index after 64 entries; `rc_destroy_preparse_state` frees it. Smaller definitions (nearly all) allocate nothing new.
     - **Host** (Apple M5, clang -O2, rc_client load): Mario Party DS 23.5 -> 10.9 -> 3.7 ms; MvDK Mini-Land Mayhem 10.6 -> 4.2; Layton 6.2 -> 4.1; Platinum 8.8 -> 7.0; no set slower beyond noise. On the DSi the load costs ~210-300M cycles per host millisecond (all 25 official title-matched sets), so Mario Party's ~23 ms was the 106 s.
