@@ -625,5 +625,6 @@ ctl-merged = control, `stack` = with the load fix; frames at 59.83 Hz). Emulator
   MvDK. The rest scales with rcheevos' parse: the next lever for boot time.
 - Host (Apple M5, upstream develop dfdc64e vs the same series ported, rc_runtime activation of all 76 sets):
   948.5 -> 201.7 ms total, Animal Crossing 301 -> 53 ms, HG/SS 153 -> 16 ms, Rhythm Heaven 66 -> 6.5 ms; none slower.
-  The port is fork branch upstream-memref-index; loadcmp vs develop 76/76 identical; draft PR for the owner in
-  the planning repo, research/upstream/rcheevos-memref-index-pr.md.
+  The port is fork branch upstream-memref-index; loadcmp vs develop 76/76 identical; write-up in the planning
+  repo, research/upstream/rcheevos-memref-index.md. Not sent upstream (owner, 2026-10-19: no PRs or issues on
+  RetroAchievements/rcheevos).
