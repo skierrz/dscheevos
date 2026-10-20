@@ -709,3 +709,32 @@ changes_before / rc_client_do_frame / changes_after; frames still captured, queu
 stack-tls-all: median 0.26 -> 0.22%, p90 0.72 -> 0.63%, max 2.85 -> 2.52% (Starfy), over 1%: 2 -> 1; MKDS 1.10 ->
 0.59, Mario Party DS 0.96 -> 0.68, Kirby 0.55 -> 0.33. 44 better, 4 worse. Starfy keeps its cost: capture + wake.
 Write-up for the owner: planning repo research/offload/arm7-reopen.md.
+
+## Where the ARM9 cost really is: upper bounds, and the no-op wake fast path (2026-10-19/20)
+
+Lab flags on `lab-noeval` (pushed, not for merge), each a full catalogue run vs stack-tls-all (stack + tls-resume):
+
+| build | median | p90 | max | over 1% | Starfy (I / D) | MKDS |
+|---|---|---|---|---|---|---|
+| stack + tls-resume | 0.26% | 0.72% | 2.85% | 2 | 2.85% (17.9k / 14.1k) | 1.10% |
+| no evaluation (DSC_LAB_NO_EVAL) | 0.22% | 0.63% | 2.52% | 1 | 2.52% | 0.59% |
+| + no capture (DSC_LAB_NO_CAPTURE) | 0.17% | 0.47% | 2.53% | 1 | 2.53% (12.7k / 15.6k) | 0.47% |
+| + hook only (DSC_LAB_HOOK_ONLY: module_idle returns at once) | 0.01% | 0.03% | 1.19% | 1 | 1.19% (0 / 13.2k) | 0.00% |
+
+- The wake bookkeeping in module_idle (run at every idle wake, ~53 a frame on Starfy, ~40 code lines plus uncached
+  H/stack/lock accesses) is the biggest single cost on the whole catalogue: removing it takes the median 0.17 -> 0.01%.
+- Starfy's floor with a bare hook (1.19%, all D-side) is one instruction (--evict-attr, hook-only build): halt_entry's
+  `pop {ip, lr}` after `bl module_idle`: the module stack's top line (cached main RAM) is evicted by the game between
+  wakes and refilled by that read at every wake (322 resumes a frame x ~41 cycles).
+- In module_idle's no-op wakes, dsc_capture is entered every wake (52.9 a frame on Starfy) and finds nothing to take.
+
+Fix (branch `wakefast` 73fa3478 off `stack`, pushed): module_idle records quiet_vbl = last_vblank + 1 at the end of a
+full wake when !work_wanted() and dsc_capture_settled() (core: capture once, Q.taken == Q.frames, no stage failure);
+halt_entry checks it first (four uncached words through the 0x0C000000 mirror: quiet_vbl, alias_cached,
+H.reset_pending/progress_stale, header vblank_count) and does the stock halt before the stack switch. Only when the
+game's MPU leaves the mirror uncached (alias_cached 0); SDK5 games keep the full path. Every later wake of a quiet
+frame would have found the same (H changes only in passes or reset_entry, which the fast path checks; the ARM7 only
+moves vblank_count). Stats: fast-path wakes are not counted in halts_idle or the idle self-timing. The pinned asm
+entries after halt_entry move 0xEC -> 0x130; C hot code unchanged (hotcheck 161 symbols).
+- Starfy (single run, same set/script/window): 2.85% -> 0.92% (I+D 10.3k), 3006/3006 frames evaluated, 0 dropped.
+- Full catalogue (tag wakefast) running; then suite, behaviour gate, merge into stack.
