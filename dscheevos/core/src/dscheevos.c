@@ -4128,8 +4128,23 @@ void dsc_state_view(uint32_t high_byte)
 
 WAKE void dsc_drain(void)
 {
-  if (S.initialized)
-    drain();
+  const table_t* t;
+  uint32_t size;
+  if (!S.initialized)
+    return;
+  drain();
+  /* The arena places of the capture still due this frame (capture_places,
+   * cold code, several thousand cycles), worked out here with interrupts on:
+   * in dsc_capture, which copies with them masked, they held a game IRQ off
+   * for up to ~11k cycles (The Legendary Starfy, 420 IRQs a frame). The same
+   * test as there; dsc_capture works them out again only if the ring moved
+   * since (a VBlank came between this and the masked copy). */
+  if (!S.active || !S.config.capture_at_halt || (S.config.capture_at_halt == DSC_CAPTURE_ONCE && Q.taken == Q.frames))
+    return;
+  t = take_table();
+  size = t->words * 4 + S.chains.target_count * sizeof(target_t);
+  if (S.place_slot != S.slot_head || S.place_table != t || S.place_size != size || S.place[1] < 0)
+    capture_places(t, size);
 }
 
 COLD uint32_t dsc_arena_used(void)
