@@ -943,6 +943,10 @@ WAKE_CODE int module_idle(int idle_loop)
   uint32_t start;
 
   start = REG_VCOUNT;
+#ifdef DSC_LAB_HOOK_ONLY
+  (void)wp; (void)start;
+  return 0;    /* LAB (not for merge): the halt hook alone, no idle work at all */
+#endif
   if (!dscm_irq.on)   /* initialized and active */
     return 0;
   /* A game thread that halts until its IRQ comes (while (!flag) OS_Halt())
