@@ -701,3 +701,11 @@ Levers inside the method and their size:
   single lever above is worth, so none of them can be judged on the catalogue one at a time.
 Starfy under 1% needs ~3x less ARM9 module work per frame, which inside the method means evaluation leaving the ARM9
 (the arm7eval route, parked; WORKLIST: method decisions wait for the owner).
+
+## Evaluation off the ARM9: the upper bound of the ARM7 route (2026-10-19)
+
+Lab build `lab-noeval` 739960ef (pushed, not for merge): `stack` + tls-resume with DSC_LAB_NO_EVAL (no
+changes_before / rc_client_do_frame / changes_after; frames still captured, queued, consumed). Catalogue tag noeval vs
+stack-tls-all: median 0.26 -> 0.22%, p90 0.72 -> 0.63%, max 2.85 -> 2.52% (Starfy), over 1%: 2 -> 1; MKDS 1.10 ->
+0.59, Mario Party DS 0.96 -> 0.68, Kirby 0.55 -> 0.33. 44 better, 4 worse. Starfy keeps its cost: capture + wake.
+Write-up for the owner: planning repo research/offload/arm7-reopen.md.
