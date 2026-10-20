@@ -9,7 +9,7 @@ the launcher, the nds-bootstrap fork, the module's network code or the libraries
 
 | Permanent storage | What we do | How it was checked |
 |---|---|---|
-| NAND (eMMC) | Nothing | No `nand:` path, `nandInit` call or `nand_WriteProtect` call in our sources. BlocksDS mounts NAND only through `nandInit` and keeps it write-protected by default (`nds/arm9/sdmmc.h`). The NAND driver functions are linked into the launcher only through the library's disk table; nothing of ours calls them. Our nds-bootstrap changes touch no NAND path. |
+| NAND (eMMC) | Nothing | No `nand:` path, `nandInit` call or `nand_WriteProtect` call in our sources. BlocksDS keeps NAND write-protected by default (`nds/arm9/sdmmc.h`); its `fatInit` mounts it only through `nandInit(1)`, read-only (launcher disassembly: `movs r0, #1; bl nandInit`, which then calls `nand_WriteProtect`). The NAND driver functions are linked into the launcher only through the library's disk table; nothing of ours calls them. Our nds-bootstrap changes touch no NAND path. |
 | Firmware SPI flash | Read only | `readFirmware` (the saved access point's PMK, into the session in RAM, never to SD). No `writeFirmware` in the launcher's ARM9 code, so the ARM7's libnds `firmwareMsgHandler` never gets a write request. |
 | Wi-Fi chip (Atheros) EEPROM/OTP | Nothing | The module sends four WMI commands only: CONNECT (0x0001), DISCONNECT (0x0003), SYNCHRONIZE (0x0004), ADD_CIPHER_KEY (0x0016), all firmware-RAM state. No BMI access. The launcher's DSWiFi loads the chip's firmware into its RAM (`ath6k_bmi_start_firmware`), as the DSi system does at every boot. |
 | Power chip (BPTWL, I2C 0x4A) | Volatile register only | Register 0x30 (Wi-Fi LED) for unlock cues: read once, LED bits set, restored. Resets at power-off. |
