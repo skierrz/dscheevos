@@ -22,6 +22,7 @@ case $game in
   layton)   rom="Professor Layton and the Curious Village (USA, Australia).nds"; id=9518; sc=layton; s=3500;;
   phoenix)  rom="Phoenix Wright - Ace Attorney (USA).nds"; id=12747; sc=phoenix; s=750;;
   digimon)  rom="Digimon World DS (USA).nds"; id=16153; sc=digimon; s=5500;;
+  starfy)   rom="Legendary Starfy, The (USA).nds"; id=9119; sc=generic; s=1500;;   # IRQ-heavy (~420 IRQs a frame); menus only (generic script)
   *) echo "unknown game $game"; exit 2;;
 esac
 rom=$L/$rom; [ -f "$rom" ] || { echo "no ROM $rom"; exit 2; }
