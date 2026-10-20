@@ -243,6 +243,10 @@ void dsc_get_stats(dsc_stats_t* stats);
  * and wants to know whether this wake needs dsc_idle() at all; a new frame
  * (rcheevos' timers) always does. */
 int dsc_work_pending(void);
+/* Capture once a frame: every VBlank queued so far is committed and the newest
+ * frame has its capture, so dsc_capture() would take nothing until the next
+ * VBlank (an idle wake with nothing to do). */
+int dsc_capture_settled(void);
 
 /* Commit the VBlanks queued so far (dsc_vblank_queue) into the frame ring,
  * as dsc_capture and dsc_idle do first. Lets the platform do that work with

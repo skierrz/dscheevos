@@ -49,7 +49,11 @@ dscm_cues:
 	.equ	PAGE_GUARD, 128             @ offsetof(wake_page_t, guard)
 	.equ	IRQ_DATA_REGION, 9          @ dscm_irq_t.data_region
 	@ module.c's H: what reset_entry writes when the data view is read-only
-	.equ	H_RESET_PENDING, 14
+	.equ	H_RESET_PENDING, 14         @ and H.progress_stale at 15 (one halfword)
+	.equ	IRQ_ALIAS_CACHED, 11        @ dscm_irq_t.alias_cached
+	.equ	IRQ_QUIET, 44               @ dscm_irq_t.quiet_vbl
+	.equ	HDR_MIRROR, 0x0CD80000      @ the module header, mirror view
+	.equ	HDR_VBLANK_COUNT, 0x24      @ dscm_header_t.vblank_count
 	.equ	H_BUSY, 28
 	.equ	MIRROR_HI, 0x0C000000
 	.equ	REGION_END, 0x00F80000      @ with MIRROR_HI: 0x0CF80000, the region's end, mirror view
@@ -96,6 +100,31 @@ halt_entry:
 	ldr	r0, [r0, #0x208]            @ REG_IME
 	tst	r0, #1
 	beq	2f
+	@ Fast path: the last full wake left nothing to do in this frame
+	@ (module_idle's quiet_vbl = that VBlank count + 1) and no VBlank came
+	@ since: the stock halt, before anything else. Reads four words of the
+	@ wake page and the header through the 0x0C000000 mirror, only when the
+	@ game's MPU leaves it uncached (alias_cached 0): no data cache line is
+	@ filled, no stack or code of ours beyond these lines runs. Writes
+	@ nothing. A reset or progress flag (reset_entry, events) takes the
+	@ full path.
+	mov	r12, #MIRROR_HI
+	orr	r12, r12, #REGION_END
+	sub	r12, r12, #WAKE_PAGE        @ the wake page: dscm_irq first
+	ldr	r1, [r12, #IRQ_QUIET]
+	cmp	r1, #0
+	beq	3f
+	ldrb	r0, [r12, #IRQ_ALIAS_CACHED]
+	ldrh	r2, [r12, #PAGE_H + H_RESET_PENDING]
+	orrs	r0, r0, r2
+	bne	3f
+	mov	r2, #MIRROR_HI
+	orr	r2, r2, #(HDR_MIRROR - MIRROR_HI)
+	ldr	r0, [r2, #HDR_VBLANK_COUNT]
+	add	r0, r0, #1
+	cmp	r0, r1
+	beq	2f
+3:
 	@ The module's data must be writable under the game's MPU right now:
 	@ NitroSDK's CTRDG_Init makes the GBA-slot region (0x08000000-
 	@ 0x0FFFFFFF, which holds the 0x0C000000 mirror our data goes through)
@@ -170,10 +199,10 @@ halt_entry:
 	mcr	p15, 0, r0, c7, c0, 4       @ wait for interrupt
 	bx	lr
 
-@ The entries below stay where they were before the MPU check grew
-@ halt_entry (init_entry and reset_entry moved to .text_cold): hot code at
-@ pinned addresses (hot-layout.ref).
-	.org	0xEC
+@ The entries below stay at a pinned offset (init_entry and reset_entry
+@ moved to .text_cold): hot code at pinned addresses (hot-layout.ref). 0xEC
+@ until the no-op wake fast path grew halt_entry by 0x44.
+	.org	0x130
 
 @ void dscm_publish_notify(uint32_t count): store the unlock count and clean
 @ its cache line to RAM so the ARM7 sees it.

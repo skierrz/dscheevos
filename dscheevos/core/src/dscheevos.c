@@ -4107,6 +4107,11 @@ void dsc_http_done(void* handle, int http_status, const char* body, size_t body_
   S.http_answered++;
 }
 
+int dsc_capture_settled(void)
+{
+  return S.active && S.config.capture_at_halt == DSC_CAPTURE_ONCE && Q.taken == Q.frames && !S.stage_failed;
+}
+
 int dsc_work_pending(void)
 {
   return S.initialized && (drain_end() != Q.taken || S.items_in != S.items_out || S.http_answered != S.http_taken);

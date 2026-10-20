@@ -169,7 +169,11 @@ typedef struct dscm_irq_t {
   volatile uint32_t idle_cut_lines;
   uint32_t idle_cut;
   uint32_t frames_missed;
-  uint32_t reserved2[5];
+  /* last_vblank + 1 when the last full wake left nothing to do (no work
+   * wanted, the frame's capture committed); 0 otherwise. start.s's
+   * halt_entry then halts at once until the next VBlank (the fast path). */
+  volatile uint32_t quiet_vbl;
+  uint32_t reserved2[4];
 } dscm_irq_t;
 /* Idle lines per frame, from the idle thread, with IRQs masked: at each
  * pass's start and end it closes the frames that ended since (VBlanks
@@ -232,6 +236,7 @@ _Static_assert(offsetof(dscm_irq_t, on) == 8 && offsetof(dscm_irq_t, data_region
 _Static_assert(offsetof(dscm_irq_t, idle_start) == 16 && offsetof(dscm_irq_t, timed_frames) == 20 && offsetof(dscm_irq_t, irq_lines_total) == 24, "dscm_irq");
 _Static_assert(offsetof(dscm_irq_t, irq_lines_last) == 28 && offsetof(dscm_irq_t, irq_lines_max) == 30, "dscm_irq");
 _Static_assert(offsetof(dscm_irq_t, idle_cut_lines) == 32 && offsetof(dscm_irq_t, idle_cut) == 36 && offsetof(dscm_irq_t, frames_missed) == 40, "dscm_irq");
+_Static_assert(offsetof(dscm_irq_t, alias_cached) == 11 && offsetof(dscm_irq_t, quiet_vbl) == 44 && offsetof(dscm_header_t, vblank_count) == 0x24, "start.s IRQ_ALIAS_CACHED, IRQ_QUIET, HDR_VBLANK_COUNT");
 #define g_frames (dscm_irq.frames)
 
 /* The ARM7's VBlank count, written behind the data cache. Through the
@@ -994,6 +999,12 @@ WAKE_CODE int module_idle(int idle_loop)
    * Star Ultra's streaming for a minute (tests/perf/AB.md). */
   {
     uint32_t cpsr = capture(WP);
+    /* Nothing left for this frame: until the next VBlank, a wake is the
+     * stock halt (start.s fast path), touching no line of ours but the few
+     * words it reads. Every later wake of this frame would find the same:
+     * no work wanted (H changes only in passes, or reset_entry, which the
+     * fast path checks), and a capture that takes nothing. */
+    dscm_irq.quiet_vbl = (!work_wanted(WP) && dsc_capture_settled()) ? dscm_irq.last_vblank + 1 : 0;
     start = dscm_irq.idle_start;
     /* else a VBlank came meanwhile and counted the pass */
     idle_frames(WP, wake_swap(&dscm_irq.idle_open, 0) ? lines_since(start) : 0);
