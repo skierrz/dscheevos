@@ -3400,6 +3400,9 @@ WAKE int dsc_capture(void)
 
   if (!S.active || !S.config.capture_at_halt)
     return -1;
+#ifdef DSC_LAB_NO_CAPTURE
+  return -1;    /* LAB (not for merge): the wake path's cost alone, no copy */
+#endif
   drain();
   /* capture once: the newest queued frame is committed once it has its
    * capture; until a VBlank queues the next, nothing more to take */
