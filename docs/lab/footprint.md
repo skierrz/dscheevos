@@ -738,3 +738,32 @@ moves vblank_count). Stats: fast-path wakes are not counted in halts_idle or the
 entries after halt_entry move 0xEC -> 0x130; C hot code unchanged (hotcheck 161 symbols).
 - Starfy (single run, same set/script/window): 2.85% -> 0.92% (I+D 10.3k), 3006/3006 frames evaluated, 0 dropped.
 - Full catalogue (tag wakefast) running; then suite, behaviour gate, merge into stack.
+
+## The fast path judged, a behaviour finding, and IRQ hold-off (2026-10-20 night)
+
+Catalogue `wakefast` (73fa3478) vs stack-tls-all: max 2.85 -> 1.11%, over 1% 2 -> 1 (MKDS 1.11), median 0.26 -> 0.24%,
+p90 equal, drops equal. Lag sum rose (window +31 -> +139): all NSMB, whose achievements-on lag is bimodal on both
+builds (repeat runs: wakefast 142 / 283, stack 238; off 154 every time). Suite 12/12 PASS.
+
+Behaviour gate (tests/behaviour; Starfy added, generic script): Kirby, MKDS, Black, Digimon PASS on screens, lag,
+input. Starfy FAILED lag (37 vs 36 at frame 4551), input (1 frame), top screen (90 frames) and diverged in sound. The
+`stack` build on the same gate: lag/input/top PASS, bottom screen FAIL (354 frames from 3649): pre-existing. Frame 4551
+ends a 5-frame load; then the module catches up with IRQs masked ~81-88k cycles a frame and a pending game IRQ waits
+up to 6.7k (stack) / 9-10.5k (wakefast) cycles. Starfy's raster effects run off its ~420 IRQs a frame.
+
+Runner --holdoff-attr (melonDS footprint2-lab 85002582): every hold-off >= 2000 cycles by (start PC, last PC of ours).
+Starfy: ~11.5k-cycle hold-offs from the start of the masked capture to its first interrupt_pending poll; the long
+ones begin in dsc_capture and capture_places. capture_places (COLD) was meant to run rarely ("after the ring moved")
+but runs nearly every frame (the ring moves at every commit), masked.
+
+Fix (wakefast 64784d7d): dsc_drain (called by capture() with IRQs on just before masking) works out the arena
+places of the capture still due; dsc_capture redoes it only if a VBlank came between. Starfy window: longest
+hold-off per frame median 4.5k -> 2.4k, p90 5.4k -> 4.3k, max 5.9k -> 4.7k; cost unchanged (0.92%).
+- Behaviour gate on this build: Starfy top screen PASS, lag PASS (36/36), input PASS, sound commands 8 frames moved
+  (sequence identical); bottom screen still FAIL (293 frames, pre-existing; was 354). Kirby PASS on every category incl.
+  sound commands; MKDS, Black, Digimon PASS screens/lag/input, sound commands only moved between frames.
+- Catalogue `wakefast2` vs stack-tls-all: median 0.26%, p90 0.72%, max 2.85 -> 1.01%, over 1%: 2 -> 1 (MKDS 1.01),
+  drops equal, lag sums window -37 / whole run 0.
+- Merged into `stack` (fast-forward, 64784d7d, pushed).
+Remaining hold-offs: from dsc_capture's start to its first poll, up to ~9k when a VBlank lands between the unmasked
+drain and the masked copy (rare), ~4k typical. Starfy's bottom screen difference likely the same family; next.
