@@ -9,7 +9,7 @@ mkdir -p "$repo/dscheevos/module/build"
 cp "$src/dscheevos9.bin" "$src/dscheevos9.map" "$repo/dscheevos/module/build/"
 mkdir -p "$work"
 ROM="$rom" WORK="$work" SHOTS="$shots" "$HOME/Developer/DScheevos/bin/emu-lock" -l striplab \
-  "$repo/tests/perf/hardtimeout" 1500 "$repo/tests/twilight/run.sh" "$repo/tests/bootstrap/sets/pipeline.json" "$frames" "$@" || true
+  "$repo/tests/perf/hardtimeout" 1500 "$repo/tests/twilight/run.sh" "${SET:-$repo/tests/bootstrap/sets/pipeline.json}" "$frames" "$@" || true
 for f in "$work"/main/screen.ppm.f*.ppm; do
   [ -f "$f" ] && python3 -c 'import sys; from PIL import Image; Image.open(sys.argv[1]).save(sys.argv[2])' "$f" "${f%.ppm}.png" && rm -f "$f"
 done

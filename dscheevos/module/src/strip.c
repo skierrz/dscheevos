@@ -61,10 +61,18 @@
 #ifndef STRIP_ROWS
 #define STRIP_ROWS 16                 /* the compact layout; 32 = the full one */
 #endif
+#ifdef STRIP_RELAXED
+#define RELAXED 1                     /* experiment: the game's IRQ handlers may run while the bar is up */
+#else
+#define RELAXED 0
+#endif
 #ifndef STRIP_RESUME
 #define STRIP_RESUME 0
 #endif
 #define ROWS STRIP_ROWS
+#if defined(STRIP_OBSERVE) || defined(STRIP_RELAXED)
+#define STRIP_RSCORE 1                /* also score positions with the game's IRQ handlers allowed */
+#endif
 #define MARGIN 2                      /* rows fed past the bar: a late switch shows our background */
 #define FIRST_MAX (191 - ROWS)        /* the bar ends by line 190; 191 is always the game's */
 #define LEARN_FRAMES 300               /* 5 s of watching, then pick */
@@ -95,6 +103,9 @@ static struct {
   uint16_t h_vc;                      /* VCOUNT at the last halt */
   uint32_t h_line;                    /* that halt as an absolute line */
   uint32_t last_line;                 /* the latest absolute line seen */
+  uint32_t wake_line;                 /* RELAXED: the last wake while the bar was armed (absolute) */
+  uint8_t woke_armed;                 /* RELAXED: a wake let the game run with the bar armed */
+  uint8_t relax_off;                  /* RELAXED: turned off for this session (the game wrote DISPCNT) */
   uint32_t head;                      /* ring entries written */
   uint32_t miss_run;                  /* frames in a row with something to show and no full bar */
   uint32_t down_until;                /* stood down until this frame */
@@ -108,10 +119,10 @@ static struct {
   uint32_t frame;                     /* frame being accumulated */
   uint8_t started;
   uint8_t paused[194], woke[194];     /* lines -2..191 of that frame */
-#ifdef STRIP_OBSERVE
+#ifdef STRIP_RSCORE
   /* The same, if the game's interrupt handlers were allowed to run while the
    * bar is up: a wake after which the game halts again within a line counts
-   * as no wake (only a handler ran, no game thread). Measurement only. */
+   * as no wake (only a handler ran, no game thread). */
   uint8_t rpaused[194], rwoke[194];
   uint32_t prev_b;
   uint16_t rfull[192];
@@ -182,14 +193,8 @@ static void build_tables(uint32_t base, uint32_t first) {
 
 /* ---- learning: score each possible position from the halt/wake log ---- */
 
-#ifdef STRIP_OBSERVE
-/* Every OBS_FRAMES frames: the best position's count, strict and relaxed,
- * anywhere and at the bottom edge; then the counts start over. */
-#define OBS_FRAMES 300
-#define OBS_MAX 64
-uint16_t dscm_strip_obs[OBS_MAX][7];  /* frames, best strict, its line, strict at 175, best relaxed, its line, relaxed at 175 */
-uint32_t dscm_strip_obs_n;
-static void observe_frame(void) {
+#ifdef STRIP_RSCORE
+static void relax_score(void) {
   uint32_t run = 0;
   for (int i = 0; i < 194; i++) {
     const int line = i - 2;
@@ -201,6 +206,17 @@ static void observe_frame(void) {
   }
   memset(L.rpaused, 0, sizeof L.rpaused);
   memset(L.rwoke, 0, sizeof L.rwoke);
+}
+#endif
+
+#ifdef STRIP_OBSERVE
+/* Every OBS_FRAMES frames: the best position's count, strict and relaxed,
+ * anywhere and at the bottom edge; then the counts start over. */
+#define OBS_FRAMES 300
+#define OBS_MAX 64
+uint16_t dscm_strip_obs[OBS_MAX][7];  /* frames, best strict, its line, strict at 175, best relaxed, its line, relaxed at 175 */
+uint32_t dscm_strip_obs_n;
+static void observe_frame(void) {
   if (++L.obs_frames >= OBS_FRAMES) {
     uint16_t* o = dscm_strip_obs[dscm_strip_obs_n++ % OBS_MAX];
     int bs = 0, br = 0;
@@ -219,6 +235,9 @@ static void observe_frame(void) {
 
 static void score_frame(void) {
   uint32_t run = 0;
+#ifdef STRIP_RSCORE
+  relax_score();
+#endif
 #ifdef STRIP_OBSERVE
   observe_frame();
 #endif
@@ -262,7 +281,7 @@ static void learn_interval(uint32_t a, uint32_t b) {
     const uint32_t base = f * 263u;
     const uint32_t lo = a > base - 2 ? a : base - 2, hi = b < base + 192 ? b : base + 192;
     for (uint32_t x = lo; x < hi; x++) L.paused[x - base + 2] = 1;
-#ifdef STRIP_OBSERVE
+#ifdef STRIP_RSCORE
     /* the game ran for at most a line since the last wake: a handler only */
     if (f == fa && a - L.prev_b <= 1 && L.prev_b >= base - 2 && L.prev_b < base + 192) {
       L.rwoke[L.prev_b - base + 2] = 0;
@@ -272,11 +291,11 @@ static void learn_interval(uint32_t a, uint32_t b) {
     if (f == fb) {
       if (b >= base - 2 && b < base + 192) {
         L.woke[b - base + 2] = 1;
-#ifdef STRIP_OBSERVE
+#ifdef STRIP_RSCORE
         L.rwoke[b - base + 2] = 1;
 #endif
       }
-#ifdef STRIP_OBSERVE
+#ifdef STRIP_RSCORE
       L.prev_b = b;
 #endif
       break;
@@ -304,6 +323,9 @@ static void learn(void) {
  * than 10% better: it shouldn't move from one notice to the next. */
 static uint32_t score_at(int f) {
   uint32_t sc = L.full[f];
+#ifdef STRIP_RSCORE
+  if (RELAXED && !S.relax_off) sc = L.rfull[f];
+#endif
   if (STRIP_RESUME) { sc = 0; for (int l = f; l < f + ROWS; l++) sc += L.lines[l]; sc /= ROWS; }
   return sc;
 }
@@ -455,6 +477,52 @@ int dscm_strip_active(void) { return S.rows != 0 || S.record; }
 
 /* ---- the module's last halt, IRQs masked ---- */
 
+/* Stop every channel and give the game its mode back. */
+static void stop_bar(void) {
+  NDMA_CNT(CH_TABLE) = 0;
+  NDMA_CNT(CH_START) = 0;
+  NDMA_CNT(CH_FIFO) = 0;
+  while (NDMA_CNT(CH_TABLE) & NDMA_ON) {}       /* no table write may land after the restore */
+  if ((DISPCNT_MODE & 3) == 3) {
+    DISPCNT_MODE = (uint8_t)((DISPCNT_MODE & ~3) | 1);
+    dscm_strip_stats.mode_fixed++;
+  }
+  S.armed = 0;
+  S.woke_armed = 0;
+}
+
+#if RELAXED
+/* RELAXED, at a halt with the bar still armed after a wake let the game
+ * run. Returns 1 if the bar stays armed. Checks, in order:
+ * - the table has run out: the bar showed whole (handlers ran inside it);
+ * - DISPCNT's other bits changed: the game wrote it while the bar was up.
+ *   Stop at once and keep the game's bits; no relaxed bar for the rest of
+ *   the session (the table could undo a later write of the game's);
+ * - the game ran longer than a line since the wake: a game thread worked
+ *   while the bar was up (the cost this experiment measures). */
+static int relaxed_halt(uint32_t now) {
+  if (!(NDMA_CNT(CH_TABLE) & NDMA_ON)) {
+    stop_bar();                                 /* the feed and starter are done too; mode is 1 again */
+    S.frame_flags |= 2;
+    dscm_strip_stats.wakes_done++;
+    return 0;
+  }
+  if ((DISPCNT_A ^ S.base) & ~0x30000u) {
+    stop_bar();
+    S.relax_off = 1;
+    S.frame_flags |= 4;
+    dscm_strip_stats.game_dispcnt++;
+    return 0;
+  }
+  if (S.woke_armed && now - S.wake_line > 1) {
+    dscm_strip_stats.work_under++;
+    dscm_strip_stats.work_lines += now - S.wake_line;
+  }
+  S.woke_armed = 0;
+  return 1;
+}
+#endif
+
 /* An absolute line from the VBlank count and VCOUNT. The count is the ARM7's
  * and can lag the ARM9's wake at line 192 by a little: time never runs
  * backwards, so a line that would be earlier than the last one seen belongs
@@ -470,7 +538,10 @@ void dscm_strip_arm(uint32_t vblanks) {
   uint32_t vc, start, end;
   int resume = 0;
   vc = REG_VCOUNT;
-  if (S.record) S.h_line = abs_line(vblanks, vc);
+  if (S.record || RELAXED) S.h_line = abs_line(vblanks, vc);
+#if RELAXED
+  if (S.armed && !S.relax_off && relaxed_halt(S.h_line)) return;
+#endif
   if (!S.rows || S.armed) return;
   end = S.first + ROWS - 1;
   if (vc >= 192) {
@@ -541,22 +612,27 @@ void dscm_strip_arm(uint32_t vblanks) {
 void dscm_strip_wake(uint32_t vblanks) {
   uint32_t vc = REG_VCOUNT;
   int done;
-  if (S.record) {
-    g_ring[S.head % RING].a = S.h_line;
-    g_ring[S.head % RING].b = abs_line(vblanks, vc);
-    S.head++;
+  if (S.record || RELAXED) {
+    const uint32_t now = abs_line(vblanks, vc);
+    if (S.record) {
+      g_ring[S.head % RING].a = S.h_line;
+      g_ring[S.head % RING].b = now;
+      S.head++;
+    }
+#if RELAXED
+    /* The game's handler runs with the bar armed. The checks come at the
+     * next halt; a VBlank always ends it (the table is done by line 191). */
+    if (S.armed && !S.relax_off && vc < 192) {
+      S.wake_line = now;
+      S.woke_armed = 1;
+      dscm_strip_stats.relaxed_wakes++;
+      return;
+    }
+#endif
   }
   if (!S.armed) return;
   done = !(NDMA_CNT(CH_TABLE) & NDMA_ON);       /* the table ran out: every bar line was shown */
-  NDMA_CNT(CH_TABLE) = 0;
-  NDMA_CNT(CH_START) = 0;
-  NDMA_CNT(CH_FIFO) = 0;
-  while (NDMA_CNT(CH_TABLE) & NDMA_ON) {}       /* no table write may land after the restore */
-  if ((DISPCNT_MODE & 3) == 3) {
-    DISPCNT_MODE = (uint8_t)((DISPCNT_MODE & ~3) | 1);
-    dscm_strip_stats.mode_fixed++;
-  }
-  S.armed = 0;
+  stop_bar();
   vc = REG_VCOUNT;
   if (done) {
     S.frame_flags |= 2;
@@ -574,5 +650,5 @@ void dscm_strip_wake(uint32_t vblanks) {
 void dscm_strip_publish(struct dscm_status_t* st) {
   st->irq_lines_total = dscm_strip_stats.frames_full;
   st->irq_lines_max = dscm_strip_stats.frames_armed;
-  st->irq_lines_last = dscm_strip_stats.frames_cut;
+  st->irq_lines_last = RELAXED ? dscm_strip_stats.work_under : dscm_strip_stats.frames_cut;
 }
