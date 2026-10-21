@@ -7,6 +7,9 @@
 #include "net/net.h"
 #include "heap.h"
 #include "util/rc_version.h"
+#ifdef DSCM_STRIP
+#include "strip.h"
+#endif
 
 #include <stddef.h>
 
@@ -683,6 +686,9 @@ int module_init(const dscm_boot_t* boot)
   config.username = g_boot.username;
   config.token = g_boot.token;
   config.hardcore = g_boot.hardcore;
+#ifdef DSCM_STRIP
+  dscm_strip_init(g_boot.hardcore);
+#endif
   config.spectator = (g_boot.flags & DSCM_BOOT_SPECTATOR) ? 1 : 0;
   config.max_addresses = 4096;
   config.snapshot_slots = 1024;          /* ~17 s of frames with no idle time (loading, save writes) */
@@ -895,6 +901,10 @@ static int idle_step_locked(void)
     clean_notices();
     update_cues();
   }
+#ifdef DSCM_STRIP
+  if (new_frame)
+    dscm_strip_frame(g_frames);
+#endif
 
   /* Then the network: achievements come first. Every pass while something
    * is in flight or waiting, else once a frame for lwIP's timers and frames
@@ -914,6 +924,10 @@ static int idle_step_locked(void)
   H.more = dsc_work_pending() != 0;
   if (new_frame || evaluated)
     publish_stats();
+#ifdef DSCM_STRIP
+  if (new_frame)
+    dscm_strip_publish(&dscm_g_status);
+#endif
   return 1;
 }
 
@@ -1005,11 +1019,21 @@ WAKE_CODE int module_idle(int idle_loop)
      * no work wanted (H changes only in passes, or reset_entry, which the
      * fast path checks), and a capture that takes nothing. */
     dscm_irq.quiet_vbl = (!work_wanted(WP) && dsc_capture_settled()) ? dscm_irq.last_vblank + 1 : 0;
+#ifdef DSCM_STRIP
+    if (dscm_strip_active())
+      dscm_irq.quiet_vbl = 0;   /* every wake comes back here, to arm again */
+#endif
     start = dscm_irq.idle_start;
     /* else a VBlank came meanwhile and counted the pass */
     idle_frames(WP, wake_swap(&dscm_irq.idle_open, 0) ? lines_since(start) : 0);
     H.busy = 0;       /* IRQs masked: nothing runs before the halt */
+#ifdef DSCM_STRIP
+    dscm_strip_arm(vblank_count(WP));
+#endif
     wake_wfi();
+#ifdef DSCM_STRIP
+    dscm_strip_wake(vblank_count(WP));
+#endif
     wake_irq_restore(cpsr);
     return 1;   /* halted here */
   }

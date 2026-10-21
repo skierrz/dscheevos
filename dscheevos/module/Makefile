@@ -71,8 +71,23 @@ OBJ := $(patsubst %.c,$(BUILD)/%.o,$(notdir $(SRC))) $(patsubst $(RCHEEVOS)/src/
   $(patsubst $(LWIP)/src/%.c,$(BUILD)/lwip/%.o,$(LWIP_SRC)) $(patsubst $(MBEDTLS)/library/%.c,$(BUILD)/tls/%.o,$(TLS_SRC)) \
   $(patsubst %.c,$(BUILD)/net/%.o,$(notdir $(NET_SRC)))
 
+# LAB ONLY (branch strip-lab): STRIP=1 adds the bottom notice strip (src/strip.c) and the display
+# library. Generate the font first, on the host: make -C ../display build/font_latin.c
+.DEFAULT_GOAL := all
+ifeq ($(STRIP),1)
+CFLAGS   += -DDSCM_STRIP -I../display/include
+DSD_SRC  := ../display/src/dsd_sched.c ../display/src/dsd_render.c ../display/src/dsd_badge.c
+OBJ      += $(BUILD)/strip.o $(patsubst %.c,$(BUILD)/dsd/%.o,$(notdir $(DSD_SRC))) $(BUILD)/dsd/font_latin.o
+$(BUILD)/dsd/%.o: ../display/src/%.c ../display/include/dsd.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD)/dsd/font_latin.o: ../display/build/font_latin.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
+endif
+
 # the hot-layout check (below) runs for the default build only: no colour, script or flag overrides
-HOTCHECK ?= $(if $(CACHED_COLOUR)$(WAKE_COLOUR)$(TEXT_COLOUR)$(DATA_COLOUR)$(LDSCRIPT)$(EXTRA_CFLAGS)$(EXTRA_LDFLAGS)$(filter-out file,$(origin DSC_FLAGS))$(filter-out 1,$(DATA_MIRROR))$(filter command line,$(origin STACK_GAP)),0,1)
+HOTCHECK ?= $(if $(STRIP)$(CACHED_COLOUR)$(WAKE_COLOUR)$(TEXT_COLOUR)$(DATA_COLOUR)$(LDSCRIPT)$(EXTRA_CFLAGS)$(EXTRA_LDFLAGS)$(filter-out file,$(origin DSC_FLAGS))$(filter-out 1,$(DATA_MIRROR))$(filter command line,$(origin STACK_GAP)),0,1)
 .PHONY: all clean hotcheck hot-accept
 all: $(BUILD)/dscheevos9.bin $(if $(filter 1,$(HOTCHECK)),hotcheck)
 

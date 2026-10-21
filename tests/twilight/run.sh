@@ -85,6 +85,8 @@ cp "$BOOTSTRAP" "$sd0/_nds/dscheevos/nds-bootstrap.nds"
 
 # Pick the game: it is the only one in roms/nds, so the cursor is already on it.
 printf '# TWiLight Menu++ DSi theme: A on the selected game\n%s 0x1 6\n' "$press_a" > "$work/keys.txt"
+# LAB (strip-lab): extra script lines, e.g. "3400 SHOT"
+[ -z "${EXTRA_SCRIPT:-}" ] || printf '%b\n' "$EXTRA_SCRIPT" >> "$work/keys.txt"
 
 topng() { python3 -c 'import sys; from PIL import Image; Image.open(sys.argv[1]).save(sys.argv[2])' "$1" "$2" 2>/dev/null && rm -f "$1"; }
 
@@ -101,7 +103,7 @@ run() { # run NAME FRAMES
   mock=$!
   sleep 1
   # (the runner needs --rom, which also goes in slot 1; neither boot path starts it from there)
-  "$RUNNER" $(dsc_runner_flags) --mode dsi --rom "$d/sd/BOOT.NDS" $boot_args \
+  "$RUNNER" $(dsc_runner_flags) ${RUNNER_ARGS:-} --mode dsi --rom "$d/sd/BOOT.NDS" $boot_args \
     --bios-dir "$DSI_FILES" --nand "$d/nand.bin" --sd "$d/sd" --net --frames "$2" --script "$work/keys.txt" \
     --screenshot "$d/screen.ppm" --dump-ram "$d/ram.bin" > "$d/runner.log" 2>&1 || true
   kill $mock 2>/dev/null; wait $mock 2>/dev/null || true; mock=

@@ -24,3 +24,4 @@ nand*.bin
 # macOS
 .DS_Store
 __pycache__/
+/dscheevos/module/build-*/
