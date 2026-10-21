@@ -181,6 +181,19 @@ notice is up: Kirby 60k -> 250k cycles a frame averaged over a run with an unloc
 the bar only, nothing sent. Checked with the 2026-10-20 kit's launcher and nds-bootstrap: Kirby gameplay 6 test
 notices, whole bar on 886 of 1106 notice frames, lag 276 (base 280); Phoenix Wright 780 of 780.
 
+## Round 4 (2026-10-21): narrower DMA guard, late arming
+
+- The guard for the game's own H-Blank DMA reads its destination (DMAxDAD) and only steps aside if it can write
+  DISPCNT or the display FIFO; an unreadable destination (0) still counts as can. NSMB's title screen: 0-10% ->
+  89% whole bar (its DMA targets other registers).
+- Relaxed bar, games that wake on nearly every line (more than 60 wakes last frame): arm only in the 5 lines
+  before the bar, so the table writes DISPCNT on the bar's lines only. Kirby gameplay 77% -> 94% whole bar, game
+  work under the bar 2787 -> 287 times (7 -> 9 lines each); Animal Crossing 94% -> 86%, 4462 -> 877. Lag and game
+  cycles equal to the base in all three.
+- Part D/E modules rebuilt from 0f189cfe and checked with the 2026-10-20 kit's launcher and nds-bootstrap: Part D
+  Phoenix Wright 677 of 682, Kirby untouched; Part E Kirby gameplay 1057 of 1087 (6 test notices, 85 work-under),
+  Phoenix Wright 780 of 780.
+
 ## Not covered
 
 - Real hardware: bus contention (H5), ARM7 audio under the FIFO (A7), whether the DSi feeds a mid-frame FIFO
