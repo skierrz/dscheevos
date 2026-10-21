@@ -110,6 +110,7 @@ static struct {
   uint32_t wake_line;                 /* RELAXED: the last wake while the bar was armed (absolute) */
   uint8_t woke_armed;                 /* RELAXED: a wake let the game run with the bar armed */
   uint8_t relax_off;                  /* RELAXED: turned off for this session (the game wrote DISPCNT) */
+  uint32_t wakes, wakes_last;         /* wakes this frame / last frame */
   uint32_t head;                      /* ring entries written */
   uint32_t miss_run;                  /* frames in a row with something to show and no full bar */
   uint32_t down_until;                /* stood down until this frame */
@@ -364,6 +365,8 @@ void dscm_strip_frame(uint32_t frame) {
   int rows = 0;
 
   learn();
+  S.wakes_last = S.wakes;
+  S.wakes = 0;
   if (S.rows) {
     if (S.frame_flags & 2) {
       S.miss_run = 0;
@@ -563,6 +566,15 @@ void dscm_strip_arm(uint32_t vblanks) {
 #endif
   if (!S.rows || S.armed) return;
   end = S.first + ROWS - 1;
+#if RELAXED
+  /* A game that wakes on nearly every line (many wakes last frame): arm only
+   * just before the bar, so the table writes DISPCNT on the bar's lines and
+   * not from early in the frame: a game write before the bar can't be undone. */
+  if (!S.relax_off && S.wakes_last > 60 && (vc >= 192 || vc + 5 < S.first)) {
+    dscm_strip_stats.late_waits++;
+    return;
+  }
+#endif
   if (vc >= 192) {
     /* In VBlank (the game finished its frame early and waits for the next):
      * H-Blank DMAs don't run during VBlank, so the table starts at line 0. */
@@ -582,14 +594,34 @@ void dscm_strip_arm(uint32_t vblanks) {
     dscm_strip_stats.skip_busy++;
     return;
   }
-  /* The game's own DMAs (their destinations can't be read back): one that
-   * starts on H-Blank (raster effects; it could target DISPCNT), on the
-   * display FIFO, or on the geometry FIFO (3D work the bar's bus use could
-   * slow) keeps the bar off. */
+  /* The game's own DMAs: one on the display FIFO, or on the geometry FIFO
+   * (3D work the bar's bus use could slow), keeps the bar off. One that
+   * starts on H-Blank (raster effects) keeps it off only if it could write
+   * DISPCNT or the FIFO: its destination is read back (DMAxDAD), and a 0
+   * (a DSi that doesn't let it be read) counts as could. */
   for (int x = 0; x < 4; x++) {
     const uint32_t c = REG32(0x040000B8 + x * 12);
     const uint32_t t = c >> 27 & 7;
-    if ((c & (1u << 31)) && (t == 2 || t == 4 || t == 7)) { dscm_strip_stats.skip_gamedma++; return; }
+    if (!(c & (1u << 31))) continue;
+    if (t == 4 || t == 7) { dscm_strip_stats.skip_gamedma++; return; }
+    if (t == 2) {
+      const uint32_t dad = REG32(0x040000B4 + x * 12) & 0x0FFFFFFFu;
+      const uint32_t unit = (c & (1u << 26)) ? 4 : 2;
+      const uint32_t units = (c & 0x1FFFFF) ? (c & 0x1FFFFF) : 0x200000;
+      const uint32_t dc = c >> 21 & 3;        /* 0 increment, 1 decrement, 2 fixed, 3 increment and reload */
+      /* the bytes it may write: one unit if fixed, else the block, below DAD
+       * when decrementing (a repeating increment without reload moves on,
+       * so the whole block is a lower bound: also block if it ever passes) */
+      const uint32_t lo = dc == 1 ? dad - (units - 1) * unit : dad;
+      const uint32_t hi = dc == 2 ? dad + unit : dc == 1 ? dad + unit : dad + units * unit;
+      const int may_hit = !dad || (dc == 0 && (c & (1u << 25)))          /* repeating, moving on: unknown */
+                          || (lo < 0x04000004u && hi > 0x04000000u) || (lo <= 0x04000068u && hi > 0x04000068u);
+      if (may_hit) {
+        dscm_strip_stats.skip_gamedma++;
+        return;
+      }
+      dscm_strip_stats.gamedma_ok++;
+    }
   }
   {
     const uint32_t row = resume ? vc + 1 - S.first : 0;   /* the bar's row the next line shows */
@@ -631,6 +663,7 @@ void dscm_strip_arm(uint32_t vblanks) {
 void dscm_strip_wake(uint32_t vblanks) {
   uint32_t vc = REG_VCOUNT;
   int done;
+  S.wakes++;
   if (S.record || RELAXED) {
     const uint32_t now = abs_line(vblanks, vc);
     if (S.record) {
