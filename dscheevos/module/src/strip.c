@@ -108,6 +108,15 @@ static struct {
   uint32_t frame;                     /* frame being accumulated */
   uint8_t started;
   uint8_t paused[194], woke[194];     /* lines -2..191 of that frame */
+#ifdef STRIP_OBSERVE
+  /* The same, if the game's interrupt handlers were allowed to run while the
+   * bar is up: a wake after which the game halts again within a line counts
+   * as no wake (only a handler ran, no game thread). Measurement only. */
+  uint8_t rpaused[194], rwoke[194];
+  uint32_t prev_b;
+  uint16_t rfull[192];
+  uint32_t obs_frames;
+#endif
   uint32_t frames;                    /* frames scored */
   uint16_t full[192];                 /* frames in which a bar starting at this line would have shown whole */
   uint16_t lines[192];                /* frames in which this line was paused (for STRIP_RESUME) */
@@ -173,8 +182,46 @@ static void build_tables(uint32_t base, uint32_t first) {
 
 /* ---- learning: score each possible position from the halt/wake log ---- */
 
+#ifdef STRIP_OBSERVE
+/* Every OBS_FRAMES frames: the best position's count, strict and relaxed,
+ * anywhere and at the bottom edge; then the counts start over. */
+#define OBS_FRAMES 300
+#define OBS_MAX 64
+uint16_t dscm_strip_obs[OBS_MAX][7];  /* frames, best strict, its line, strict at 175, best relaxed, its line, relaxed at 175 */
+uint32_t dscm_strip_obs_n;
+static void observe_frame(void) {
+  uint32_t run = 0;
+  for (int i = 0; i < 194; i++) {
+    const int line = i - 2;
+    run = (L.rpaused[i] || L.paused[i]) && !L.rwoke[i] ? run + 1 : 0;
+    if (line >= ROWS - 1 && run >= ROWS + 2u) {
+      const int first = line - ROWS + 1;
+      if (first <= FIRST_MAX && L.rfull[first] < 0xFFFF) L.rfull[first]++;
+    }
+  }
+  memset(L.rpaused, 0, sizeof L.rpaused);
+  memset(L.rwoke, 0, sizeof L.rwoke);
+  if (++L.obs_frames >= OBS_FRAMES) {
+    uint16_t* o = dscm_strip_obs[dscm_strip_obs_n++ % OBS_MAX];
+    int bs = 0, br = 0;
+    for (int f = 1; f <= FIRST_MAX; f++) {
+      if (L.full[f] > L.full[bs]) bs = f;
+      if (L.rfull[f] > L.rfull[br]) br = f;
+    }
+    o[0] = (uint16_t)L.obs_frames; o[1] = L.full[bs]; o[2] = (uint16_t)bs; o[3] = L.full[FIRST_MAX];
+    o[4] = L.rfull[br]; o[5] = (uint16_t)br; o[6] = L.rfull[FIRST_MAX];
+    L.obs_frames = 0;
+    memset(L.full, 0, sizeof L.full);
+    memset(L.rfull, 0, sizeof L.rfull);
+  }
+}
+#endif
+
 static void score_frame(void) {
   uint32_t run = 0;
+#ifdef STRIP_OBSERVE
+  observe_frame();
+#endif
   for (int i = 0; i < 194; i++) {
     const int line = i - 2;
     run = L.paused[i] && !L.woke[i] ? run + 1 : 0;
@@ -196,7 +243,7 @@ static uint32_t frame_of(uint32_t x) { return (x + 71u) / 263u; }
 
 static void learn_interval(uint32_t a, uint32_t b) {
   uint32_t fa = frame_of(a), fb = frame_of(b), f;
-  if (b <= a || fb - fa > 600) return;  /* clock skew, or a stretch too long to matter */
+  if (b < a || fb - fa > 600) return;   /* clock skew, or a stretch too long to matter */
   if (fa < 2) return;                   /* the session's first frames: no line before them */
   if (!L.started || fa > L.frame + 30) {
     /* the first entry, or logging resumed after a quiet stretch: start
@@ -215,8 +262,23 @@ static void learn_interval(uint32_t a, uint32_t b) {
     const uint32_t base = f * 263u;
     const uint32_t lo = a > base - 2 ? a : base - 2, hi = b < base + 192 ? b : base + 192;
     for (uint32_t x = lo; x < hi; x++) L.paused[x - base + 2] = 1;
+#ifdef STRIP_OBSERVE
+    /* the game ran for at most a line since the last wake: a handler only */
+    if (f == fa && a - L.prev_b <= 1 && L.prev_b >= base - 2 && L.prev_b < base + 192) {
+      L.rwoke[L.prev_b - base + 2] = 0;
+      for (uint32_t x = L.prev_b; x < a && x < base + 192; x++) L.rpaused[x - base + 2] = 1;
+    }
+#endif
     if (f == fb) {
-      if (b >= base - 2 && b < base + 192) L.woke[b - base + 2] = 1;
+      if (b >= base - 2 && b < base + 192) {
+        L.woke[b - base + 2] = 1;
+#ifdef STRIP_OBSERVE
+        L.rwoke[b - base + 2] = 1;
+#endif
+      }
+#ifdef STRIP_OBSERVE
+      L.prev_b = b;
+#endif
       break;
     }
     score_frame();
@@ -328,7 +390,11 @@ void dscm_strip_frame(uint32_t frame) {
 
   dsd_ingest(&g_dsd, &dscm_g_notices);
   dsd_tick(&g_dsd, frame, &caps);
+#ifdef STRIP_OBSERVE
+  S.record = 1;                         /* measurement build: watch every wake, all session */
+#else
   S.record = learning || S.rows != 0;
+#endif
   if (!caps.strip_lines) {
     S.rows = 0;
     return;
