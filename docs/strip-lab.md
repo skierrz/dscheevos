@@ -144,6 +144,43 @@ the base runs above within noise in every game). Old = round 1, 32-line bar at t
   learning it is the round-1 figure. The game's own cycles and lag don't change.
 
 
+## Round 3 (2026-10-21, owner: "let's see just how far we can push the DSi")
+
+Kirby, Animal Crossing and Nintendogs in gameplay (input scripts; tests/strip-lab/sets/gameplay.json unlocks every
+600 frames). `STRIP_OBSERVE` logs, per 300 frames, how often a 16-line bar would fit:
+
+| Game (what was on screen) | strict (today's rule) | if the game's IRQ handlers may run |
+|---|---|---|
+| Kirby (Spring Breeze play, pause menu) | 0% | ~91% |
+| Animal Crossing (truck intro, town, town hall) | 0% | ~60-85% |
+| Nintendogs (kennel screen; the touch script got no further) | 0% | ~100% |
+
+They wake within the line they halt on, so no strict position fits, and resume can't draw a line either.
+
+`STRIP_RELAXED` (experiment, off by default): a wake leaves the bar armed and the game's handler runs with it up. At
+the next halt the module checks the table ran out (bar whole), that DISPCNT's other bits are unchanged (else stop
+and no relaxed bar for the session), and counts the times a game thread worked while the bar was up. Placement uses
+the handler-allowed scores. melonDS, same inputs, relaxed vs base:
+
+| | Kirby (gameplay) | Animal Crossing (town) |
+|---|---|---|
+| whole bar, of notice frames | 77% (0% strict) | 94% (0% strict) |
+| lag | 280 / 280 | 1232 / 1235 |
+| game cycles per frame | 406.6k / 407.7k | 356.8k / 355.3k |
+| DISPCNT written by the game while up | 0 | 0 |
+| a game thread worked while the bar was up | 2787 times, ~7 lines each | 4462 times, ~17 lines each |
+
+What it costs, beyond the strict bar: game code runs while DISPCNT holds our mode (read-only rule), and on the
+"thread worked" events the game shares the bus with the FIFO for those lines (zero-cost rule). melonDS has no bus
+model, so that cost reads as zero here; the DSi measures it (Part E). A game thread's DISPCNT write while the table
+runs would be undone at the next H-Blank and can't be detected afterwards (the check only catches a write that
+survives until our next halt); none was seen. The module's idle work rises (full halt path on every wake while a
+notice is up: Kirby 60k -> 250k cycles a frame averaged over a run with an unlock every 10 s; idle time only).
+
+`STRIP_LABHW` (hardware build) = relaxed + a test notice every 30 s ("Progress: Test bar - DScheevos lab"), drawn by
+the bar only, nothing sent. Checked with the 2026-10-20 kit's launcher and nds-bootstrap: Kirby gameplay 6 test
+notices, whole bar on 886 of 1106 notice frames, lag 276 (base 280); Phoenix Wright 780 of 780.
+
 ## Not covered
 
 - Real hardware: bus contention (H5), ARM7 audio under the FIFO (A7), whether the DSi feeds a mid-frame FIFO

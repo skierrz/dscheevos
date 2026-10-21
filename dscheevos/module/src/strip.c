@@ -61,6 +61,10 @@
 #ifndef STRIP_ROWS
 #define STRIP_ROWS 16                 /* the compact layout; 32 = the full one */
 #endif
+#ifdef STRIP_LABHW                     /* the lab hardware build: relaxed + the test notice */
+#define STRIP_RELAXED 1
+#define STRIP_DEMO 1
+#endif
 #ifdef STRIP_RELAXED
 #define RELAXED 1                     /* experiment: the game's IRQ handlers may run while the bar is up */
 #else
@@ -141,8 +145,11 @@ dscm_strip_stats_t dscm_strip_stats;
 static uint32_t g_render_gen;         /* scene drawn into g_px */
 static uint8_t g_rendered;
 
+#define DEMO_ID 0xDE30u                /* STRIP_DEMO: the test notice (never an RA id here: no seq) */
+
 static const char* text_fn(void* ctx, const dsd_item_t* it, int which) {
   (void)ctx;
+  if (!it->seq && it->id == DEMO_ID) return which == DSD_TEXT_TITLE ? "Test bar - DScheevos lab" : "";
   if (it->kind == DSD_ITEM_OFFLINE) return which == DSD_TEXT_TITLE ? "Unlocks are kept and sent later" : "";
   if (it->kind == DSD_ITEM_ONLINE) return which == DSD_TEXT_TITLE ? "Everything waiting was sent" : "";
   if (it->seq) {
@@ -411,6 +418,18 @@ void dscm_strip_frame(uint32_t frame) {
   S.frame_flags = 0;
 
   dsd_ingest(&g_dsd, &dscm_g_notices);
+#ifdef STRIP_DEMO
+  /* LAB hardware runs: a test notice every 30 s, so the bar can be judged in
+   * the middle of play. Only the bar draws it; nothing goes to the server. */
+  if (frame && frame % 1800 == 0 && g_dsd.queue_count < DSD_QUEUE_MAX) {
+    dsd_item_t* q = &g_dsd.queue[g_dsd.queue_count++];
+    memset(q, 0, sizeof *q);
+    q->kind = DSD_ITEM_PROGRESS;           /* not an unlock: no points, no trophy */
+    q->id = DEMO_ID;
+    q->raised = frame;
+    dscm_strip_stats.demos++;
+  }
+#endif
   dsd_tick(&g_dsd, frame, &caps);
 #ifdef STRIP_OBSERVE
   S.record = 1;                         /* measurement build: watch every wake, all session */
