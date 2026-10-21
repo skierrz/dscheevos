@@ -9,11 +9,17 @@ typedef struct dscm_strip_stats_t {
   uint32_t skip_late, skip_dispcnt, skip_busy, skip_mode;
   uint32_t frames_armed, frames_full, frames_cut, frames_none, frames_unarmed;
   uint32_t renders, arms_vblank, stand_downs, frames_down, skip_gamedma;
+  uint32_t frames_learning, learn_frames, picks, pick_first, pick_score, no_place;
+  uint32_t resumes, gap_lines, frames_resumed;
 } dscm_strip_stats_t;
 
 extern dscm_strip_stats_t dscm_strip_stats;
 
-void dscm_strip_init(int hardcore);
+/* edge: 0 auto, 1 top half, 2 bottom half (the player's NOTICE_EDGE) */
+#ifndef STRIP_EDGE_DEFAULT
+#define STRIP_EDGE_DEFAULT 0
+#endif
+void dscm_strip_init(int hardcore, int edge);
 void dscm_strip_frame(uint32_t frame);   /* once a frame, idle pass, IRQs on */
 int dscm_strip_active(void);
 void dscm_strip_arm(uint32_t vblanks);   /* last halt, IRQs masked, before WFI */

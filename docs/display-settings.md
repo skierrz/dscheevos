@@ -29,7 +29,7 @@ Status: design only, 2026-10-12. Owner ruling #5: every notice type, LED cue, ba
 | `NOTICE_NETWORK` | 1 | Offline / back online |
 | `NOTICE_BADGES` | 1 | Badge images in notices (when the pack has them); 0 = icons |
 | `NOTICE_SCREEN` | `auto` | `auto` / `top` / `bottom`: which screen (`display-library.md` 11.2) |
-| `NOTICE_EDGE` | `bottom` | `bottom` / `top`. Top only where a mechanism allows it |
+| `NOTICE_EDGE` | `auto` | `auto` / `top` / `bottom`: the half of the game's screen the bar may use. The module learns the best spot within it (`docs/strip-lab.md`); auto prefers the bottom. Built on branch `strip-lab` (launcher reads it, passes it in the session flags) |
 | `NOTICE_SIDE` | `left` | `left` / `right`: the layout's side |
 | `NOTICE_SIZE` | `auto` | `auto` / `full` (32 lines) / `compact` (16 lines) |
 

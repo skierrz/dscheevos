@@ -92,6 +92,58 @@ full / 11 cut, lag 11/1313; Kirby PASS, no strip, lag 447/1275.
   notice can avoid); (2) confirm Kirby-type games stay LED + menu; (3) cut flicker acceptable, or end a notice
   early in games that cut often (display-library R19).
 
+## Round 2 (2026-10-21, owner): a thinner bar, placed automatically, top or bottom by choice
+
+Owner: a 16-line bar is fine; its position should be found automatically per game, not set by hand; players
+choose top or bottom. Not accepted: giving up on notices that keep getting cut.
+
+- **16 lines** (the library's compact layout: icon, "Unlocked: title", points).
+- **Learned placement.** For the first 5 s of a game the module takes the full halt path on every wake and logs
+  (halt line, wake line). In idle passes it turns the log into, per possible position, the number of frames in
+  which the whole bar would have shown (halted by its first line minus 2, no wake until after its last line).
+  It then picks the best position within the player's half; positions within 2% of the best count as equal and
+  the one nearest the edge wins (auto: the bottom). A placed bar only moves for a position more than 10% better,
+  so it doesn't jump between notices. Learning continues while a bar is up. If no position ever fits, it watches
+  again after 1, 2, 4 ... 16 minutes.
+- **The player's choice** is `NOTICE_EDGE = auto | top | bottom` in `dscheevos.ini` (`docs/display-settings.md`);
+  the launcher passes it in two session flag bits (`DSCM_BOOT_EDGE_TOP` / `_BOTTOM`), no format change. There is no
+  on-console settings screen yet. The game decides which physical screen the bar is on (engine A); the setting picks
+  the half of that screen.
+- **Notice order:** a mastery now waits for the unlocks raised before it (library `pick`, test updated).
+- **STRIP_RESUME=1** (experiment, not default): after a cut, the bar is armed again at the next halt from the
+  current line, leaving a gap of the lines the game ran.
+- Absolute line times are kept monotonic: the VBlank count is the ARM7's and lags the ARM9's wake at line 192.
+
+Results (same harness as above; "full" of frames with a notice to show after learning; lag and game cycles equal to
+the base runs above within noise in every game). Old = round 1, 32-line bar at the bottom.
+
+| Game | Old: full / cut | 16 lines, auto: line, full / cut | Top: line, full | Resume: full + resumed / cut, gap lines |
+|---|---|---|---|---|
+| Phoenix Wright | 98% / 11 | 175, 679 of 684 / 5 | 0, 673 of 684 | |
+| Yoshi's Island DS | 100% / 0 | 175, 683 of 683 / 0 | | |
+| Tetris DS | 97% / 13 | 175, 647 of 655 / 7 | 0, 639 of 655 | |
+| Professor Layton | 98% / 9 | 175, 656 of 663 / 5 | | |
+| Digimon World DS | 97% / 12 | 175, 617 of 626 / 6 | | |
+| Pokémon Platinum | 97% / 19 | 175, 672 of 682 / 9 | 0, 663 of 681 | |
+| Zelda: Phantom Hourglass | 96% / 16 | 175, 674 of 684 / 9 | | |
+| Super Mario 64 DS | 81% / 97 | 175, 606 of 684 / 50 | | 605 + 26 / 26, 168 |
+| Pokémon Mystery Dungeon: Explorers of Sky | 76% / 125 | 175, 554 of 648 / 71 | | 554 + 54 / 17, 182 |
+| Mario Kart DS (menus) | 0% / 45 | 110, 619 of 684 / 43 | 40, 580 of 684 | 618 + 25 / 21, 180 |
+| New Super Mario Bros. | 10% | 0 (its own H-Blank DMA keeps the bar off) | | 0 |
+| Kirby, Animal Crossing, Nintendogs | 0% | none: no position fits | | none |
+
+- Cuts fell by about half in every game with any, from the placement (most still choose the bottom).
+- Mario Kart DS's menus went from 0% to 90%: the learning found the lines where it pauses (110-125). Races
+  weren't in these runs.
+- Resume removes most of the remaining cuts in SM64DS, PMD and MKDS, at the cost of gaps (about 6 lines of game
+  picture inside the bar on those frames). It can't help Kirby, Animal Crossing or Nintendogs: they wake within
+  the same line they halt on, so not one full line of the bar can be drawn.
+- Idle-time cost: learning takes the full halt path on every wake for 5 s. Averaged over these 25-s runs the
+  module's idle work is ~43k cycles a frame in served games (base ~21k); in games with no fit it was 140k (Kirby),
+  104k (Nintendogs), 80k (Animal Crossing) with learning capped at 5 s, against 250-500k before the cap. Outside
+  learning it is the round-1 figure. The game's own cycles and lag don't change.
+
+
 ## Not covered
 
 - Real hardware: bus contention (H5), ARM7 audio under the FIFO (A7), whether the DSi feeds a mid-frame FIFO

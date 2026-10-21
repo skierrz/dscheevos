@@ -235,6 +235,9 @@ typedef struct dscm_boot_t {
                                          resumes it instead of a full handshake. A secret, like token. Not in
                                          dscm_boot_t, whose size nds-bootstrap checks */
 #define DSCM_BOOT_UTC_KNOWN 0x02      /* utc_offset_q is valid: the launcher measured it against the server's clock */
+/* LAB (strip-lab): where the player wants on-screen notices (NOTICE_EDGE); neither bit = auto */
+#define DSCM_BOOT_EDGE_TOP 0x08       /* the top half of the screen the game draws on */
+#define DSCM_BOOT_EDGE_BOTTOM 0x10    /* the bottom half */
 
 /* The DS clock keeps local time with no time zone; read as UTC it is off by
  * the zone's offset. The launcher measures that offset against the server's

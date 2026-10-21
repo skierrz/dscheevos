@@ -687,7 +687,7 @@ int module_init(const dscm_boot_t* boot)
   config.token = g_boot.token;
   config.hardcore = g_boot.hardcore;
 #ifdef DSCM_STRIP
-  dscm_strip_init(g_boot.hardcore);
+  dscm_strip_init(g_boot.hardcore, (g_boot.flags & DSCM_BOOT_EDGE_TOP) ? 1 : (g_boot.flags & DSCM_BOOT_EDGE_BOTTOM) ? 2 : STRIP_EDGE_DEFAULT);
 #endif
   config.spectator = (g_boot.flags & DSCM_BOOT_SPECTATOR) ? 1 : 0;
   config.max_addresses = 4096;

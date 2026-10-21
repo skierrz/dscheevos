@@ -189,6 +189,12 @@ static int pick(const dsd_t* d) {
   for (int i = 0; i < d->queue_count; i++) {
     if (best < 0 || priority[d->queue[i].kind] < priority[d->queue[best].kind]) best = i;
   }
+  /* A mastery waits for the session notice and unlocks raised before it (the
+   * set's last unlock and its mastery come together): they read in the order
+   * they happened. */
+  if (best >= 0 && d->queue[best].kind == DSD_ITEM_MASTERY)
+    for (int i = 0; i < best; i++)
+      if (d->queue[i].kind == DSD_ITEM_UNLOCK || d->queue[i].kind == DSD_ITEM_MODE) return i;
   return best;  /* queue order is arrival order, so the first of a priority is the oldest */
 }
 

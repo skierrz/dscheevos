@@ -1,20 +1,31 @@
-/* LAB ONLY (branch strip-lab, never in a kit): the bottom notice strip in the
- * module, to see it in real games in melonDS. Built with STRIP=1.
+/* LAB ONLY (branch strip-lab, never in a kit): the notice bar in the module,
+ * to see it in real games in melonDS. Built with STRIP=1.
  *
  * The display library (dscheevos/display) picks what to show and draws it;
  * this file moves the pixels with the D1 scheme (round2-synthesis.md), with
- * one change: no code in the game's IRQ path. The strip is armed only in the
+ * one change: no code in the game's IRQ path. The bar is armed only in the
  * module's last halt of an idle pass, which runs with IRQs masked (CPSR.I),
  * and stopped the moment the CPU wakes, still masked, before the game's
  * handler can run. So game code never runs while DISPCNT holds our mode.
  *
  *   NDMA3: on each H-Blank from the arming line, a whole DISPCNT word from
- *          dtab (the game's word; mode 3 on the strip's lines E..190).
- *   NDMA1: on each H-Blank up to line E-1, a word into NDMA2's control from
- *          btab (0, then the FIFO enable at E-1): starts the feed with no CPU.
+ *          dtab (the game's word; mode 3 on the bar's lines).
+ *   NDMA1: on each H-Blank up to the line before the bar, a word into NDMA2's
+ *          control from btab (0, then the FIFO enable): starts the feed.
  *   NDMA2: the main-memory display FIFO feed (startup 09h).
- * NDMA0 is nds-bootstrap's card engine: never touched, and the strip isn't
+ * NDMA0 is nds-bootstrap's card engine: never touched, and the bar isn't
  * armed while NDMA0 or NDMA1 is busy.
+ *
+ * Placement is learned, within the player's choice (NOTICE_EDGE: auto, top
+ * half or bottom half of the screen): for
+ * the first LEARN_FRAMES frames the module records, at every wake, the line
+ * the game halted on and the line it woke on, and scores each possible
+ * position by how often the whole bar would have been shown there. It keeps
+ * learning whenever a notice is up, and picks again for each new notice.
+ *
+ * STRIP_RESUME=1 (experiment): after a wake cuts the bar, it is armed again
+ * at the next halt from the current line, so a game whose IRQs wake it
+ * briefly still shows most of the bar (with gaps where the game ran).
  *
  * The tables are built in idle passes (IRQs on), so arming is a few register
  * writes with IRQs masked. A wake while armed stops all three channels and
@@ -47,32 +58,64 @@
 #define CH_FIFO 2
 #define CH_TABLE 3
 #define CH_START 1
-#define ROWS_MAX 32
-#define MARGIN 2                      /* rows fed past the strip: a late switch shows our background */
-#define LAST 190                      /* last strip line; 191 is the game's again */
+#ifndef STRIP_ROWS
+#define STRIP_ROWS 16                 /* the compact layout; 32 = the full one */
+#endif
+#ifndef STRIP_RESUME
+#define STRIP_RESUME 0
+#endif
+#define ROWS STRIP_ROWS
+#define MARGIN 2                      /* rows fed past the bar: a late switch shows our background */
+#define FIRST_MAX (191 - ROWS)        /* the bar ends by line 190; 191 is always the game's */
+#define LEARN_FRAMES 300               /* 5 s of watching, then pick */
+#define RELEARN_FRAMES 3600           /* no place found: watch again a minute later, then 2, 4 ... 16 */
+#define RING 256                      /* halt/wake pairs, written masked, read in passes */
+#define LINE(cnt, vc) ((cnt) * 263u + ((vc) < 192 ? (uint32_t)(vc) : (uint32_t)(vc) - 263u))
 
 extern const dsd_font_t dsd_font_latin;
 extern dscm_notices_t dscm_g_notices;
 extern void dscm_dc_clean(const void* addr, uint32_t len);
 
 static dsd_t g_dsd;
-static uint16_t g_px[(ROWS_MAX + MARGIN) * 256] __attribute__((aligned(32)));
+static uint16_t g_px[(ROWS + MARGIN) * 256] __attribute__((aligned(32)));
 static uint32_t g_dtab[192] __attribute__((aligned(32)));
 static uint32_t g_btab[192] __attribute__((aligned(32)));
+static uint32_t g_fifo_word __attribute__((aligned(32)));
 
 /* Read in the masked halt: kept in one place. */
 static struct {
   uint32_t base;                      /* the game's DISPCNT the tables were built for (mode 1) */
-  uint8_t rows;                       /* strip lines now, 0 = nothing to show */
-  uint8_t first;                      /* first strip line E = 191 - rows */
+  uint8_t rows;                       /* bar lines now, 0 = nothing to show */
+  uint8_t first;                      /* the bar's first line */
   uint8_t armed;
-  uint8_t want_base;                  /* the game's DISPCNT changed: rebuild in the next pass */
-  uint32_t frame_flags;               /* this frame: 1 armed, 2 full, 4 cut */
-  uint32_t arm_vblanks;               /* VBlanks counted when armed */
-  uint32_t miss_run;                  /* frames in a row with something to show and no full strip */
+  uint8_t record;                     /* log halts and wakes (learning, or a notice up) */
+  uint32_t frame_flags;               /* this frame: 1 armed, 2 full, 4 cut, 8 resumed */
+  uint32_t cut_frame, cut_line;       /* the last cut (frame = VBlank count), for a resume */
+  uint32_t h_cnt;                     /* VBlanks counted at the last halt */
+  uint16_t h_vc;                      /* VCOUNT at the last halt */
+  uint32_t h_line;                    /* that halt as an absolute line */
+  uint32_t last_line;                 /* the latest absolute line seen */
+  uint32_t head;                      /* ring entries written */
+  uint32_t miss_run;                  /* frames in a row with something to show and no full bar */
   uint32_t down_until;                /* stood down until this frame */
   uint32_t down_len;                  /* the next stand-down's length: doubles while probes fail */
 } S;
+static struct { uint32_t a, b; } g_ring[RING];   /* paused from line a to line b (absolute lines) */
+
+/* Learning, in passes. */
+static struct {
+  uint32_t tail;
+  uint32_t frame;                     /* frame being accumulated */
+  uint8_t started;
+  uint8_t paused[194], woke[194];     /* lines -2..191 of that frame */
+  uint32_t frames;                    /* frames scored */
+  uint16_t full[192];                 /* frames in which a bar starting at this line would have shown whole */
+  uint16_t lines[192];                /* frames in which this line was paused (for STRIP_RESUME) */
+  uint8_t picked;
+  uint32_t learn_start;                /* module frame learning began */
+  uint32_t relearn_at;                 /* no place found: learn again from this frame */
+  uint32_t relearn_len;                /* the wait before that: 1, 2, 4 ... 16 minutes */
+} L;
 
 dscm_strip_stats_t dscm_strip_stats;
 static uint32_t g_render_gen;         /* scene drawn into g_px */
@@ -96,7 +139,9 @@ static const char* text_fn(void* ctx, const dsd_item_t* it, int which) {
   return "";
 }
 
-void dscm_strip_init(int hardcore) {
+static int g_edge;                    /* 0 auto (ties go to the bottom), 1 top half, 2 bottom half */
+
+void dscm_strip_init(int hardcore, int edge) {
   dsd_config_t cfg;
   memset(&cfg, 0, sizeof cfg);
   cfg.font = &dsd_font_latin;
@@ -104,29 +149,130 @@ void dscm_strip_init(int hardcore) {
   cfg.hardcore = (uint8_t)hardcore;
   dsd_init(&g_dsd, &cfg);
   memset(&S, 0, sizeof S);
+  memset(&L, 0, sizeof L);
   memset(&dscm_strip_stats, 0, sizeof dscm_strip_stats);
+  S.record = 1;
+  g_edge = edge;
   g_rendered = 0;
 }
 
 static uint32_t fifo_cnt(void) { return NDMA_ON | NDMA_START(0x09) | NDMA_PHYS(2) | NDMA_DFIX; }
 
 /* Tables by H-Blank line l (the write at the end of line l affects line l+1). */
-static void build_tables(uint32_t base, int rows) {
-  const uint32_t first = 191u - (uint32_t)rows;
+static void build_tables(uint32_t base, uint32_t first) {
   for (uint32_t l = 0; l < 192; l++) {
     const uint32_t line = l + 1;
-    g_dtab[l] = line >= first && line <= LAST ? (base | 0x30000u) : base;
+    g_dtab[l] = line >= first && line < first + ROWS ? (base | 0x30000u) : base;
     g_btab[l] = line == first ? fifo_cnt() : 0;
   }
+  g_fifo_word = fifo_cnt();
   dscm_dc_clean(g_dtab, sizeof g_dtab);
   dscm_dc_clean(g_btab, sizeof g_btab);
+  dscm_dc_clean(&g_fifo_word, sizeof g_fifo_word);
 }
 
-/* Once a frame, in an idle pass (IRQs on). */
+/* ---- learning: score each possible position from the halt/wake log ---- */
+
+static void score_frame(void) {
+  uint32_t run = 0;
+  for (int i = 0; i < 194; i++) {
+    const int line = i - 2;
+    run = L.paused[i] && !L.woke[i] ? run + 1 : 0;
+    if (line >= 0 && L.paused[i] && L.lines[line] < 0xFFFF) L.lines[line]++;
+    /* a bar on lines first..line shows whole if the game halted by first-2 and
+     * nothing woke it until after line */
+    if (line >= ROWS - 1 && run >= ROWS + 2u) {
+      const int first = line - ROWS + 1;
+      if (first <= FIRST_MAX && L.full[first] < 0xFFFF) L.full[first]++;
+    }
+  }
+  L.frames++;
+  memset(L.paused, 0, sizeof L.paused);
+  memset(L.woke, 0, sizeof L.woke);
+}
+
+/* Frame f holds absolute lines f*263-71 .. f*263+191 (VBlank f comes first). */
+static uint32_t frame_of(uint32_t x) { return (x + 71u) / 263u; }
+
+static void learn_interval(uint32_t a, uint32_t b) {
+  uint32_t fa = frame_of(a), fb = frame_of(b), f;
+  if (b <= a || fb - fa > 600) return;  /* clock skew, or a stretch too long to matter */
+  if (fa < 2) return;                   /* the session's first frames: no line before them */
+  if (!L.started || fa > L.frame + 30) {
+    /* the first entry, or logging resumed after a quiet stretch: start
+     * afresh (those frames weren't watched) */
+    L.started = 1;
+    L.frame = fa;
+    memset(L.paused, 0, sizeof L.paused);
+    memset(L.woke, 0, sizeof L.woke);
+  }
+  if (fa < L.frame) return;
+  while (L.frame < fa) {                /* watched frames with no halt: the game never paused */
+    score_frame();
+    L.frame++;
+  }
+  for (f = fa; ; f++) {
+    const uint32_t base = f * 263u;
+    const uint32_t lo = a > base - 2 ? a : base - 2, hi = b < base + 192 ? b : base + 192;
+    for (uint32_t x = lo; x < hi; x++) L.paused[x - base + 2] = 1;
+    if (f == fb) {
+      if (b >= base - 2 && b < base + 192) L.woke[b - base + 2] = 1;
+      break;
+    }
+    score_frame();
+    L.frame = f + 1;
+  }
+}
+
+static void learn(void) {
+  uint32_t head = S.head;
+  if (head - L.tail > RING) L.tail = head - RING;   /* overwritten while a pass was away */
+  for (; L.tail != head; L.tail++)
+    learn_interval(g_ring[L.tail % RING].a, g_ring[L.tail % RING].b);
+  if (L.frames > 30000) {               /* keep the counts in range: older frames weigh half */
+    for (int i = 0; i < 192; i++) { L.full[i] /= 2; L.lines[i] /= 2; }
+    L.frames /= 2;
+  }
+}
+
+/* The best position for the bar, or -1 if none has ever shown whole.
+ * Positions within 2% of the best score count as equal and the one nearest
+ * the preferred edge wins (auto: the bottom), so the bar sits where a player
+ * expects it. A bar already placed (prev) stays unless a position is more
+ * than 10% better: it shouldn't move from one notice to the next. */
+static uint32_t score_at(int f) {
+  uint32_t sc = L.full[f];
+  if (STRIP_RESUME) { sc = 0; for (int l = f; l < f + ROWS; l++) sc += L.lines[l]; sc /= ROWS; }
+  return sc;
+}
+
+static int pick(int prev) {
+  int lo = 0, hi = FIRST_MAX, best = -1;
+  uint32_t max = 0;
+  if (g_edge == 1) hi = (192 - ROWS) / 2;
+  if (g_edge == 2) lo = (192 - ROWS) / 2;
+  for (int f = lo; f <= hi; f++) if (score_at(f) > max) max = score_at(f);
+  if (max) {
+    for (int f = lo; f <= hi; f++) {
+      if (score_at(f) * 50u < max * 49u) continue;          /* not within 2% */
+      if (best < 0 || g_edge != 1) best = f;            /* top: the first; else the last */
+    }
+    if (prev >= lo && prev <= hi && score_at(prev) * 10u >= max * 9u) best = prev;
+  }
+  dscm_strip_stats.picks++;
+  dscm_strip_stats.pick_first = best < 0 ? 0xFF : (uint32_t)best;
+  dscm_strip_stats.pick_score = best < 0 ? 0 : score_at(best);
+  dscm_strip_stats.learn_frames = L.frames;
+  return best;
+}
+
+/* ---- once a frame, in an idle pass (IRQs on) ---- */
+
 void dscm_strip_frame(uint32_t frame) {
-  dsd_caps_t caps = { ROWS_MAX, 0 };
+  dsd_caps_t caps = { ROWS, 0 };
   int rows = 0;
 
+  learn();
   if (S.rows) {
     if (S.frame_flags & 2) {
       S.miss_run = 0;
@@ -135,8 +281,7 @@ void dscm_strip_frame(uint32_t frame) {
       S.miss_run++;
     }
   }
-  /* Stand down: 10 frames in a row with no full strip (the game is busy at
-   * the strip's lines, or IRQs keep waking it there): stop arming for 2 s,
+  /* Stand down: 10 frames in a row with no whole bar: stop arming for 2 s,
    * then 4, 8, 16 while probes keep failing, so the module doesn't take
    * every wake's full path for nothing. The scheduler holds the notice
    * meanwhile (caps 0) and lists it as missed after 10 s. */
@@ -150,11 +295,31 @@ void dscm_strip_frame(uint32_t frame) {
     caps.strip_lines = 0;
     dscm_strip_stats.frames_down++;
   }
+  /* Learning: watch every wake for LEARN_FRAMES frames, then pick. If no
+   * position ever fit, watch again RELEARN_FRAMES later (the game may have
+   * moved on from a loading screen or a video). */
+  if (!L.learn_start) L.learn_start = frame;
+  if (dscm_strip_stats.no_place && (int32_t)(frame - L.relearn_at) >= 0) {
+    dscm_strip_stats.no_place = 0;
+    dscm_strip_stats.pick_first = 0;
+    L.learn_start = frame;
+    L.picked = 0;
+    memset(L.full, 0, sizeof L.full);
+    memset(L.lines, 0, sizeof L.lines);
+    L.frames = 0;
+  }
+  const int learning = frame - L.learn_start < LEARN_FRAMES;
+  if (learning) {                       /* still learning where the bar fits */
+    caps.strip_lines = 0;
+    dscm_strip_stats.frames_learning++;
+  }
 
   if (S.frame_flags & 1) {
     dscm_strip_stats.frames_armed++;
-    if (S.frame_flags & 2) dscm_strip_stats.frames_full++;
-    else if (S.frame_flags & 4) dscm_strip_stats.frames_cut++;
+    if (S.frame_flags & 2) {
+      if (S.frame_flags & 8) dscm_strip_stats.frames_resumed++;
+      else dscm_strip_stats.frames_full++;
+    } else if (S.frame_flags & 4) dscm_strip_stats.frames_cut++;
     else dscm_strip_stats.frames_none++;
   } else if (S.rows) {
     dscm_strip_stats.frames_unarmed++;
@@ -163,26 +328,42 @@ void dscm_strip_frame(uint32_t frame) {
 
   dsd_ingest(&g_dsd, &dscm_g_notices);
   dsd_tick(&g_dsd, frame, &caps);
+  S.record = learning || S.rows != 0;
   if (!caps.strip_lines) {
     S.rows = 0;
     return;
   }
   if (dsd_current(&g_dsd)->kind != DSD_ITEM_NONE) {
     if (!g_rendered || g_render_gen != dsd_scene_gen(&g_dsd)) {
-      dsd_surface_t s = { g_px, 256, ROWS_MAX, 256 };
+      dsd_surface_t sf = { g_px, 256, ROWS, 256 };
       S.rows = 0;                     /* the buffer changes: nothing armed from it meanwhile */
       g_render_gen = dsd_scene_gen(&g_dsd);
-      while (!dsd_render(&g_dsd, &s, ROWS_MAX)) {}
-      for (int i = ROWS_MAX * 256; i < (ROWS_MAX + MARGIN) * 256; i++)
-        g_px[i] = g_px[(ROWS_MAX - 1) * 256 + (i & 255)];
+      while (!dsd_render(&g_dsd, &sf, ROWS)) {}
+      for (int i = ROWS * 256; i < (ROWS + MARGIN) * 256; i++)
+        g_px[i] = g_px[(ROWS - 1) * 256 + (i & 255)];
       dscm_dc_clean(g_px, sizeof g_px);
       g_rendered = 1;
       dscm_strip_stats.renders++;
+      L.picked = 0;                   /* a new notice: pick again with what was learned since */
     }
-    rows = dsd_visible_rows(&g_dsd, ROWS_MAX);
+    rows = dsd_visible_rows(&g_dsd, ROWS);
+    L.relearn_len = 0;                /* a place works again: a later failure starts at a minute */
   } else {
     g_rendered = 0;
   }
+  if (!L.picked) {
+    L.picked = 1;
+    const int f = pick(dscm_strip_stats.picks ? S.first : -1);
+    if (f < 0) {
+      dscm_strip_stats.no_place = 1;
+      L.relearn_len = L.relearn_len ? (L.relearn_len < 16 * RELEARN_FRAMES ? L.relearn_len * 2 : L.relearn_len) : RELEARN_FRAMES;
+      L.relearn_at = frame + L.relearn_len;
+      S.rows = 0;
+      return;
+    }
+    if ((uint32_t)f != S.first) { S.rows = 0; S.first = (uint8_t)f; S.base = 0; }
+  }
+  if (dscm_strip_stats.pick_first == 0xFF) { S.rows = 0; return; }
   if (rows > 0) {
     const uint32_t d = DISPCNT_A;
     if ((d >> 16 & 3) != 1) {         /* only a game showing its normal picture */
@@ -190,78 +371,117 @@ void dscm_strip_frame(uint32_t frame) {
       S.rows = 0;
       return;
     }
-    if (rows != S.rows || d != S.base) {
+    if (d != S.base) {
       S.rows = 0;
-      build_tables(d, rows);
+      build_tables(d, S.first);
       S.base = d;
-      S.first = (uint8_t)(191 - rows);
     }
-    S.rows = (uint8_t)rows;
+    /* The slide-in: the bar's full height from the start (one table per
+     * position), revealing more of the drawing each frame would need a table
+     * per height; the compact bar is short enough to just appear. */
+    S.rows = ROWS;
   } else {
     S.rows = 0;
   }
 }
 
-int dscm_strip_active(void) { return S.rows != 0; }
+int dscm_strip_active(void) { return S.rows != 0 || S.record; }
 
-/* The module's last halt, IRQs masked, right before WFI. */
+/* ---- the module's last halt, IRQs masked ---- */
+
+/* An absolute line from the VBlank count and VCOUNT. The count is the ARM7's
+ * and can lag the ARM9's wake at line 192 by a little: time never runs
+ * backwards, so a line that would be earlier than the last one seen belongs
+ * to the next frame. */
+static uint32_t abs_line(uint32_t cnt, uint32_t vc) {
+  uint32_t x = LINE(cnt, vc);
+  if ((int32_t)(x - S.last_line) < 0 && (int32_t)(x + 263u - S.last_line) >= 0) x += 263u;
+  S.last_line = x;
+  return x;
+}
+
 void dscm_strip_arm(uint32_t vblanks) {
-  uint32_t vc;
-  if (!S.rows || S.armed) return;
+  uint32_t vc, start, end;
+  int resume = 0;
   vc = REG_VCOUNT;
-  /* In VBlank (the game finished its frame early and waits for the next):
-   * H-Blank DMAs don't run during VBlank, so the table starts at line 0. */
+  if (S.record) S.h_line = abs_line(vblanks, vc);
+  if (!S.rows || S.armed) return;
+  end = S.first + ROWS - 1;
   if (vc >= 192) {
-    vc = 0;
+    /* In VBlank (the game finished its frame early and waits for the next):
+     * H-Blank DMAs don't run during VBlank, so the table starts at line 0. */
+    start = 0;
     dscm_strip_stats.arms_vblank++;
-  } else if (vc + 2 > S.first) {
+  } else if (vc + 2 <= S.first) {
+    start = vc;
+  } else if (STRIP_RESUME && S.cut_frame == vblanks && vc >= S.first - 1u && vc < end) {
+    start = vc;
+    resume = 1;
+  } else {
     dscm_strip_stats.skip_late++;
     return;
   }
   if (DISPCNT_A != S.base) { dscm_strip_stats.skip_dispcnt++; return; }
+  if ((NDMA_CNT(0) | NDMA_CNT(CH_START) | NDMA_CNT(CH_FIFO) | NDMA_CNT(CH_TABLE)) & NDMA_ON) {
+    dscm_strip_stats.skip_busy++;
+    return;
+  }
   /* The game's own DMAs (their destinations can't be read back): one that
    * starts on H-Blank (raster effects; it could target DISPCNT), on the
-   * display FIFO, or on the geometry FIFO (3D work the strip's bus use could
-   * slow) keeps the strip off. */
+   * display FIFO, or on the geometry FIFO (3D work the bar's bus use could
+   * slow) keeps the bar off. */
   for (int x = 0; x < 4; x++) {
     const uint32_t c = REG32(0x040000B8 + x * 12);
     const uint32_t t = c >> 27 & 7;
     if ((c & (1u << 31)) && (t == 2 || t == 4 || t == 7)) { dscm_strip_stats.skip_gamedma++; return; }
   }
-  if ((NDMA_CNT(0) | NDMA_CNT(CH_START) | NDMA_CNT(CH_FIFO) | NDMA_CNT(CH_TABLE)) & NDMA_ON) {
-    dscm_strip_stats.skip_busy++;
-    return;
+  {
+    const uint32_t row = resume ? vc + 1 - S.first : 0;   /* the bar's row the next line shows */
+    NDMA_SAD(CH_FIFO) = DSCM_PHYS(g_px + row * 256);
+    NDMA_DAD(CH_FIFO) = MMEM_FIFO;
+    NDMA_TCNT(CH_FIFO) = (ROWS - row + MARGIN) * 128u;
+    NDMA_WCNT(CH_FIFO) = 4;
+    NDMA_BCNT(CH_FIFO) = 0;
   }
-  NDMA_SAD(CH_FIFO) = DSCM_PHYS(g_px);
-  NDMA_DAD(CH_FIFO) = MMEM_FIFO;
-  NDMA_TCNT(CH_FIFO) = (uint32_t)(S.rows + MARGIN) * 128u;
-  NDMA_WCNT(CH_FIFO) = 4;
-  NDMA_BCNT(CH_FIFO) = 0;
-  NDMA_SAD(CH_TABLE) = DSCM_PHYS(&g_dtab[vc]);
+  NDMA_SAD(CH_TABLE) = DSCM_PHYS(&g_dtab[start]);
   NDMA_DAD(CH_TABLE) = 0x04000000u;
-  NDMA_TCNT(CH_TABLE) = LAST + 1 - vc;          /* H-Blanks of lines vc..190 */
+  NDMA_TCNT(CH_TABLE) = end + 1 - start;          /* H-Blanks of lines start..end: the last puts line end+1 back */
   NDMA_WCNT(CH_TABLE) = 1;
   NDMA_BCNT(CH_TABLE) = 0;
-  NDMA_SAD(CH_START) = DSCM_PHYS(&g_btab[vc]);
-  NDMA_DAD(CH_START) = 0x0400411Cu + CH_FIFO * 0x1C;
-  NDMA_TCNT(CH_START) = S.first - vc;           /* stops once it has started the feed */
-  NDMA_WCNT(CH_START) = 1;
-  NDMA_BCNT(CH_START) = 0;
+  if (S.first == 0 && !resume) {
+    /* A bar from line 0 can only be armed in VBlank: switch now (nothing is
+     * drawn until line 0) and start the feed now. */
+    DISPCNT_MODE = (uint8_t)((DISPCNT_MODE & ~3) | 3);
+    NDMA_CNT(CH_FIFO) = fifo_cnt();
+  } else {
+    NDMA_SAD(CH_START) = resume ? DSCM_PHYS(&g_fifo_word) : DSCM_PHYS(&g_btab[start]);
+    NDMA_DAD(CH_START) = 0x0400411Cu + CH_FIFO * 0x1C;
+    NDMA_TCNT(CH_START) = resume ? 1 : S.first - start;   /* stops once it has started the feed */
+    NDMA_WCNT(CH_START) = 1;
+    NDMA_BCNT(CH_START) = 0;
+    NDMA_CNT(CH_START) = NDMA_ON | NDMA_START(0x07) | NDMA_DFIX;
+  }
   NDMA_CNT(CH_TABLE) = NDMA_ON | NDMA_START(0x07) | NDMA_DFIX;
-  NDMA_CNT(CH_START) = NDMA_ON | NDMA_START(0x07) | NDMA_DFIX;
   S.armed = 1;
-  S.arm_vblanks = vblanks;
-  S.frame_flags |= 1;
+  S.frame_flags |= resume ? 9 : 1;
+  if (resume) {
+    dscm_strip_stats.resumes++;
+    dscm_strip_stats.gap_lines += vc + 1 - S.cut_line;
+  }
   dscm_strip_stats.arms++;
 }
 
 /* The first thing after WFI returns, IRQs still masked. */
 void dscm_strip_wake(uint32_t vblanks) {
-  uint32_t vc;
+  uint32_t vc = REG_VCOUNT;
   int done;
-  (void)vblanks;
+  if (S.record) {
+    g_ring[S.head % RING].a = S.h_line;
+    g_ring[S.head % RING].b = abs_line(vblanks, vc);
+    S.head++;
+  }
   if (!S.armed) return;
-  done = !(NDMA_CNT(CH_TABLE) & NDMA_ON);       /* the table ran out: every strip line was shown */
+  done = !(NDMA_CNT(CH_TABLE) & NDMA_ON);       /* the table ran out: every bar line was shown */
   NDMA_CNT(CH_TABLE) = 0;
   NDMA_CNT(CH_START) = 0;
   NDMA_CNT(CH_FIFO) = 0;
@@ -275,11 +495,13 @@ void dscm_strip_wake(uint32_t vblanks) {
   if (done) {
     S.frame_flags |= 2;
     dscm_strip_stats.wakes_done++;
-  } else if (vc >= S.first && vc <= LAST) {     /* cut inside the strip */
+  } else if (vc >= S.first && vc < S.first + ROWS && vc < 192) {   /* cut inside the bar */
     S.frame_flags |= 4;
+    S.cut_frame = vblanks;
+    S.cut_line = vc;
     dscm_strip_stats.wakes_cut++;
   } else {
-    dscm_strip_stats.wakes_before++;  /* woke before the strip: armed again at the next halt */
+    dscm_strip_stats.wakes_before++;  /* woke before the bar: armed again at the next halt */
   }
 }
 

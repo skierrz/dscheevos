@@ -119,9 +119,9 @@ static void test_priority_and_order(void) {
   uint8_t order[8];
   const int n = drain(&d, &frame, order, 8);
   CHECK(n == 4);
-  CHECK(order[0] == DSD_ITEM_MASTERY);
+  CHECK(order[0] == DSD_ITEM_UNLOCK);     /* a mastery waits for the unlocks raised before it */
   CHECK(order[1] == DSD_ITEM_UNLOCK);
-  CHECK(order[2] == DSD_ITEM_UNLOCK);
+  CHECK(order[2] == DSD_ITEM_MASTERY);
   CHECK(order[3] == DSD_ITEM_PROGRESS);
   CHECK(d.stats.shown == 4);
 }
@@ -234,8 +234,8 @@ static void test_stalled_goes_to_missed(void) {
   dsd_t d;
   reset_notices();
   init(&d, 1);
+  raise_notice(DSCM_NOTICE_MASTERY, 0, 0);   /* raised first, so it goes up first */
   raise_notice(DSCM_NOTICE_UNLOCK, 101, 10);
-  raise_notice(DSCM_NOTICE_MASTERY, 0, 0);
   dsd_ingest(&d, &notices);
   uint32_t frame = 1;
   dsd_tick(&d, frame, &SHOW);          /* mastery goes up */

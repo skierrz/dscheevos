@@ -2,14 +2,15 @@
 # LAB ONLY: strip build vs base build on a list of games (one ROM path per line in LIST), screenshots
 # every 60 frames from 3300; one line per game and build in OUT/summary.tsv.
 #   tests/strip-lab/sweep.sh LIST BASE_DIR OUT [FRAMES]
+# BUILDS (default "strip base"): which builds; other names run dscheevos/module/build-<name>.
 here=$(cd "$(dirname "$0")" && pwd); repo=$here/../..
 list=$1 base=$2 out=$3 frames=${4:-4600}
 mkdir -p "$out"
 while IFS= read -r rom; do
   [ -z "$rom" ] && continue
   name=$(basename "$rom" .nds | cut -c1-40 | tr ' ' '_')
-  for b in strip base; do
-    src=$repo/dscheevos/module/build-strip; [ $b = base ] && src=$base
+  for b in ${BUILDS:-strip base}; do
+    case $b in base) src=$base ;; strip) src=$repo/dscheevos/module/build-strip ;; *) src=$repo/dscheevos/module/build-$b ;; esac
     w=$out/$name.$b
     from=3300; [ $b = base ] && from=$((frames - 100))
     "$here/shots.sh" "$src" "$rom" "$frames" $from $((frames - 100)) 60 "$w" > "$w.txt" 2>&1
