@@ -194,6 +194,31 @@ notices, whole bar on 886 of 1106 notice frames, lag 276 (base 280); Phoenix Wri
   Phoenix Wright 677 of 682, Kirby untouched; Part E Kirby gameplay 1057 of 1087 (6 test notices, 85 work-under),
   Phoenix Wright 780 of 780.
 
+## Round 5 (2026-10-22): achievement badges in the bar
+
+Built on `docs/display-badges.md`, with two changes: 16x16 badges (the bar is 16 lines) and no SD reads during
+play (the badges travel in the session file).
+
+- **Launcher** (`launcher/source/badges.c`), after the session starts and before the session file is written:
+  badges already in `sd:/_nds/dscheevos/badges/<game id>.b16` (same achievement, same badge name) are reused; the
+  rest come from `media.retroachievements.org/Badge/<name>.png` (a test or self-hosted server serves them itself)
+  over one keep-alive connection (`http_ka_*` in `net.c`). Each is cropped by 1/16 per side (RA badges have a
+  frame), area-averaged to 16x16, lightly sharpened and reduced to 16 colours (`dsdbp_convert_png16`). The cache
+  is rewritten (tmp + rename) only when something was fetched, before boot. `BADGES = 0` turns it off; B skips.
+- **TLS:** the launcher keeps a saved session per host (2 slots), so fetching from the media host doesn't push
+  out the RetroAchievements session the module resumes for its first connection.
+- **Session file:** the block (`dscm_badges_t`: ids ascending, then 160-byte slots) goes at the very end, then
+  its length and a trailer (`DSCM_BOOT_BADGES`); the TLS session comes right before it. `dscm_boot_t` is
+  unchanged (nds-bootstrap checks its size). Every module build reads the trailer, so the TLS session is found in
+  either layout; a set whose file would pass `DSCM_SESSION_MAX` with badges gets none.
+- **Module:** copies the block at start-up (the session's memory goes back to the heap; 151 badges = 25 KB) and
+  the bar draws an unlock's, progress's or challenge's badge in the icon's place (progress and challenge greyed).
+- **melonDS:** 21 badges (gameplay test set, mock server) fetched in 2 s; a second launch on the same SD fetched
+  none. Real RA badges, checked by eye at 16x16 (local only, not committed): colours and shapes survive, fine
+  detail and text don't; cropping the frame and sharpening made them clearly more legible.
+- **Not done:** the 32x32 badge for the full-height bar; the menu page; measuring the download on real DSi Wi-Fi
+  (the hardware kit's launcher doesn't have badges).
+
 ## Not covered
 
 - Real hardware: bus contention (H5), ARM7 audio under the FIFO (A7), whether the DSi feeds a mid-frame FIFO

@@ -1,5 +1,8 @@
 # Badge pipeline (display phase 2): design
 
+> 2026-10-22, branch `strip-lab`: built for the thin bar with 16x16 badges carried in the session file (no SD
+> reads during play) instead of 32x32 slots read from SD; see `docs/strip-lab.md`, round 5.
+
 Status, 2026-10-12: the host side is built behind a build flag (`make -C dscheevos/display test BADGES=1`) and isn't wired into the launcher:
 - PNG decoding, 64→32 downscale, the 16-colour median cut;
 - the pack writer and reader (written to tmp, then renamed);
