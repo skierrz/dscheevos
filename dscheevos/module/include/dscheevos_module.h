@@ -238,6 +238,20 @@ typedef struct dscm_boot_t {
 /* LAB (strip-lab): where the player wants on-screen notices (NOTICE_EDGE); neither bit = auto */
 #define DSCM_BOOT_EDGE_TOP 0x08       /* the top half of the screen the game draws on */
 #define DSCM_BOOT_EDGE_BOTTOM 0x10    /* the bottom half */
+/* LAB (strip-lab): the file ends with the set's badges for the thin bar: a dscm_badges_t
+ * block, then its length (u32) and DSCM_BADGES_TRAILER (u32). The TLS session, if any,
+ * comes right before the block. Not in dscm_boot_t, whose size nds-bootstrap checks. */
+#define DSCM_BOOT_BADGES 0x20
+#define DSCM_BADGES_MAGIC 0x36425344u   /* "DSB6": 16x16 slots */
+#define DSCM_BADGES_TRAILER 0x54425344u /* "DSBT" */
+#define DSCM_BADGES_SLOT 160u           /* 128 bytes of 4bpp pixels, then 16 BGR555 colours */
+#define DSCM_BADGES_MAX 256u            /* slots the module keeps (41 KB) */
+typedef struct dscm_badges_t {
+  uint32_t magic;                     /* DSCM_BADGES_MAGIC */
+  uint32_t count;                     /* slots */
+  uint32_t slot_size;                 /* DSCM_BADGES_SLOT */
+  uint32_t ids[];                     /* count, ascending; then count slots */
+} dscm_badges_t;
 
 /* The DS clock keeps local time with no time zone; read as UTC it is off by
  * the zone's offset. The launcher measures that offset against the server's

@@ -127,11 +127,27 @@ static int setup(const char** error)
   return 0;
 }
 
-/* The last handshake's session, for resumption: requests to the same host
- * skip the key exchange (seconds of public-key arithmetic on the DS). */
-static mbedtls_ssl_session g_saved;
-static int g_have_saved;
-static char g_saved_host[64];
+/* The last handshake's session per host, for resumption: requests to the
+ * same host skip the key exchange (seconds of public-key arithmetic on the
+ * DS). Two hosts: the RetroAchievements server and its media host (badges),
+ * so fetching badges doesn't push out the session the module resumes. */
+#define SAVED_MAX 2
+static struct {
+  mbedtls_ssl_session s;
+  int have;
+  unsigned age;
+  char host[64];
+} g_saved[SAVED_MAX];
+static unsigned g_saved_clock;
+
+static int saved_find(const char* host)
+{
+  int i;
+  for (i = 0; i < SAVED_MAX; i++)
+    if (g_saved[i].have && !strcmp(g_saved[i].host, host))
+      return i;
+  return -1;
+}
 
 tls_t* tls_open(int fd, const char* host, const char** error)
 {
@@ -151,8 +167,11 @@ tls_t* tls_open(int fd, const char* host, const char** error)
     goto fail;
   }
   mbedtls_ssl_set_bio(&t->ssl, t, bio_send, bio_recv, NULL);
-  if (g_have_saved && !strcmp(g_saved_host, host))
-    mbedtls_ssl_set_session(&t->ssl, &g_saved);
+  {
+    const int i = saved_find(host);
+    if (i >= 0)
+      mbedtls_ssl_set_session(&t->ssl, &g_saved[i].s);
+  }
   while ((r = mbedtls_ssl_handshake(&t->ssl)) != 0) {
     if (r != MBEDTLS_ERR_SSL_WANT_READ && r != MBEDTLS_ERR_SSL_WANT_WRITE) {
       *error = (mbedtls_ssl_get_verify_result(&t->ssl) != 0)
@@ -163,12 +182,18 @@ tls_t* tls_open(int fd, const char* host, const char** error)
   {
     mbedtls_ssl_session s;
     mbedtls_ssl_session_init(&s);
-    if (strlen(host) < sizeof(g_saved_host) && mbedtls_ssl_get_session(&t->ssl, &s) == 0) {
-      if (g_have_saved)
-        mbedtls_ssl_session_free(&g_saved);
-      g_saved = s;     /* the session's buffers move with it */
-      g_have_saved = 1;
-      strcpy(g_saved_host, host);
+    if (strlen(host) < sizeof(g_saved[0].host) && mbedtls_ssl_get_session(&t->ssl, &s) == 0) {
+      int i = saved_find(host), k;
+      if (i < 0)                  /* a free slot, else the oldest */
+        for (i = 0, k = 1; k < SAVED_MAX; k++)
+          if (!g_saved[k].have || (g_saved[i].have && g_saved[k].age < g_saved[i].age))
+            i = k;
+      if (g_saved[i].have)
+        mbedtls_ssl_session_free(&g_saved[i].s);
+      g_saved[i].s = s;     /* the session's buffers move with it */
+      g_saved[i].have = 1;
+      g_saved[i].age = ++g_saved_clock;
+      strcpy(g_saved[i].host, host);
     }
     else
       mbedtls_ssl_session_free(&s);
@@ -208,7 +233,8 @@ void tls_close(tls_t* t)
 size_t tls_session_save(const char* host, unsigned char* buf, size_t size)
 {
   size_t len = 0;
-  if (!g_have_saved || strcmp(g_saved_host, host) || mbedtls_ssl_session_save(&g_saved, buf, size, &len) != 0)
+  const int i = saved_find(host);
+  if (i < 0 || mbedtls_ssl_session_save(&g_saved[i].s, buf, size, &len) != 0)
     return 0;
   return len;
 }

@@ -384,26 +384,27 @@ static void render16(const char* name, uint16_t kind, uint32_t id, int32_t value
 }
 
 static void test_badges16(void) {
-  /* exact colours survive 64 -> 16 when they come in 4x4 blocks */
+  /* 64 -> 16 crops the badge frame: a 4-px grey frame around a red inside
+   * leaves no grey, and a flat colour comes through the sharpening as is */
   static uint8_t px[64 * 64 * 3];
-  static const uint8_t cols[4][3] = { {255, 0, 0}, {0, 255, 0}, {0, 0, 255}, {255, 255, 255} };
   for (int y = 0; y < 64; y++)
-    for (int x = 0; x < 64; x++)
-      memcpy(px + (y * 64 + x) * 3, cols[((x / 4) + (y / 4) * 3) % 4], 3);
+    for (int x = 0; x < 64; x++) {
+      const int frame = x < 4 || y < 4 || x >= 60 || y >= 60;
+      uint8_t* p = px + (y * 64 + x) * 3;
+      p[0] = frame ? 128 : 255; p[1] = frame ? 128 : 0; p[2] = frame ? 128 : 0;
+    }
   size_t len;
   uint8_t* png = make_png(px, 64, 64, 3, &len);
   dsd_badge16_t b;
   CHECK(dsdbp_convert_png16(png, len, &b) == 0);
   free(png);
   int wrong = 0;
-  for (int y = 0; y < 16; y++)
-    for (int x = 0; x < 16; x++) {
-      int r, g, bl;
-      const uint8_t two = b.pixels[(y * 16 + x) >> 1];
-      rgb_of(b.palette[x & 1 ? two >> 4 : two & 15], &r, &g, &bl);
-      const uint8_t* c = cols[(x + y * 3) % 4];
-      if (r != c[0] * 31 / 255 || g != c[1] * 31 / 255 || bl != c[2] * 31 / 255) wrong++;
-    }
+  for (int i = 0; i < 256; i++) {
+    int r, g, bl;
+    const uint8_t two = b.pixels[i >> 1];
+    rgb_of(b.palette[i & 1 ? two >> 4 : two & 15], &r, &g, &bl);
+    if (r != 31 || g != 0 || bl != 0) wrong++;
+  }
   CHECK(wrong == 0);
 
   /* in the thin bar, in the icon's place; unlocked and locked; no badge: the icon */

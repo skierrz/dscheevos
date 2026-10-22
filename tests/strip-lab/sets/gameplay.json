@@ -22,7 +22,7 @@
      "Points": 1,
      "MemAddr": "1=1.600.",
      "Author": "t",
-     "BadgeName": "0",
+     "BadgeName": "10000",
      "Created": 1,
      "Modified": 1
     },
@@ -34,7 +34,7 @@
      "Points": 2,
      "MemAddr": "1=1.1200.",
      "Author": "t",
-     "BadgeName": "0",
+     "BadgeName": "10001",
      "Created": 1,
      "Modified": 1
     },
@@ -46,7 +46,7 @@
      "Points": 3,
      "MemAddr": "1=1.1800.",
      "Author": "t",
-     "BadgeName": "0",
+     "BadgeName": "10002",
      "Created": 1,
      "Modified": 1
     },
@@ -58,7 +58,7 @@
      "Points": 4,
      "MemAddr": "1=1.2400.",
      "Author": "t",
-     "BadgeName": "0",
+     "BadgeName": "10003",
      "Created": 1,
      "Modified": 1
     },
@@ -70,7 +70,7 @@
      "Points": 5,
      "MemAddr": "1=1.3000.",
      "Author": "t",
-     "BadgeName": "0",
+     "BadgeName": "10004",
      "Created": 1,
      "Modified": 1
     },
@@ -82,7 +82,7 @@
      "Points": 1,
      "MemAddr": "1=1.3600.",
      "Author": "t",
-     "BadgeName": "0",
+     "BadgeName": "10005",
      "Created": 1,
      "Modified": 1
     },
@@ -94,7 +94,7 @@
      "Points": 2,
      "MemAddr": "1=1.4200.",
      "Author": "t",
-     "BadgeName": "0",
+     "BadgeName": "10006",
      "Created": 1,
      "Modified": 1
     },
@@ -106,7 +106,7 @@
      "Points": 3,
      "MemAddr": "1=1.4800.",
      "Author": "t",
-     "BadgeName": "0",
+     "BadgeName": "10007",
      "Created": 1,
      "Modified": 1
     },
@@ -118,7 +118,7 @@
      "Points": 4,
      "MemAddr": "1=1.5400.",
      "Author": "t",
-     "BadgeName": "0",
+     "BadgeName": "10008",
      "Created": 1,
      "Modified": 1
     },
@@ -130,7 +130,7 @@
      "Points": 5,
      "MemAddr": "1=1.6000.",
      "Author": "t",
-     "BadgeName": "0",
+     "BadgeName": "10009",
      "Created": 1,
      "Modified": 1
     },
@@ -142,7 +142,7 @@
      "Points": 1,
      "MemAddr": "1=1.6600.",
      "Author": "t",
-     "BadgeName": "0",
+     "BadgeName": "10010",
      "Created": 1,
      "Modified": 1
     },
@@ -154,7 +154,7 @@
      "Points": 2,
      "MemAddr": "1=1.7200.",
      "Author": "t",
-     "BadgeName": "0",
+     "BadgeName": "10011",
      "Created": 1,
      "Modified": 1
     },
@@ -166,7 +166,7 @@
      "Points": 3,
      "MemAddr": "1=1.7800.",
      "Author": "t",
-     "BadgeName": "0",
+     "BadgeName": "10012",
      "Created": 1,
      "Modified": 1
     },
@@ -178,7 +178,7 @@
      "Points": 4,
      "MemAddr": "1=1.8400.",
      "Author": "t",
-     "BadgeName": "0",
+     "BadgeName": "10013",
      "Created": 1,
      "Modified": 1
     },
@@ -190,7 +190,7 @@
      "Points": 5,
      "MemAddr": "1=1.9000.",
      "Author": "t",
-     "BadgeName": "0",
+     "BadgeName": "10014",
      "Created": 1,
      "Modified": 1
     },
@@ -202,7 +202,7 @@
      "Points": 1,
      "MemAddr": "1=1.9600.",
      "Author": "t",
-     "BadgeName": "0",
+     "BadgeName": "10015",
      "Created": 1,
      "Modified": 1
     },
@@ -214,7 +214,7 @@
      "Points": 2,
      "MemAddr": "1=1.10200.",
      "Author": "t",
-     "BadgeName": "0",
+     "BadgeName": "10016",
      "Created": 1,
      "Modified": 1
     },
@@ -226,7 +226,7 @@
      "Points": 3,
      "MemAddr": "1=1.10800.",
      "Author": "t",
-     "BadgeName": "0",
+     "BadgeName": "10017",
      "Created": 1,
      "Modified": 1
     },
@@ -238,7 +238,7 @@
      "Points": 4,
      "MemAddr": "1=1.11400.",
      "Author": "t",
-     "BadgeName": "0",
+     "BadgeName": "10018",
      "Created": 1,
      "Modified": 1
     },
@@ -250,7 +250,7 @@
      "Points": 5,
      "MemAddr": "1=1.12000.",
      "Author": "t",
-     "BadgeName": "0",
+     "BadgeName": "10019",
      "Created": 1,
      "Modified": 1
     }

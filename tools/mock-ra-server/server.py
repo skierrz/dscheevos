@@ -143,6 +143,33 @@ def handle(state, p):
     return fail("Unsupported request: " + r)
 
 
+def badge_png(name):
+    """A made-up 64x64 badge (as media.retroachievements.org serves /Badge/<name>.png):
+    a disc with a rim on a gradient, its colours from the name."""
+    import struct, zlib, hashlib
+    h = hashlib.md5(name.encode()).digest()
+    rows = []
+    for y in range(64):
+        row = bytearray([0])
+        for x in range(64):
+            dx, dy = x - 32, y - 32
+            d2 = dx * dx + dy * dy
+            r, g, b = 30 + y, 40 + x // 2, 70
+            if d2 < 26 * 26:
+                r, g, b = h[0], h[1], h[2]
+                if (x // 8 + y // 8) % 2:
+                    r, g, b = min(255, r + 60), min(255, g + 60), min(255, b + 60)
+            if 22 * 22 <= d2 < 26 * 26:
+                r, g, b = 250, 220, 120
+            row += bytes((r, g, b))
+        rows.append(bytes(row))
+    def chunk(t, data):
+        c = struct.pack(">I", len(data)) + t + data
+        return c + struct.pack(">I", zlib.crc32(t + data) & 0xFFFFFFFF)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 64, 64, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(b"".join(rows))) + chunk(b"IEND", b""))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", type=int, default=8080)
@@ -185,6 +212,16 @@ def main():
             self._reply(params)
 
         def do_GET(self):
+            path = urlparse(self.path).path
+            if path.startswith("/Badge/") and path.endswith(".png"):
+                body = badge_png(path[7:-4])
+                state.log({"event": "badge", "name": path[7:-4]})
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             self._reply({k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()})
 
         def log_message(self, fmt, *a):

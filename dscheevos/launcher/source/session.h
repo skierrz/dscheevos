@@ -3,6 +3,7 @@
 #ifndef DSC_SESSION_H
 #define DSC_SESSION_H
 
+#include <stdint.h>
 #include "config.h"
 #include "bench.h"
 
@@ -48,5 +49,15 @@ int session_too_big(void);
 void session_log_request(const char* post, int status);
 
 int session_hash_rom(const char* rom_path, char hash[33]);
+
+/* Each achievement of the loaded set with a badge (after session_start OK). */
+typedef struct session_badge_t {
+  uint32_t id;
+  char name[16];                      /* RA badge_name */
+} session_badge_t;
+int session_badges(const session_badge_t** out);
+
+/* LAB (strip-lab): a dscm_badges_t block for session_write to append (0 = none). */
+void session_set_badges(const void* block, uint32_t length);
 
 #endif

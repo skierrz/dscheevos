@@ -5,6 +5,7 @@
  * writes the session file, then boots the DScheevos nds-bootstrap, which
  * reads the same ini and loads the module with the session.
  */
+#include "badges.h"
 #include "apfix.h"
 #include "chainload.h"
 #include "config.h"
@@ -287,6 +288,7 @@ int main(int argc, char** argv)
       if (settings.spectator)
         ui_status("\x1b[33;1mSpectator: nothing is sent\x1b[39;0m");
       log_line("session: started%s", settings.spectator ? ", spectator" : "");
+      badges_prepare(&settings, info.game_id);
       if (!pending_prepare(&settings) || !session_write(&settings, rom_path, hash)) {
         if (session_too_big()) {
           ui_wait("This game's achievement set is\n too big for DScheevos yet.\n\n Playing without achievements.", 240);

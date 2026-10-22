@@ -213,6 +213,45 @@ static int hardcore_refused(rc_client_t* client)
   return found;
 }
 
+/* The set's achievements and their badges, from the last session_start. */
+static session_badge_t g_badge_list[DSCM_BADGES_MAX];
+static int g_badge_count;
+
+static void collect_badges(rc_client_t* client)
+{
+  rc_client_achievement_list_t* list = rc_client_create_achievement_list(client,
+    RC_CLIENT_ACHIEVEMENT_CATEGORY_PROMOTED, RC_CLIENT_ACHIEVEMENT_LIST_GROUPING_LOCK_STATE);
+  uint32_t b, i;
+  g_badge_count = 0;
+  if (!list)
+    return;
+  for (b = 0; b < list->num_buckets; b++)
+    for (i = 0; i < list->buckets[b].num_achievements && g_badge_count < (int)DSCM_BADGES_MAX; i++) {
+      const rc_client_achievement_t* a = list->buckets[b].achievements[i];
+      if (!a->badge_name[0])
+        continue;
+      g_badge_list[g_badge_count].id = a->id;
+      snprintf(g_badge_list[g_badge_count].name, sizeof(g_badge_list[0].name), "%s", a->badge_name);
+      g_badge_count++;
+    }
+  rc_client_destroy_achievement_list(list);
+}
+
+static const void* g_badge_block;
+static uint32_t g_badge_block_len;
+
+void session_set_badges(const void* block, uint32_t length)
+{
+  g_badge_block = block;
+  g_badge_block_len = length;
+}
+
+int session_badges(const session_badge_t** out)
+{
+  *out = g_badge_list;
+  return g_badge_count;
+}
+
 static void clear_replies(void)
 {
   int i;
@@ -327,6 +366,7 @@ int session_start(const dsc_settings_t* settings, const char* rom_path, const ch
     info->points_total = summary.points_available;
     info->points_unlocked = summary.points_unlocked;
     info->hardcore_refused = settings->hardcore && hardcore_refused(client);
+    collect_badges(client);
   }
   rc_client_destroy(client);
   g_replay = 0;   /* the next start fetches everything again */
@@ -453,6 +493,15 @@ int session_write(const dsc_settings_t* settings, const char* rom_path, const ch
       offset += DSCM_SESSION_PAD(tls_len) + 4;   /* then its length */
     }
   }
+  /* the set's badges for the thin bar, last; dropped if the file would be too big */
+  if (g_badge_block_len && (g_badge_block_len & 3) == 0) {
+    if (offset + g_badge_block_len + 8 <= DSCM_SESSION_MAX) {
+      boot.flags |= DSCM_BOOT_BADGES;
+      offset += g_badge_block_len + 8;
+    } else {
+      log_line("session: badges left out (%u bytes, the file would be over the limit)", (unsigned)g_badge_block_len);
+    }
+  }
   boot.file_size = offset;
   if (offset > DSCM_SESSION_MAX) {
     /* the set needs more memory than the module has (docs/architecture.md, "Big sets") */
@@ -480,6 +529,11 @@ int session_write(const dsc_settings_t* settings, const char* rom_path, const ch
     fwrite(tls_session, 1, tls_len, f);
     fwrite(pad, 1, DSCM_SESSION_PAD(tls_len) - tls_len, f);
     fwrite(&len, 1, 4, f);
+  }
+  if (boot.flags & DSCM_BOOT_BADGES) {
+    const uint32_t trailer[2] = { g_badge_block_len, DSCM_BADGES_TRAILER };
+    fwrite(g_badge_block, 1, g_badge_block_len, f);
+    fwrite(trailer, 1, sizeof(trailer), f);
   }
   i = ferror(f);
   fclose(f);

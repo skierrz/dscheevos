@@ -80,6 +80,28 @@ static int box_range(const cpix_t* p, const box_t* b, int* axis) {
 
 static uint16_t bgr555(int r, int g, int b) { return (uint16_t)(r | g << 5 | b << 10); }
 
+/* Unsharp mask on the downscaled image: v + (v - 3x3 mean) / 2. */
+static int g_sharpen;
+static void sharpen(uint8_t rgb[][3], int n) {
+  static uint8_t src[PIXELS_MAX][3];
+  memcpy(src, rgb, (size_t)n * n * 3);
+  for (int y = 0; y < n; y++)
+    for (int x = 0; x < n; x++)
+      for (int c = 0; c < 3; c++) {
+        int sum = 0, cnt = 0;
+        for (int dy = -1; dy <= 1; dy++)
+          for (int dx = -1; dx <= 1; dx++) {
+            const int yy = y + dy, xx = x + dx;
+            if (yy < 0 || yy >= n || xx < 0 || xx >= n) continue;
+            sum += src[yy * n + xx][c];
+            cnt++;
+          }
+        int v = src[y * n + x][c];
+        v += (v - sum / cnt) / 2;
+        rgb[y * n + x][c] = (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v);
+      }
+}
+
 /* Any size up to 32x32: area-average down to n x n, then the median cut;
  * pixels (n*n/2 bytes) and palette (16) are filled. */
 static int convert_n(const uint8_t* px, int w, int h, int comp, int n, uint8_t* pixels, uint16_t* palette) {
@@ -89,6 +111,8 @@ static int convert_n(const uint8_t* px, int w, int h, int comp, int n, uint8_t* 
   memset(pixels, 0, (size_t)PIXELS / 2);
   memset(palette, 0, 16 * sizeof(uint16_t));
   downscale(px, w, h, comp, n, rgb);
+  if (g_sharpen)
+    sharpen(rgb, n);
   for (int i = 0; i < PIXELS; i++) {
     for (int c = 0; c < 3; c++) p[i].c[c] = (uint8_t)((rgb[i][c] * 31 + 127) / 255);
     p[i].i = (uint16_t)i;
@@ -140,8 +164,23 @@ int dsdbp_convert_pixels(const uint8_t* px, int w, int h, int comp, dsd_badge_t*
   return convert_n(px, w, h, comp, DSD_BADGE_SIZE, out->pixels, out->palette);
 }
 
+/* 16x16: RetroAchievements badges have a frame a few pixels wide that would
+ * take a quarter of so small an image: crop 1/16 off each side first (4 px of
+ * 64), then sharpen a little after the area average, so edges stay crisp. */
 int dsdbp_convert_pixels16(const uint8_t* px, int w, int h, int comp, dsd_badge16_t* out) {
-  return convert_n(px, w, h, comp, DSD_BADGE16_SIZE, out->pixels, out->palette);
+  const int cx = w >= 32 ? w / 16 : 0, cy = h >= 32 ? h / 16 : 0;
+  const int cw = w - 2 * cx, ch = h - 2 * cy;
+  uint8_t* crop = malloc((size_t)cw * ch * comp);
+  int rc;
+  if (!crop)
+    return convert_n(px, w, h, comp, DSD_BADGE16_SIZE, out->pixels, out->palette);
+  for (int y = 0; y < ch; y++)
+    memcpy(crop + (size_t)y * cw * comp, px + ((size_t)(y + cy) * w + cx) * comp, (size_t)cw * comp);
+  g_sharpen = 1;
+  rc = convert_n(crop, cw, ch, comp, DSD_BADGE16_SIZE, out->pixels, out->palette);
+  g_sharpen = 0;
+  free(crop);
+  return rc;
 }
 
 /* Decodes a PNG to RGB or RGBA (grey widened) and calls fn on it. */

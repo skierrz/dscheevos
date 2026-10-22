@@ -335,3 +335,176 @@ void http_free(http_response_t* r)
   free(r->body);
   r->body = NULL;
 }
+
+/* ---- keep-alive GETs (badges): one connection, one TLS handshake ---- */
+
+struct http_ka_t {
+  conn_t c;
+  int https;
+  char host[96], port[8];
+};
+
+http_ka_t* http_ka_open(void)
+{
+  http_ka_t* k = (http_ka_t*)calloc(1, sizeof(*k));
+  if (k)
+    k->c.fd = -1;
+  return k;
+}
+
+static void ka_drop(http_ka_t* k)
+{
+  if (k->c.tls)
+    tls_close(k->c.tls);
+  if (k->c.fd >= 0)
+    close(k->c.fd);
+  k->c.tls = NULL;
+  k->c.fd = -1;
+}
+
+void http_ka_close(http_ka_t* k)
+{
+  if (!k)
+    return;
+  ka_drop(k);
+  free(k);
+}
+
+/* Reads until buf holds at least want bytes. 0, or -1 if the peer stopped. */
+static int ka_need(http_ka_t* k, char** buf, size_t* len, size_t* cap, size_t want)
+{
+  while (*len < want) {
+    int n;
+    if (*cap - *len < 4096) {
+      char* bigger;
+      if (*cap >= MAX_BODY) return -1;
+      bigger = (char*)realloc(*buf, *cap * 2 + 1);
+      if (!bigger) return -1;
+      *buf = bigger;
+      *cap *= 2;
+    }
+    n = conn_recv(&k->c, *buf + *len, *cap - *len);
+    if (n <= 0)
+      return -1;
+    *len += (size_t)n;
+  }
+  return 0;
+}
+
+/* One GET on the open connection. 1: done; 0: the connection failed before
+ * any reply (worth one retry on a new one); -1: a reply that broke off. */
+static int ka_once(http_ka_t* k, const char* path, http_response_t* out)
+{
+  char request[384];
+  size_t cap = 16384, len = 0, hdr, body_at, content_length = 0;
+  char* buf;
+  char* end;
+  int n, chunked, closing;
+  n = snprintf(request, sizeof(request),
+    "GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: %s\r\nAccept: */*\r\nConnection: keep-alive\r\n\r\n",
+    path, k->host, g_user_agent);
+  if (n >= (int)sizeof(request) || conn_send(&k->c, request, (size_t)n) != 0)
+    return 0;
+  buf = (char*)malloc(cap + 1);
+  if (!buf)
+    return -1;
+  /* the headers */
+  for (;;) {
+    if (ka_need(k, &buf, &len, &cap, len + 1) != 0) { free(buf); return len ? -1 : 0; }
+    buf[len] = '\0';
+    end = strstr(buf, "\r\n\r\n");
+    if (end) break;
+    if (len > 8192) { free(buf); return -1; }
+  }
+  hdr = (size_t)(end - buf);
+  body_at = hdr + 4;
+  if (strncmp(buf, "HTTP/1.", 7) != 0) { free(buf); return -1; }
+  out->status = atoi(buf + 9);
+  {
+    char* h;
+    const char* cl;
+    for (h = buf; h < end; h++) *h = (char)tolower((unsigned char)*h);
+    *end = '\0';
+    chunked = strstr(buf, "\r\ntransfer-encoding: chunked") != NULL;
+    closing = strstr(buf, "\r\nconnection: close") != NULL;
+    cl = strstr(buf, "\r\ncontent-length:");
+    if (cl) content_length = strtoul(cl + 17, NULL, 10);
+    else if (!chunked) closing = 1;           /* the body runs to the close */
+  }
+  if (chunked) {
+    /* decode in place: chunks are moved down to body_at as they arrive */
+    size_t at = body_at, out_len = 0;
+    for (;;) {
+      char* nl;
+      unsigned long size;
+      for (;;) {
+        buf[len] = '\0';
+        nl = strstr(buf + at, "\r\n");
+        if (nl) break;
+        if (ka_need(k, &buf, &len, &cap, len + 1) != 0) { free(buf); return -1; }
+      }
+      size = strtoul(buf + at, NULL, 16);
+      at = (size_t)(nl - buf) + 2;
+      if (ka_need(k, &buf, &len, &cap, at + size + 2) != 0) { free(buf); return -1; }
+      if (size == 0) break;                    /* no trailers expected */
+      memmove(buf + body_at + out_len, buf + at, size);
+      out_len += size;
+      at += size + 2;
+    }
+    out->length = out_len;
+  } else if (!closing || content_length) {
+    if (ka_need(k, &buf, &len, &cap, body_at + content_length) != 0) { free(buf); return -1; }
+    out->length = content_length;
+  } else {
+    while (ka_need(k, &buf, &len, &cap, len + 1) == 0) {}
+    out->length = len - body_at;
+  }
+  memmove(buf, buf + body_at, out->length);
+  buf[out->length] = '\0';
+  out->body = buf;
+  if (closing)
+    ka_drop(k);
+  return 1;
+}
+
+void http_ka_get(http_ka_t* k, const char* url, http_response_t* out)
+{
+  char host[96], port[8];
+  const char* path;
+  int https, tries;
+  memset(out, 0, sizeof(*out));
+  out->status = -1;
+  if (parse_url(url, &https, host, sizeof(host), port, &path) != 0) {
+    g_error = "Bad server address";
+    return;
+  }
+  if (k->c.fd >= 0 && (https != k->https || strcmp(host, k->host) || strcmp(port, k->port)))
+    ka_drop(k);
+  for (tries = 0; tries < 2; tries++) {
+    int r;
+    if (k->c.fd < 0) {
+      k->c.fd = open_socket(host, port);
+      if (k->c.fd < 0)
+        return;
+      if (https) {
+        k->c.tls = tls_open(k->c.fd, host, &g_error);
+        if (!k->c.tls) {
+          close(k->c.fd);
+          k->c.fd = -1;
+          return;
+        }
+      }
+      k->https = https;
+      strcpy(k->host, host);
+      strcpy(k->port, port);
+    }
+    r = ka_once(k, path, out);
+    if (r == 1)
+      return;
+    ka_drop(k);
+    out->status = -1;
+    if (r < 0)
+      break;                                  /* a broken reply: don't resend */
+  }
+  g_error = "Couldn't download";
+}

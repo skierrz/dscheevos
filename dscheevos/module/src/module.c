@@ -22,6 +22,7 @@
  * without the direct-read skip it dropped 26 boot frames uncached). */
 #define DSCM_HEAP_UNCACHED_MAX (4u * 1024u * 1024u)
 #endif
+#include <stdlib.h>
 #include <string.h>
 
 #define REG_VCOUNT (*(volatile uint16_t*)0x04000006)
@@ -604,10 +605,40 @@ static void update_cues(void)
 
 /* ---- entry points ---- */
 
+/* Where the session file's blobs end: its size, less the badges block and
+ * its trailer when the launcher added them (DSCM_BOOT_BADGES). The strip
+ * keeps a copy of the badges (the session's memory goes back to the heap). */
+static uint32_t session_tail(void)
+{
+  uint32_t tail = g_boot.file_size, len, magic;
+  if (!(g_boot.flags & DSCM_BOOT_BADGES) || tail < sizeof(dscm_boot_t) + 8)
+    return tail;
+  memcpy(&len, g_replies + tail - 8, 4);
+  memcpy(&magic, g_replies + tail - 4, 4);
+  if (magic != DSCM_BADGES_TRAILER || len < sizeof(dscm_badges_t) || len > tail - sizeof(dscm_boot_t) - 8)
+    return tail;
+  tail -= 8 + len;
+#ifdef DSCM_STRIP
+  {
+    const dscm_badges_t* b = (const dscm_badges_t*)(g_replies + tail);
+    if (b->magic == DSCM_BADGES_MAGIC && b->slot_size == DSCM_BADGES_SLOT && b->count <= DSCM_BADGES_MAX
+        && sizeof(dscm_badges_t) + b->count * (4 + DSCM_BADGES_SLOT) <= len) {
+      void* copy = malloc(sizeof(dscm_badges_t) + b->count * (4 + DSCM_BADGES_SLOT));
+      if (copy) {
+        memcpy(copy, b, sizeof(dscm_badges_t) + b->count * (4 + DSCM_BADGES_SLOT));
+        dscm_strip_set_badges((const dscm_badges_t*)copy);
+      }
+    }
+  }
+#endif
+  return tail;
+}
+
 extern char __bss_start[], __bss_end[];
 
 int module_init(const dscm_boot_t* boot)
 {
+  uint32_t tail;
   dsc_platform_t platform;
   dsc_config_t config;
   int i;
@@ -728,6 +759,7 @@ int module_init(const dscm_boot_t* boot)
   update_cues();
 
   /* Keep using the launcher's Wi-Fi connection during play. */
+  tail = session_tail();
   if (dscm_g_status.active && g_boot.net_valid) {
     static char user_agent[80];
     net_config_t nc;
@@ -761,12 +793,12 @@ int module_init(const dscm_boot_t* boot)
     /* still in the session: nothing writes the arena before the first frame */
     if (g_boot.ca_length && g_boot.ca_offset <= g_boot.file_size && g_boot.ca_length <= g_boot.file_size - g_boot.ca_offset)
       https_add_ca(g_replies + g_boot.ca_offset, g_boot.ca_length);
-    if ((g_boot.flags & DSCM_BOOT_TLS_SESSION) && g_boot.file_size >= sizeof(dscm_boot_t) + 4) {
-      /* the file's last blob, then its length */
+    if ((g_boot.flags & DSCM_BOOT_TLS_SESSION) && tail >= sizeof(dscm_boot_t) + 4) {
+      /* the last blob before the badges (if any), then its length */
       uint32_t len;
-      memcpy(&len, g_replies + g_boot.file_size - 4, 4);
-      if (len && len < g_boot.file_size && DSCM_SESSION_PAD(len) <= g_boot.file_size - sizeof(dscm_boot_t) - 4)
-        https_resume_session(g_replies + g_boot.file_size - 4 - DSCM_SESSION_PAD(len), len);
+      memcpy(&len, g_replies + tail - 4, 4);
+      if (len && len < tail && DSCM_SESSION_PAD(len) <= tail - sizeof(dscm_boot_t) - 4)
+        https_resume_session(g_replies + tail - 4 - DSCM_SESSION_PAD(len), len);
     }
     dscm_publish_net_ring((void*)DSCM_PHYS(ring));
     dscm_g_status.net_state = DSCM_NET_STATE_CONNECTING;

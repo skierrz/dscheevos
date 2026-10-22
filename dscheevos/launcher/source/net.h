@@ -36,4 +36,11 @@ int net_clock_offset_q(int8_t* offset_q);
 void http_request(const char* url, const char* post, const char* content_type, http_response_t* out);
 void http_free(http_response_t* r);
 
+/* Keep-alive GETs to one host (badges): one connection and TLS handshake for
+ * many requests; a closed connection is reopened once. No gzip. */
+typedef struct http_ka_t http_ka_t;
+http_ka_t* http_ka_open(void);
+void http_ka_get(http_ka_t* k, const char* url, http_response_t* out);
+void http_ka_close(http_ka_t* k);
+
 #endif

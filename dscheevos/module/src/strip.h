@@ -22,6 +22,9 @@ extern dscm_strip_stats_t dscm_strip_stats;
 #define STRIP_EDGE_DEFAULT 0
 #endif
 void dscm_strip_init(int hardcore, int edge);
+/* The set's 16x16 badges from the session (a copy the strip keeps). */
+struct dscm_badges_t;
+void dscm_strip_set_badges(const struct dscm_badges_t* b);
 void dscm_strip_frame(uint32_t frame);   /* once a frame, idle pass, IRQs on */
 int dscm_strip_active(void);
 void dscm_strip_arm(uint32_t vblanks);   /* last halt, IRQs masked, before WFI */
