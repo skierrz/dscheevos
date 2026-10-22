@@ -74,6 +74,8 @@ typedef const char* (*dsd_text_fn)(void* ctx, const dsd_item_t* item, int which)
  * stay valid while the item is on screen. */
 struct dsd_badge_t;
 typedef const struct dsd_badge_t* (*dsd_badge_fn)(void* ctx, const dsd_item_t* item);
+/* The thin bar's 16x16 badge for an item, or 0 for the built-in icon. */
+typedef const struct dsd_badge16_t* (*dsd_badge16_fn)(void* ctx, const dsd_item_t* item);
 
 #define DSD_QUEUE_MAX 8
 #define DSD_MISSED_MAX 8
@@ -86,6 +88,7 @@ typedef struct dsd_config_t {
   dsd_badge_fn badge;                 /* 0 = icons only (phase 1) */
   uint8_t side;                       /* DSD_SIDE_*: which side the badge and text sit on */
   void* badge_ctx;
+  dsd_badge16_fn badge16;             /* 0 = icons in the thin bar; uses badge_ctx */
   uint8_t hardcore;                   /* accent colour */
 } dsd_config_t;
 
@@ -117,6 +120,7 @@ typedef struct dsd_t {
   uint16_t layout_h;
   uint16_t render_row;
   const struct dsd_badge_t* badge;    /* drawn instead of the icon, 0 = icon */
+  const struct dsd_badge16_t* badge16; /* the thin bar's, drawn instead of the icon */
   uint8_t value_at;                   /* line 0: glyphs from here are the right-aligned value */
   uint8_t value_x;
   uint8_t widths[256];                /* glyph advance, from the font */

@@ -162,6 +162,7 @@ static int tray_has_challenge(const dsd_t* d) { return first_id(d->challenge_ids
 
 static void layout(dsd_t* d, const dsd_item_t* it, int compact, int w) {
   d->badge = !compact && d->cfg.badge && it->kind != DSD_ITEM_TRAY ? d->cfg.badge(d->cfg.badge_ctx, it) : 0;
+  d->badge16 = compact && d->cfg.badge16 && it->kind != DSD_ITEM_TRAY ? d->cfg.badge16(d->cfg.badge_ctx, it) : 0;
   const int text_x = d->badge ? TEXT_X_BADGE : TEXT_X;
   uint8_t value[DSD_LINE_MAX];
   int nv = 0;
@@ -291,7 +292,7 @@ int dsd_render(dsd_t* d, dsd_surface_t* s, int max_rows) {
     if (right) row[s->w - 1] = row[s->w - 2] = row[s->w - 3] = palette[accent];
     else row[0] = row[1] = row[2] = palette[accent];
 
-    if (d->badge) {
+    if (d->badge || d->badge16) {
       /* drawn below, after the row loop */
     } else if (y >= icon_y && y < icon_y + 16) {
       uint16_t bits = icons[icon][y - icon_y];
@@ -320,6 +321,13 @@ int dsd_render(dsd_t* d, dsd_surface_t* s, int max_rows) {
     dsd_surface_t band = { s->pixels + d->render_row * s->stride, s->w, (uint16_t)(end - d->render_row), s->stride };
     const int bx = d->cfg.side == DSD_SIDE_RIGHT ? s->w - 4 - DSD_BADGE_SIZE : 4;
     dsd_badge_blit(d->badge, locked, &band, bx, (s->h - DSD_BADGE_SIZE) / 2 - d->render_row);
+  }
+  if (d->badge16) {
+    /* In the icon's place: the thin bar's text layout is unchanged. */
+    const int locked = it->kind == DSD_ITEM_PROGRESS || it->kind == DSD_ITEM_CHALLENGE;
+    dsd_surface_t band = { s->pixels + d->render_row * s->stride, s->w, (uint16_t)(end - d->render_row), s->stride };
+    const int bx = d->cfg.side == DSD_SIDE_RIGHT ? s->w - 22 : 6;
+    dsd_badge16_blit(d->badge16, locked, &band, bx, icon_y - d->render_row);
   }
   d->render_row = (uint16_t)end;
   return d->render_row >= s->h;

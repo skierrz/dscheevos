@@ -19,12 +19,12 @@
 #pragma GCC diagnostic pop
 #endif
 
-#define N DSD_BADGE_SIZE
-#define PIXELS (N * N)
+#define NMAX DSD_BADGE_SIZE
+#define PIXELS_MAX (NMAX * NMAX)
 
 /* ---- downscale: each target pixel averages the source area it covers */
 
-static void downscale(const uint8_t* px, int w, int h, int comp, uint8_t rgb[PIXELS][3]) {
+static void downscale(const uint8_t* px, int w, int h, int comp, int N, uint8_t rgb[][3]) {
   for (int ty = 0; ty < N; ty++) {
     const double y0 = (double)ty * h / N, y1 = (double)(ty + 1) * h / N;
     for (int tx = 0; tx < N; tx++) {
@@ -80,11 +80,15 @@ static int box_range(const cpix_t* p, const box_t* b, int* axis) {
 
 static uint16_t bgr555(int r, int g, int b) { return (uint16_t)(r | g << 5 | b << 10); }
 
-int dsdbp_convert_pixels(const uint8_t* px, int w, int h, int comp, dsd_badge_t* out) {
-  static uint8_t rgb[PIXELS][3];
-  static cpix_t p[PIXELS];
-  memset(out, 0, sizeof(*out));
-  downscale(px, w, h, comp, rgb);
+/* Any size up to 32x32: area-average down to n x n, then the median cut;
+ * pixels (n*n/2 bytes) and palette (16) are filled. */
+static int convert_n(const uint8_t* px, int w, int h, int comp, int n, uint8_t* pixels, uint16_t* palette) {
+  static uint8_t rgb[PIXELS_MAX][3];
+  static cpix_t p[PIXELS_MAX];
+  const int PIXELS = n * n;
+  memset(pixels, 0, (size_t)PIXELS / 2);
+  memset(palette, 0, 16 * sizeof(uint16_t));
+  downscale(px, w, h, comp, n, rgb);
   for (int i = 0; i < PIXELS; i++) {
     for (int c = 0; c < 3; c++) p[i].c[c] = (uint8_t)((rgb[i][c] * 31 + 127) / 255);
     p[i].i = (uint16_t)i;
@@ -122,17 +126,27 @@ int dsdbp_convert_pixels(const uint8_t* px, int w, int h, int comp, dsd_badge_t*
     int sum[3] = { 0, 0, 0 };
     for (int i = boxes[b].start; i < boxes[b].start + boxes[b].len; i++)
       for (int c = 0; c < 3; c++) sum[c] += p[i].c[c];
-    const int n = boxes[b].len;
-    out->palette[b] = bgr555((sum[0] + n / 2) / n, (sum[1] + n / 2) / n, (sum[2] + n / 2) / n);
+    const int cnt = boxes[b].len;
+    palette[b] = bgr555((sum[0] + cnt / 2) / cnt, (sum[1] + cnt / 2) / cnt, (sum[2] + cnt / 2) / cnt);
     for (int i = boxes[b].start; i < boxes[b].start + boxes[b].len; i++) {
       const int at = p[i].i;
-      out->pixels[at >> 1] |= (uint8_t)(at & 1 ? b << 4 : b);
+      pixels[at >> 1] |= (uint8_t)(at & 1 ? b << 4 : b);
     }
   }
   return 0;
 }
 
-int dsdbp_convert_png(const void* data, size_t len, dsd_badge_t* out) {
+int dsdbp_convert_pixels(const uint8_t* px, int w, int h, int comp, dsd_badge_t* out) {
+  return convert_n(px, w, h, comp, DSD_BADGE_SIZE, out->pixels, out->palette);
+}
+
+int dsdbp_convert_pixels16(const uint8_t* px, int w, int h, int comp, dsd_badge16_t* out) {
+  return convert_n(px, w, h, comp, DSD_BADGE16_SIZE, out->pixels, out->palette);
+}
+
+/* Decodes a PNG to RGB or RGBA (grey widened) and calls fn on it. */
+static int decode_png(const void* data, size_t len,
+                      int (*fn)(const uint8_t*, int, int, int, void*), void* out) {
   int w, h, comp;
   if (len > 0x7FFFFFFF) return -1;
   uint8_t* px = stbi_load_from_memory(data, (int)len, &w, &h, &comp, 0);
@@ -140,7 +154,7 @@ int dsdbp_convert_png(const void* data, size_t len, dsd_badge_t* out) {
   int rc = -1;
   if (w > 0 && h > 0 && w <= 1024 && h <= 1024) {
     if (comp == 3 || comp == 4) {
-      rc = dsdbp_convert_pixels(px, w, h, comp, out);
+      rc = fn(px, w, h, comp, out);
     } else {
       /* grey (+alpha): widen to RGB(A) */
       const int oc = comp == 2 ? 4 : 3;
@@ -150,7 +164,7 @@ int dsdbp_convert_png(const void* data, size_t len, dsd_badge_t* out) {
           wide[i * oc] = wide[i * oc + 1] = wide[i * oc + 2] = px[i * comp];
           if (oc == 4) wide[i * 4 + 3] = px[i * comp + 1];
         }
-        rc = dsdbp_convert_pixels(wide, w, h, oc, out);
+        rc = fn(wide, w, h, oc, out);
         free(wide);
       }
     }
@@ -158,6 +172,12 @@ int dsdbp_convert_png(const void* data, size_t len, dsd_badge_t* out) {
   stbi_image_free(px);
   return rc;
 }
+
+static int to32(const uint8_t* px, int w, int h, int comp, void* out) { return dsdbp_convert_pixels(px, w, h, comp, out); }
+static int to16(const uint8_t* px, int w, int h, int comp, void* out) { return dsdbp_convert_pixels16(px, w, h, comp, out); }
+
+int dsdbp_convert_png(const void* data, size_t len, dsd_badge_t* out) { return decode_png(data, len, to32, out); }
+int dsdbp_convert_png16(const void* data, size_t len, dsd_badge16_t* out) { return decode_png(data, len, to16, out); }
 
 /* ---- pack file */
 

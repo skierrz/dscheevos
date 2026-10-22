@@ -32,6 +32,15 @@ typedef struct dsd_pack_header_t {
   uint32_t large_offset;              /* 64x64 section, 0 = none (reserved) */
 } dsd_pack_header_t;                  /* 32 bytes */
 
+/* The thin (16-row) bar's badge: 16x16, 4bpp, same layout as dsd_badge_t.
+ * The launcher puts a set's in the session file (module: no SD reads). */
+#define DSD_BADGE16_SIZE 16
+#define DSD_BADGE16_SLOT 160          /* 128 bytes of pixels + 16 BGR555 colours */
+typedef struct dsd_badge16_t {
+  uint8_t pixels[DSD_BADGE16_SIZE * DSD_BADGE16_SIZE / 2];
+  uint16_t palette[16];
+} dsd_badge16_t;
+
 /* Slot index of an achievement in the pack's id table, or -1. */
 int dsd_pack_find(const uint32_t* ids, uint32_t count, uint32_t id);
 
@@ -40,5 +49,6 @@ void dsd_badge_locked_palette(const uint16_t in[16], uint16_t out[16]);
 
 /* Draw a badge at (x, y), clipped to the surface. */
 void dsd_badge_blit(const dsd_badge_t* b, int locked, dsd_surface_t* s, int x, int y);
+void dsd_badge16_blit(const dsd_badge16_t* b, int locked, dsd_surface_t* s, int x, int y);
 
 #endif

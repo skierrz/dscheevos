@@ -352,6 +352,69 @@ static void test_notices_with_badges(void) {
   golden("badges_synthetic", sheet, 128 * 4, 128);
 }
 
+/* ---- the thin bar's 16x16 badges */
+
+static dsd_badge16_t test_badge16;
+
+static const struct dsd_badge16_t* badge16(void* ctx, const dsd_item_t* it) {
+  (void)ctx;
+  return it->id == 101 ? &test_badge16 : 0;
+}
+
+static void render16(const char* name, uint16_t kind, uint32_t id, int32_t value, uint16_t* px) {
+  static dscm_notices_t n;
+  dsd_t d;
+  const dsd_config_t cfg = { .font = &dsd_font_latin, .text = text, .badge16 = badge16, .hardcore = 1 };
+  dsd_init(&d, &cfg);
+  memset(&n, 0, sizeof(n));
+  n.magic = DSCM_NOTICES_MAGIC;
+  n.head = 1;
+  n.ring[1].seq = 1;
+  n.ring[1].kind = kind;
+  n.ring[1].id = id;
+  n.ring[1].value = value;
+  dsd_ingest(&d, &n);
+  const dsd_caps_t caps = { 16, 0 };
+  dsd_tick(&d, 1, &caps);
+  dsd_surface_t s = { px, 256, 16, 256 };
+  int calls = 0;
+  while (!dsd_render(&d, &s, 5)) calls++;           /* in bands: the badge spans several */
+  CHECK(calls == 3);
+  golden(name, px, 256, 16);
+}
+
+static void test_badges16(void) {
+  /* exact colours survive 64 -> 16 when they come in 4x4 blocks */
+  static uint8_t px[64 * 64 * 3];
+  static const uint8_t cols[4][3] = { {255, 0, 0}, {0, 255, 0}, {0, 0, 255}, {255, 255, 255} };
+  for (int y = 0; y < 64; y++)
+    for (int x = 0; x < 64; x++)
+      memcpy(px + (y * 64 + x) * 3, cols[((x / 4) + (y / 4) * 3) % 4], 3);
+  size_t len;
+  uint8_t* png = make_png(px, 64, 64, 3, &len);
+  dsd_badge16_t b;
+  CHECK(dsdbp_convert_png16(png, len, &b) == 0);
+  free(png);
+  int wrong = 0;
+  for (int y = 0; y < 16; y++)
+    for (int x = 0; x < 16; x++) {
+      int r, g, bl;
+      const uint8_t two = b.pixels[(y * 16 + x) >> 1];
+      rgb_of(b.palette[x & 1 ? two >> 4 : two & 15], &r, &g, &bl);
+      const uint8_t* c = cols[(x + y * 3) % 4];
+      if (r != c[0] * 31 / 255 || g != c[1] * 31 / 255 || bl != c[2] * 31 / 255) wrong++;
+    }
+  CHECK(wrong == 0);
+
+  /* in the thin bar, in the icon's place; unlocked and locked; no badge: the icon */
+  synth(px, 64, 64, 3, 3);
+  dsdbp_convert_pixels16(px, 64, 64, 3, &test_badge16);
+  static uint16_t a[256 * 16], c[256 * 16], m[256 * 16];
+  render16("badge16_unlock", DSCM_NOTICE_UNLOCK, 101, 10, a);
+  render16("badge16_progress_locked", DSCM_NOTICE_PROGRESS, 101, 0, c);
+  render16("badge16_missing", DSCM_NOTICE_UNLOCK, 555, 10, m);
+}
+
 /* ---- optional: real badges from a local folder (never committed) */
 
 static void samples(const char* dir) {
@@ -406,6 +469,7 @@ int main(int argc, char** argv) {
   test_odd_inputs();
   test_pack();
   test_notices_with_badges();
+  test_badges16();
   const char* dir = getenv("DSD_BADGE_SAMPLES");
   if (dir && *dir) samples(dir);
 
