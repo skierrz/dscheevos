@@ -164,23 +164,32 @@ int dsdbp_convert_pixels(const uint8_t* px, int w, int h, int comp, dsd_badge_t*
   return convert_n(px, w, h, comp, DSD_BADGE_SIZE, out->pixels, out->palette);
 }
 
-/* 16x16: RetroAchievements badges have a frame a few pixels wide that would
- * take a quarter of so small an image: crop 1/16 off each side first (4 px of
- * 64), then sharpen a little after the area average, so edges stay crisp. */
-int dsdbp_convert_pixels16(const uint8_t* px, int w, int h, int comp, dsd_badge16_t* out) {
+/* RetroAchievements badges have a frame a few pixels wide that would take a
+ * good part of a small image: crop 1/16 off each side first (4 px of 64),
+ * then sharpen a little after the area average, so edges stay crisp. The
+ * plain 32x32 conversion (the SD pack) keeps the whole image. */
+static int convert_cropped(const uint8_t* px, int w, int h, int comp, int n, uint8_t* pixels, uint16_t* palette) {
   const int cx = w >= 32 ? w / 16 : 0, cy = h >= 32 ? h / 16 : 0;
   const int cw = w - 2 * cx, ch = h - 2 * cy;
   uint8_t* crop = malloc((size_t)cw * ch * comp);
   int rc;
   if (!crop)
-    return convert_n(px, w, h, comp, DSD_BADGE16_SIZE, out->pixels, out->palette);
+    return convert_n(px, w, h, comp, n, pixels, palette);
   for (int y = 0; y < ch; y++)
     memcpy(crop + (size_t)y * cw * comp, px + ((size_t)(y + cy) * w + cx) * comp, (size_t)cw * comp);
   g_sharpen = 1;
-  rc = convert_n(crop, cw, ch, comp, DSD_BADGE16_SIZE, out->pixels, out->palette);
+  rc = convert_n(crop, cw, ch, comp, n, pixels, palette);
   g_sharpen = 0;
   free(crop);
   return rc;
+}
+
+int dsdbp_convert_pixels16(const uint8_t* px, int w, int h, int comp, dsd_badge16_t* out) {
+  return convert_cropped(px, w, h, comp, DSD_BADGE16_SIZE, out->pixels, out->palette);
+}
+
+int dsdbp_convert_pixels32c(const uint8_t* px, int w, int h, int comp, dsd_badge_t* out) {
+  return convert_cropped(px, w, h, comp, DSD_BADGE_SIZE, out->pixels, out->palette);
 }
 
 /* Decodes a PNG to RGB or RGBA (grey widened) and calls fn on it. */
@@ -214,9 +223,11 @@ static int decode_png(const void* data, size_t len,
 
 static int to32(const uint8_t* px, int w, int h, int comp, void* out) { return dsdbp_convert_pixels(px, w, h, comp, out); }
 static int to16(const uint8_t* px, int w, int h, int comp, void* out) { return dsdbp_convert_pixels16(px, w, h, comp, out); }
+static int to32c(const uint8_t* px, int w, int h, int comp, void* out) { return dsdbp_convert_pixels32c(px, w, h, comp, out); }
 
 int dsdbp_convert_png(const void* data, size_t len, dsd_badge_t* out) { return decode_png(data, len, to32, out); }
 int dsdbp_convert_png16(const void* data, size_t len, dsd_badge16_t* out) { return decode_png(data, len, to16, out); }
+int dsdbp_convert_png32c(const void* data, size_t len, dsd_badge_t* out) { return decode_png(data, len, to32c, out); }
 
 /* ---- pack file */
 

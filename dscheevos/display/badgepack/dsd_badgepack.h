@@ -27,6 +27,10 @@ int dsdbp_convert_png(const void* data, size_t len, dsd_badge_t* out);
 int dsdbp_convert_pixels16(const uint8_t* px, int w, int h, int comp, dsd_badge16_t* out);
 int dsdbp_convert_png16(const void* data, size_t len, dsd_badge16_t* out);
 
+/* 32x32 with the frame cropped and the sharpening, for the full-height bar's session badges. */
+int dsdbp_convert_pixels32c(const uint8_t* px, int w, int h, int comp, dsd_badge_t* out);
+int dsdbp_convert_png32c(const void* data, size_t len, dsd_badge_t* out);
+
 /* Writes a pack (entries in any order; sorted by id here) to path.tmp and
  * renames it over path, so a half-written pack never replaces a good one.
  * Duplicate ids keep the first. Returns 0 or -1. */

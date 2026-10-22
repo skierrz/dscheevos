@@ -621,11 +621,13 @@ static uint32_t session_tail(void)
 #ifdef DSCM_STRIP
   {
     const dscm_badges_t* b = (const dscm_badges_t*)(g_replies + tail);
-    if (b->magic == DSCM_BADGES_MAGIC && b->slot_size == DSCM_BADGES_SLOT && b->count <= DSCM_BADGES_MAX
-        && sizeof(dscm_badges_t) + b->count * (4 + DSCM_BADGES_SLOT) <= len) {
-      void* copy = malloc(sizeof(dscm_badges_t) + b->count * (4 + DSCM_BADGES_SLOT));
+    const int ok16 = b->magic == DSCM_BADGES_MAGIC && b->slot_size == DSCM_BADGES_SLOT;
+    const int ok32 = b->magic == DSCM_BADGES_MAGIC32 && b->slot_size == DSCM_BADGES_SLOT32;
+    if ((ok16 || ok32) && b->count <= DSCM_BADGES_MAX
+        && sizeof(dscm_badges_t) + b->count * (4 + b->slot_size) <= len) {
+      void* copy = malloc(sizeof(dscm_badges_t) + b->count * (4 + b->slot_size));
       if (copy) {
-        memcpy(copy, b, sizeof(dscm_badges_t) + b->count * (4 + DSCM_BADGES_SLOT));
+        memcpy(copy, b, sizeof(dscm_badges_t) + b->count * (4 + b->slot_size));
         dscm_strip_set_badges((const dscm_badges_t*)copy);
       }
     }

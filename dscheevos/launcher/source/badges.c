@@ -7,8 +7,8 @@
  * the module draws them from memory: no SD reads or network during play.
  * Nothing here affects achievements, hardcore or what is sent to the server.
  *
- * Cache: sd:/_nds/dscheevos/badges/<game id>.b16
- *   "DSC6", version 1, count, then count x { id, badge name[16], slot[160] } */
+ * Cache: sd:/_nds/dscheevos/badges/<game id>.b16 (16x16) or .b32 (32x32, BADGE_SIZE = 32)
+ *   "DSC6", version 2, slot size, count, then count x { id, badge name[16], slot } */
 #include <nds.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,30 +25,33 @@
 #include "ui.h"
 
 #define CACHE_MAGIC 0x36435344u        /* "DSC6" */
-#define CACHE_VERSION 1u
+#define CACHE_VERSION 2u
 #define MEDIA_HOST "https://media.retroachievements.org"
 #define RA_HOST "https://retroachievements.org"
 
 typedef struct entry_t {
   uint32_t id;
   char name[16];
-  uint8_t slot[DSCM_BADGES_SLOT];
+  uint8_t slot[DSCM_BADGES_SLOT32];   /* the first slot_size bytes are used */
 } entry_t;
 
 static entry_t* g_entries;           /* the set's, in the list's order */
 static int g_count;
 static uint8_t* g_block;               /* for the session file */
 
+static uint32_t g_slot;                /* DSCM_BADGES_SLOT or DSCM_BADGES_SLOT32 */
+
 static void cache_path(char* out, size_t size, uint32_t game_id, int tmp)
 {
-  snprintf(out, size, DSC_DIR "badges/%lu.b16%s", (unsigned long)game_id, tmp ? ".tmp" : "");
+  snprintf(out, size, DSC_DIR "badges/%lu.b%d%s", (unsigned long)game_id, g_slot == DSCM_BADGES_SLOT32 ? 32 : 16,
+           tmp ? ".tmp" : "");
 }
 
 /* The cached entries (caller frees), or 0. */
 static entry_t* cache_read(uint32_t game_id, uint32_t* count)
 {
   char path[96];
-  uint32_t head[3];
+  uint32_t head[4];
   entry_t* e = NULL;
   FILE* f;
   cache_path(path, sizeof(path), game_id, 0);
@@ -57,10 +60,14 @@ static entry_t* cache_read(uint32_t game_id, uint32_t* count)
   if (!f)
     return NULL;
   if (fread(head, 1, sizeof(head), f) == sizeof(head) && head[0] == CACHE_MAGIC && head[1] == CACHE_VERSION
-      && head[2] <= DSCM_BADGES_MAX * 2) {
-    e = (entry_t*)malloc(head[2] * sizeof(entry_t) + 1);
-    if (e && fread(e, sizeof(entry_t), head[2], f) == head[2])
-      *count = head[2];
+      && head[2] == g_slot && head[3] <= DSCM_BADGES_MAX * 2) {
+    uint32_t i;
+    e = (entry_t*)malloc(head[3] * sizeof(entry_t) + 1);
+    for (i = 0; e && i < head[3]; i++)
+      if (fread(&e[i].id, 1, 4, f) != 4 || fread(e[i].name, 1, 16, f) != 16 || fread(e[i].slot, 1, g_slot, f) != g_slot)
+        break;
+    if (e && i == head[3])
+      *count = head[3];
     else {
       free(e);
       e = NULL;
@@ -74,10 +81,10 @@ static entry_t* cache_read(uint32_t game_id, uint32_t* count)
 static void cache_write(uint32_t game_id, const entry_t* e, const uint8_t* ok, int count)
 {
   char path[96], tmp[96];
-  uint32_t head[3] = { CACHE_MAGIC, CACHE_VERSION, 0 };
+  uint32_t head[4] = { CACHE_MAGIC, CACHE_VERSION, g_slot, 0 };
   FILE* f;
   int i, bad;
-  for (i = 0; i < count; i++) head[2] += ok[i];
+  for (i = 0; i < count; i++) head[3] += ok[i];
   mkdir(DSC_DIR "badges", 0777);
   cache_path(tmp, sizeof(tmp), game_id, 1);
   cache_path(path, sizeof(path), game_id, 0);
@@ -86,8 +93,11 @@ static void cache_write(uint32_t game_id, const entry_t* e, const uint8_t* ok, i
     return;
   fwrite(head, 1, sizeof(head), f);
   for (i = 0; i < count; i++)
-    if (ok[i])
-      fwrite(&e[i], 1, sizeof(entry_t), f);
+    if (ok[i]) {
+      fwrite(&e[i].id, 1, 4, f);
+      fwrite(e[i].name, 1, 16, f);
+      fwrite(e[i].slot, 1, g_slot, f);
+    }
   bad = ferror(f);
   fclose(f);
   if (bad) {
@@ -122,6 +132,7 @@ void badges_prepare(const dsc_settings_t* settings, uint32_t game_id)
   g_count = 0;
   if (n <= 0 || !settings->badges)
     return;
+  g_slot = settings->badge_size == 32 ? DSCM_BADGES_SLOT32 : DSCM_BADGES_SLOT;
   g_entries = (entry_t*)calloc((size_t)n, sizeof(entry_t));
   ok = (uint8_t*)calloc((size_t)n, 1);
   if (!g_entries || !ok) {
@@ -138,7 +149,7 @@ void badges_prepare(const dsc_settings_t* settings, uint32_t game_id)
     memcpy(g_entries[i].name, list[i].name, sizeof(g_entries[i].name));
     for (k = 0; k < cached_n; k++)
       if (cached[k].id == list[i].id && !strncmp(cached[k].name, list[i].name, sizeof(cached[k].name))) {
-        memcpy(g_entries[i].slot, cached[k].slot, DSCM_BADGES_SLOT);
+        memcpy(g_entries[i].slot, cached[k].slot, g_slot);
         ok[i] = 1;
         have++;
         break;
@@ -168,7 +179,9 @@ void badges_prepare(const dsc_settings_t* settings, uint32_t game_id)
       ui_bottom("\x1b[2;0H Badges %d/%d   \n\n B: skip\n", have + fetched + failed + 1, n);
       snprintf(url, sizeof(url), "%s/Badge/%s.png", media, list[i].name);
       http_ka_get(ka, url, &r);
-      if (r.status == 200 && r.body && dsdbp_convert_png16(r.body, r.length, (dsd_badge16_t*)g_entries[i].slot) == 0) {
+      if (r.status == 200 && r.body
+          && (g_slot == DSCM_BADGES_SLOT32 ? dsdbp_convert_png32c(r.body, r.length, (dsd_badge_t*)g_entries[i].slot)
+                                           : dsdbp_convert_png16(r.body, r.length, (dsd_badge16_t*)g_entries[i].slot)) == 0) {
         ok[i] = 1;
         fetched++;
       } else {
@@ -205,17 +218,17 @@ void badges_prepare(const dsc_settings_t* settings, uint32_t game_id)
     qsort(sorted, (size_t)m, sizeof(entry_t), cmp_entry);
     if (m > (int)DSCM_BADGES_MAX)
       m = DSCM_BADGES_MAX;
-    block_len = (uint32_t)(sizeof(dscm_badges_t) + (size_t)m * (4 + DSCM_BADGES_SLOT));
+    block_len = (uint32_t)(sizeof(dscm_badges_t) + (size_t)m * (4 + g_slot));
     g_block = (uint8_t*)malloc(block_len);
     if (g_block && m) {
       dscm_badges_t* b = (dscm_badges_t*)g_block;
       uint8_t* slots = (uint8_t*)&b->ids[m];
-      b->magic = DSCM_BADGES_MAGIC;
+      b->magic = g_slot == DSCM_BADGES_SLOT32 ? DSCM_BADGES_MAGIC32 : DSCM_BADGES_MAGIC;
       b->count = (uint32_t)m;
-      b->slot_size = DSCM_BADGES_SLOT;
+      b->slot_size = g_slot;
       for (i = 0; i < m; i++) {
         b->ids[i] = sorted[i].id;
-        memcpy(slots + (size_t)i * DSCM_BADGES_SLOT, sorted[i].slot, DSCM_BADGES_SLOT);
+        memcpy(slots + (size_t)i * g_slot, sorted[i].slot, g_slot);
       }
       session_set_badges(g_block, block_len);
     }

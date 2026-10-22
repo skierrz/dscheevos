@@ -172,14 +172,25 @@ static const dscm_badges_t* g_badges; /* the set's 16x16 badges, or 0: icons */
 
 void dscm_strip_set_badges(const dscm_badges_t* b) { g_badges = b; }
 
-/* An achievement's badge: unlocks, progress and challenges name one. */
-static const struct dsd_badge16_t* badge16_fn(void* ctx, const dsd_item_t* it) {
-  (void)ctx;
-  if (!g_badges || (it->kind != DSD_ITEM_UNLOCK && it->kind != DSD_ITEM_PROGRESS && it->kind != DSD_ITEM_CHALLENGE))
+/* An achievement's badge slot, or 0: unlocks, progress and challenges name one. */
+static const uint8_t* badge_slot(const dsd_item_t* it, uint32_t slot_size) {
+  if (!g_badges || g_badges->slot_size != slot_size
+      || (it->kind != DSD_ITEM_UNLOCK && it->kind != DSD_ITEM_PROGRESS && it->kind != DSD_ITEM_CHALLENGE))
     return 0;
   const int i = dsd_pack_find(g_badges->ids, g_badges->count, it->id);
   if (i < 0) return 0;
-  return (const dsd_badge16_t*)((const uint8_t*)&g_badges->ids[g_badges->count] + (uint32_t)i * DSCM_BADGES_SLOT);
+  return (const uint8_t*)&g_badges->ids[g_badges->count] + (uint32_t)i * slot_size;
+}
+
+static const struct dsd_badge16_t* badge16_fn(void* ctx, const dsd_item_t* it) {
+  (void)ctx;
+  return (const dsd_badge16_t*)badge_slot(it, DSCM_BADGES_SLOT);
+}
+
+/* The full-height bar (STRIP_ROWS 32) draws 32x32 ones. */
+static const struct dsd_badge_t* badge32_fn(void* ctx, const dsd_item_t* it) {
+  (void)ctx;
+  return (const dsd_badge_t*)badge_slot(it, DSCM_BADGES_SLOT32);
 }
 
 void dscm_strip_init(int hardcore, int edge) {
@@ -188,6 +199,7 @@ void dscm_strip_init(int hardcore, int edge) {
   cfg.font = &dsd_font_latin;
   cfg.text = text_fn;
   cfg.badge16 = badge16_fn;
+  cfg.badge = badge32_fn;
   cfg.hardcore = (uint8_t)hardcore;
   dsd_init(&g_dsd, &cfg);
   memset(&S, 0, sizeof S);

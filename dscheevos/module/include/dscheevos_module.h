@@ -245,11 +245,13 @@ typedef struct dscm_boot_t {
 #define DSCM_BADGES_MAGIC 0x36425344u   /* "DSB6": 16x16 slots */
 #define DSCM_BADGES_TRAILER 0x54425344u /* "DSBT" */
 #define DSCM_BADGES_SLOT 160u           /* 128 bytes of 4bpp pixels, then 16 BGR555 colours */
+#define DSCM_BADGES_MAGIC32 0x33425344u /* "DSB3": 32x32 slots, for the full-height bar */
+#define DSCM_BADGES_SLOT32 544u         /* 512 bytes of 4bpp pixels, then 16 colours */
 #define DSCM_BADGES_MAX 256u            /* slots the module keeps (41 KB) */
 typedef struct dscm_badges_t {
   uint32_t magic;                     /* DSCM_BADGES_MAGIC */
   uint32_t count;                     /* slots */
-  uint32_t slot_size;                 /* DSCM_BADGES_SLOT */
+  uint32_t slot_size;                 /* DSCM_BADGES_SLOT, or DSCM_BADGES_SLOT32 with DSCM_BADGES_MAGIC32 */
   uint32_t ids[];                     /* count, ascending; then count slots */
 } dscm_badges_t;
 

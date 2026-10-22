@@ -81,6 +81,8 @@ mkdir -p "$sd0/_nds/dscheevos"
 printf '[DSCHEEVOS]\nENABLED = 1\nHARDCORE = 1\nUSERNAME = tester\nTOKEN = MockToken\nHOST = https://10.64.0.1:%s\n' "$port" > "$sd0/_nds/dscheevos/dscheevos.ini"
 # LAB (strip-lab): NOTICE_EDGE=auto|top|bottom, where on-screen notices go
 [ -z "${NOTICE_EDGE:-}" ] || printf 'NOTICE_EDGE = %s\n' "$NOTICE_EDGE" >> "$sd0/_nds/dscheevos/dscheevos.ini"
+# LAB: more lines for dscheevos.ini, e.g. "BADGE_SIZE = 32"
+[ -z "${EXTRA_INI:-}" ] || printf '%b\n' "$EXTRA_INI" >> "$sd0/_nds/dscheevos/dscheevos.ini"
 cp "$repo/dscheevos/launcher/dscheevos-launcher.nds" "$sd0/_nds/nds-bootstrap-release.nds"
 cp "$repo/dscheevos/launcher/loader/out/load.bin" "$repo/dscheevos/module/build/dscheevos9.bin" "$work/tls/ca.pem" "$sd0/_nds/dscheevos/"
 cp "$BOOTSTRAP" "$sd0/_nds/dscheevos/nds-bootstrap.nds"
