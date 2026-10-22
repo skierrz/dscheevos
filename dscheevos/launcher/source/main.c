@@ -6,6 +6,7 @@
  * reads the same ini and loads the module with the session.
  */
 #include "badges.h"
+#include "settings_ui.h"
 #include "apfix.h"
 #include "chainload.h"
 #include "config.h"
@@ -191,12 +192,15 @@ static void settings_menu(void)
               settings.hardcore ? "on (hardcore)" : settings.live ? "on" : "off");
     ui_bottom(" \x1b[32;1mL\x1b[39;0m  Skip unofficial achievements:\n     %s\n", settings.skip_unofficial ? "on" : "off");
     ui_bottom(" \x1b[32;1mY\x1b[39;0m  Log out%s%s\n", settings.username[0] ? " " : "", settings.username);
+    ui_bottom(" \x1b[32;1mSELECT\x1b[39;0m  Notice bar: %s, %s\n", settings.notice_big ? "big" : "thin",
+              settings.notice_edge == 1 ? "top" : settings.notice_edge == 2 ? "bottom" : "auto");
     ui_bottom("\n \x1b[31;1mB\x1b[39;0m  Done\n");
     do {
       swiWaitForVBlank();
       scanKeys();
       k = keysDown();
-    } while (!(k & (KEY_A | KEY_B | KEY_X | KEY_Y | KEY_R | KEY_L)));
+    } while (!(k & (KEY_A | KEY_B | KEY_X | KEY_Y | KEY_R | KEY_L | KEY_SELECT)));
+    if (k & KEY_SELECT) { notice_settings_menu(&settings); continue; }
     if (k & KEY_A) settings.enabled = !settings.enabled;
     if (k & KEY_X) settings.hardcore = !settings.hardcore;
     if ((k & KEY_R) && !settings.hardcore) settings.live = !settings.live;
@@ -299,8 +303,20 @@ int main(int argc, char** argv)
           boot_game(0);
         continue;
       }
-      if (ui_wait("Have fun!\n\n B  Play without achievements", 90) & KEY_B)
-        boot_game(0);
+      {
+        const int k = ui_wait("Have fun!\n\n B       Skip achievements\n SELECT  Notice bar settings", 90);
+        if (k & KEY_B)
+          boot_game(0);
+        if ((k & KEY_SELECT) && notice_settings_menu(&settings)) {
+          /* badges to match the new bar, and the session file again */
+          ui_status("Saving the settings...");
+          badges_prepare(&settings, info.game_id);
+          if (!session_write(&settings, rom_path, hash)) {
+            log_line("session: couldn't write the session file after the settings");
+            boot_game(0);
+          }
+        }
+      }
       boot_game(1);
     }
     if (r == SESSION_TOO_BIG) {

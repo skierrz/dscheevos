@@ -228,6 +228,28 @@ melonDS: Phoenix Wright with no setting: thin bar at line 175, 1231 of 1246 noti
 with `NOTICE_SIZE = big` (relaxed build): big bar at line 159, 1838 of 1924, 32x32 badges with title and
 description. The big bar's layout: badge, "Achievement unlocked" and points, title, description (cut with "...").
 
+## Round 7 (2026-10-22, owner): settings on the console; every game gets a bar
+
+Owner: "Goal is to have every single game have the bar no matter what, and then players can choose a preference
+based on ones where both work."
+
+- **Settings on the DSi:** the "Have fun!" screen before every game offers SELECT for the notice bar's settings
+  (bar thin/big, position auto/top/bottom, badges on/off; `launcher/source/settings_ui.c`); the launcher's own
+  Settings (hold SELECT while a game starts) links to the same page. A change is saved to `dscheevos.ini`, the
+  badges are made again at the new size and the session file is rewritten, before boot.
+- **Forced fallback:** one module build learns both heights, strict and relaxed, from the same halt/wake log, then
+  takes the first that would have shown whole on at least half the frames watched: the player's size strict, the
+  other size strict, the player's size relaxed, the other size relaxed (else the best of them). Relaxed is on by
+  default (`STRIP_STRICT` builds leave it out); a game that writes DISPCNT under the relaxed bar is placed again,
+  strict only. Badges of the other size are made to fit when drawn (32 -> 16: each 2x2 block's most common colour;
+  16 -> 32: doubled). Status: `mode` (bit 0 big, bit 1 relaxed) and `forced`.
+- **melonDS:** Phoenix Wright, no settings: thin, strict, line 175, not forced. Phoenix Wright with big + top: big,
+  strict, line 0, not forced. Kirby gameplay, no settings: forced to the thin relaxed bar, whole on 2187 of 2274
+  notice frames. The settings page, checked by screenshots: SELECT, Big, Top, START; saved and used.
+- **Still no bar:** games where DScheevos itself doesn't run yet (BIOS-wait games such as Castlevania: Dawn of
+  Sorrow and Metroid Prime Pinball: idle-coverage's work), and any game whose IRQs wake it inside every line
+  (no relaxed position either; none seen so far).
+
 ## Not covered
 
 - Real hardware: bus contention (H5), ARM7 audio under the FIFO (A7), whether the DSi feeds a mid-frame FIFO

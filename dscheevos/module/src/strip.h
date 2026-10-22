@@ -13,6 +13,7 @@ typedef struct dscm_strip_stats_t {
   uint32_t resumes, gap_lines, frames_resumed;
   uint32_t relaxed_wakes, work_under, work_lines, game_dispcnt;
   uint32_t demos, gamedma_ok, late_waits;
+  uint32_t mode, forced;               /* the bar in use: bit 0 big, bit 1 relaxed (0xFF none); forced: not the player's size or not strict */
 } dscm_strip_stats_t;
 
 extern dscm_strip_stats_t dscm_strip_stats;

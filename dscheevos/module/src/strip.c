@@ -61,24 +61,26 @@
 #ifndef STRIP_ROWS
 #define STRIP_ROWS 16                 /* the default height: the thin bar (compact layout) */
 #endif
-#ifdef STRIP_LABHW                     /* the lab hardware build: relaxed + the test notice */
-#define STRIP_RELAXED 1
+#ifdef STRIP_LABHW                     /* the lab hardware build: the test notice */
 #define STRIP_DEMO 1
 #endif
-#ifdef STRIP_RELAXED
-#define RELAXED 1                     /* experiment: the game's IRQ handlers may run while the bar is up */
+/* The relaxed bar (the game's IRQ handlers may run while it is up) is the
+ * fallback for games where no strict position fits: on unless built with
+ * STRIP_STRICT. RELAXED: the bar in use now is the relaxed one. */
+#ifdef STRIP_STRICT
+#define RELAX_ALLOWED 0
 #else
-#define RELAXED 0
+#define RELAX_ALLOWED 1
 #endif
+#define RELAXED (S.relaxed && !S.relax_off)
 #ifndef STRIP_RESUME
 #define STRIP_RESUME 0
 #endif
 #define ROWS_MAX 32                   /* the big bar (full layout, 32x32 badges) */
-static int g_rows = STRIP_ROWS;      /* the player's NOTICE_SIZE: 16 thin, 32 big */
+static int g_rows = STRIP_ROWS;      /* the bar's height now: 16 thin, 32 big */
+static int g_pref_rows = STRIP_ROWS; /* the player's NOTICE_SIZE */
 #define ROWS g_rows
-#if defined(STRIP_OBSERVE) || defined(STRIP_RELAXED)
-#define STRIP_RSCORE 1                /* also score positions with the game's IRQ handlers allowed */
-#endif
+#define SZ(rows) ((rows) == 32)       /* score arrays: [0] thin, [1] big */
 #define MARGIN 2                      /* rows fed past the bar: a late switch shows our background */
 #define FIRST_MAX (191 - ROWS)        /* the bar ends by line 190; 191 is always the game's */
 #define LEARN_FRAMES 300               /* 5 s of watching, then pick */
@@ -111,6 +113,7 @@ static struct {
   uint32_t last_line;                 /* the latest absolute line seen */
   uint32_t wake_line;                 /* RELAXED: the last wake while the bar was armed (absolute) */
   uint8_t woke_armed;                 /* RELAXED: a wake let the game run with the bar armed */
+  uint8_t relaxed;                    /* the bar in use is the relaxed one (chosen by pick) */
   uint8_t relax_off;                  /* RELAXED: turned off for this session (the game wrote DISPCNT) */
   uint32_t wakes, wakes_last;         /* wakes this frame / last frame */
   uint32_t head;                      /* ring entries written */
@@ -126,17 +129,16 @@ static struct {
   uint32_t frame;                     /* frame being accumulated */
   uint8_t started;
   uint8_t paused[194], woke[194];     /* lines -2..191 of that frame */
-#ifdef STRIP_RSCORE
   /* The same, if the game's interrupt handlers were allowed to run while the
    * bar is up: a wake after which the game halts again within a line counts
    * as no wake (only a handler ran, no game thread). */
   uint8_t rpaused[194], rwoke[194];
   uint32_t prev_b;
-  uint16_t rfull[192];
   uint32_t obs_frames;
-#endif
   uint32_t frames;                    /* frames scored */
-  uint16_t full[192];                 /* frames in which a bar starting at this line would have shown whole */
+  /* frames in which a bar starting at this line would have shown whole:
+   * [thin, big], strict and relaxed */
+  uint16_t full[2][192], rfull[2][192];
   uint16_t lines[192];                /* frames in which this line was paused (for STRIP_RESUME) */
   uint8_t picked;
   uint32_t learn_start;                /* module frame learning began */
@@ -147,6 +149,7 @@ static struct {
 dscm_strip_stats_t dscm_strip_stats;
 static uint32_t g_render_gen;         /* scene drawn into g_px */
 static uint8_t g_rendered;
+static int g_rendered_rows;           /* the height g_px was drawn for */
 
 #define DEMO_ID 0xDE30u                /* STRIP_DEMO: the test notice (never an RA id here: no seq) */
 
@@ -184,15 +187,57 @@ static const uint8_t* badge_slot(const dsd_item_t* it, uint32_t slot_size) {
   return (const uint8_t*)&g_badges->ids[g_badges->count] + (uint32_t)i * slot_size;
 }
 
+/* When the bar was forced to the other height, the session's badges are the
+ * wrong size: made to fit when drawn (one notice at a time, one scratch slot
+ * each). 32 -> 16: each 2x2 block's most common colour; 16 -> 32: doubled. */
+static dsd_badge16_t g_small;
+static dsd_badge_t g_large;
+
 static const struct dsd_badge16_t* badge16_fn(void* ctx, const dsd_item_t* it) {
+  const dsd_badge_t* big;
   (void)ctx;
-  return (const dsd_badge16_t*)badge_slot(it, DSCM_BADGES_SLOT);
+  const uint8_t* slot = badge_slot(it, DSCM_BADGES_SLOT);
+  if (slot) return (const dsd_badge16_t*)slot;
+  big = (const dsd_badge_t*)badge_slot(it, DSCM_BADGES_SLOT32);
+  if (!big) return 0;
+  memcpy(g_small.palette, big->palette, sizeof g_small.palette);
+  memset(g_small.pixels, 0, sizeof g_small.pixels);
+  for (int y = 0; y < 16; y++)
+    for (int x = 0; x < 16; x++) {
+      uint8_t c[4];
+      int best = 0, best_n = 0;
+      for (int k = 0; k < 4; k++) {
+        const int sx = x * 2 + (k & 1), sy = y * 2 + (k >> 1);
+        const uint8_t two = big->pixels[(sy * 32 + sx) >> 1];
+        c[k] = sx & 1 ? two >> 4 : two & 15;
+      }
+      for (int k = 0; k < 4; k++) {
+        int n = 0;
+        for (int j = 0; j < 4; j++) n += c[j] == c[k];
+        if (n > best_n) { best_n = n; best = c[k]; }
+      }
+      g_small.pixels[(y * 16 + x) >> 1] |= (uint8_t)(x & 1 ? best << 4 : best);
+    }
+  return &g_small;
 }
 
-/* The big bar (NOTICE_SIZE = big) draws 32x32 ones. */
+/* The big bar draws 32x32 ones. */
 static const struct dsd_badge_t* badge32_fn(void* ctx, const dsd_item_t* it) {
+  const dsd_badge16_t* small;
   (void)ctx;
-  return (const dsd_badge_t*)badge_slot(it, DSCM_BADGES_SLOT32);
+  const uint8_t* slot = badge_slot(it, DSCM_BADGES_SLOT32);
+  if (slot) return (const dsd_badge_t*)slot;
+  small = (const dsd_badge16_t*)badge_slot(it, DSCM_BADGES_SLOT);
+  if (!small) return 0;
+  memcpy(g_large.palette, small->palette, sizeof g_large.palette);
+  memset(g_large.pixels, 0, sizeof g_large.pixels);
+  for (int y = 0; y < 32; y++)
+    for (int x = 0; x < 32; x++) {
+      const uint8_t two = small->pixels[((y / 2) * 16 + x / 2) >> 1];
+      const uint8_t c = (x / 2) & 1 ? two >> 4 : two & 15;
+      g_large.pixels[(y * 32 + x) >> 1] |= (uint8_t)(x & 1 ? c << 4 : c);
+    }
+  return &g_large;
 }
 
 void dscm_strip_init(int hardcore, int edge, int rows) {
@@ -209,7 +254,8 @@ void dscm_strip_init(int hardcore, int edge, int rows) {
   memset(&dscm_strip_stats, 0, sizeof dscm_strip_stats);
   S.record = 1;
   g_edge = edge;
-  g_rows = rows == 32 ? 32 : 16;
+  g_rows = g_pref_rows = rows == 32 ? 32 : 16;
+  g_rendered_rows = 0;
   g_rendered = 0;
 }
 
@@ -230,21 +276,26 @@ static void build_tables(uint32_t base, uint32_t first) {
 
 /* ---- learning: score each possible position from the halt/wake log ---- */
 
-#ifdef STRIP_RSCORE
+/* Both heights from one run of paused lines ending at each line. */
+static void count_run(uint16_t (*arr)[192], int line, uint32_t run) {
+  for (int k = 0; k < 2; k++) {
+    const int rows = k ? 32 : 16;
+    if (line >= rows - 1 && run >= rows + 2u) {
+      const int first = line - rows + 1;
+      if (first <= 191 - rows && arr[k][first] < 0xFFFF) arr[k][first]++;
+    }
+  }
+}
+
 static void relax_score(void) {
   uint32_t run = 0;
   for (int i = 0; i < 194; i++) {
-    const int line = i - 2;
     run = (L.rpaused[i] || L.paused[i]) && !L.rwoke[i] ? run + 1 : 0;
-    if (line >= ROWS - 1 && run >= ROWS + 2u) {
-      const int first = line - ROWS + 1;
-      if (first <= FIRST_MAX && L.rfull[first] < 0xFFFF) L.rfull[first]++;
-    }
+    count_run(L.rfull, i - 2, run);
   }
   memset(L.rpaused, 0, sizeof L.rpaused);
   memset(L.rwoke, 0, sizeof L.rwoke);
 }
-#endif
 
 #ifdef STRIP_OBSERVE
 /* Every OBS_FRAMES frames: the best position's count, strict and relaxed,
@@ -257,12 +308,13 @@ static void observe_frame(void) {
   if (++L.obs_frames >= OBS_FRAMES) {
     uint16_t* o = dscm_strip_obs[dscm_strip_obs_n++ % OBS_MAX];
     int bs = 0, br = 0;
+    const int k = SZ(ROWS);
     for (int f = 1; f <= FIRST_MAX; f++) {
-      if (L.full[f] > L.full[bs]) bs = f;
-      if (L.rfull[f] > L.rfull[br]) br = f;
+      if (L.full[k][f] > L.full[k][bs]) bs = f;
+      if (L.rfull[k][f] > L.rfull[k][br]) br = f;
     }
-    o[0] = (uint16_t)L.obs_frames; o[1] = L.full[bs]; o[2] = (uint16_t)bs; o[3] = L.full[FIRST_MAX];
-    o[4] = L.rfull[br]; o[5] = (uint16_t)br; o[6] = L.rfull[FIRST_MAX];
+    o[0] = (uint16_t)L.obs_frames; o[1] = L.full[k][bs]; o[2] = (uint16_t)bs; o[3] = L.full[k][FIRST_MAX];
+    o[4] = L.rfull[k][br]; o[5] = (uint16_t)br; o[6] = L.rfull[k][FIRST_MAX];
     L.obs_frames = 0;
     memset(L.full, 0, sizeof L.full);
     memset(L.rfull, 0, sizeof L.rfull);
@@ -272,9 +324,7 @@ static void observe_frame(void) {
 
 static void score_frame(void) {
   uint32_t run = 0;
-#ifdef STRIP_RSCORE
   relax_score();
-#endif
 #ifdef STRIP_OBSERVE
   observe_frame();
 #endif
@@ -284,10 +334,7 @@ static void score_frame(void) {
     if (line >= 0 && L.paused[i] && L.lines[line] < 0xFFFF) L.lines[line]++;
     /* a bar on lines first..line shows whole if the game halted by first-2 and
      * nothing woke it until after line */
-    if (line >= ROWS - 1 && run >= ROWS + 2u) {
-      const int first = line - ROWS + 1;
-      if (first <= FIRST_MAX && L.full[first] < 0xFFFF) L.full[first]++;
-    }
+    count_run(L.full, line, run);
   }
   L.frames++;
   memset(L.paused, 0, sizeof L.paused);
@@ -318,23 +365,17 @@ static void learn_interval(uint32_t a, uint32_t b) {
     const uint32_t base = f * 263u;
     const uint32_t lo = a > base - 2 ? a : base - 2, hi = b < base + 192 ? b : base + 192;
     for (uint32_t x = lo; x < hi; x++) L.paused[x - base + 2] = 1;
-#ifdef STRIP_RSCORE
     /* the game ran for at most a line since the last wake: a handler only */
     if (f == fa && a - L.prev_b <= 1 && L.prev_b >= base - 2 && L.prev_b < base + 192) {
       L.rwoke[L.prev_b - base + 2] = 0;
       for (uint32_t x = L.prev_b; x < a && x < base + 192; x++) L.rpaused[x - base + 2] = 1;
     }
-#endif
     if (f == fb) {
       if (b >= base - 2 && b < base + 192) {
         L.woke[b - base + 2] = 1;
-#ifdef STRIP_RSCORE
         L.rwoke[b - base + 2] = 1;
-#endif
       }
-#ifdef STRIP_RSCORE
       L.prev_b = b;
-#endif
       break;
     }
     score_frame();
@@ -348,42 +389,70 @@ static void learn(void) {
   for (; L.tail != head; L.tail++)
     learn_interval(g_ring[L.tail % RING].a, g_ring[L.tail % RING].b);
   if (L.frames > 30000) {               /* keep the counts in range: older frames weigh half */
-    for (int i = 0; i < 192; i++) { L.full[i] /= 2; L.lines[i] /= 2; }
+    for (int i = 0; i < 192; i++) {
+      for (int k = 0; k < 2; k++) { L.full[k][i] /= 2; L.rfull[k][i] /= 2; }
+      L.lines[i] /= 2;
+    }
     L.frames /= 2;
   }
 }
 
-/* The best position for the bar, or -1 if none has ever shown whole.
- * Positions within 2% of the best score count as equal and the one nearest
- * the preferred edge wins (auto: the bottom), so the bar sits where a player
- * expects it. A bar already placed (prev) stays unless a position is more
- * than 10% better: it shouldn't move from one notice to the next. */
-static uint32_t score_at(int f) {
-  uint32_t sc = L.full[f];
-#ifdef STRIP_RSCORE
-  if (RELAXED && !S.relax_off) sc = L.rfull[f];
-#endif
-  if (STRIP_RESUME) { sc = 0; for (int l = f; l < f + ROWS; l++) sc += L.lines[l]; sc /= ROWS; }
+/* Where and how the bar goes. Positions within 2% of the best score count as
+ * equal and the one nearest the preferred edge wins (auto: the bottom), so
+ * the bar sits where a player expects it; a bar already placed stays unless a
+ * position is more than 10% better, so it doesn't move between notices.
+ *
+ * Every game should get a bar: the player's size first, then the other size,
+ * then the same two as the relaxed bar; the first that would have shown whole
+ * on at least half the frames watched wins (else the best of them, if any). */
+static uint32_t score_at(int f, int rows, int relaxed) {
+  uint32_t sc = relaxed ? L.rfull[SZ(rows)][f] : L.full[SZ(rows)][f];
+  if (STRIP_RESUME && !relaxed) { sc = 0; for (int l = f; l < f + rows; l++) sc += L.lines[l]; sc /= rows; }
   return sc;
 }
 
-static int pick(int prev) {
-  int lo = 0, hi = FIRST_MAX, best = -1;
+/* The best position for one choice, or -1; *score its count. */
+static int best_place(int rows, int relaxed, int prev, uint32_t* score) {
+  int lo = 0, hi = 191 - rows, best = -1;
   uint32_t max = 0;
-  if (g_edge == 1) hi = (192 - ROWS) / 2;
-  if (g_edge == 2) lo = (192 - ROWS) / 2;
-  for (int f = lo; f <= hi; f++) if (score_at(f) > max) max = score_at(f);
+  if (g_edge == 1) hi = (192 - rows) / 2;
+  if (g_edge == 2) lo = (192 - rows) / 2;
+  for (int f = lo; f <= hi; f++) if (score_at(f, rows, relaxed) > max) max = score_at(f, rows, relaxed);
   if (max) {
     for (int f = lo; f <= hi; f++) {
-      if (score_at(f) * 50u < max * 49u) continue;          /* not within 2% */
-      if (best < 0 || g_edge != 1) best = f;            /* top: the first; else the last */
+      if (score_at(f, rows, relaxed) * 50u < max * 49u) continue;   /* not within 2% */
+      if (best < 0 || g_edge != 1) best = f;                    /* top: the first; else the last */
     }
-    if (prev >= lo && prev <= hi && score_at(prev) * 10u >= max * 9u) best = prev;
+    if (prev >= lo && prev <= hi && score_at(prev, rows, relaxed) * 10u >= max * 9u) best = prev;
+  }
+  *score = best < 0 ? 0 : score_at(best, rows, relaxed);
+  return best;
+}
+
+static int pick(int prev) {
+  const int other = g_pref_rows == 32 ? 16 : 32;
+  const int order[4][2] = { { g_pref_rows, 0 }, { other, 0 }, { g_pref_rows, 1 }, { other, 1 } };
+  const uint32_t enough = L.frames / 2;
+  int best = -1, best_i = -1;
+  uint32_t best_score = 0;
+  for (int i = 0; i < 4; i++) {
+    uint32_t sc;
+    if (order[i][1] && (!RELAX_ALLOWED || S.relax_off)) continue;
+    const int same = order[i][0] == g_rows && order[i][1] == S.relaxed;
+    const int f = best_place(order[i][0], order[i][1], same ? prev : -1, &sc);
+    if (f >= 0 && sc > best_score) { best = f; best_i = i; best_score = sc; }
+    if (f >= 0 && sc >= enough && sc > 0) { best = f; best_i = i; best_score = sc; break; }
+  }
+  if (best_i >= 0) {
+    g_rows = order[best_i][0];
+    S.relaxed = (uint8_t)order[best_i][1];
   }
   dscm_strip_stats.picks++;
   dscm_strip_stats.pick_first = best < 0 ? 0xFF : (uint32_t)best;
-  dscm_strip_stats.pick_score = best < 0 ? 0 : score_at(best);
+  dscm_strip_stats.pick_score = best_score;
   dscm_strip_stats.learn_frames = L.frames;
+  dscm_strip_stats.mode = best_i < 0 ? 0xFF : (uint32_t)((g_rows == 32) | S.relaxed << 1);
+  dscm_strip_stats.forced = best_i > 0;
   return best;
 }
 
@@ -428,6 +497,7 @@ void dscm_strip_frame(uint32_t frame) {
     L.learn_start = frame;
     L.picked = 0;
     memset(L.full, 0, sizeof L.full);
+    memset(L.rfull, 0, sizeof L.rfull);
     memset(L.lines, 0, sizeof L.lines);
     L.frames = 0;
   }
@@ -482,6 +552,7 @@ void dscm_strip_frame(uint32_t frame) {
         g_px[i] = g_px[(ROWS - 1) * 256 + (i & 255)];
       dscm_dc_clean(g_px, sizeof g_px);
       g_rendered = 1;
+      g_rendered_rows = g_rows;
       dscm_strip_stats.renders++;
       L.picked = 0;                   /* a new notice: pick again with what was learned since */
     }
@@ -500,7 +571,11 @@ void dscm_strip_frame(uint32_t frame) {
       S.rows = 0;
       return;
     }
-    if ((uint32_t)f != S.first) { S.rows = 0; S.first = (uint8_t)f; S.base = 0; }
+    if ((uint32_t)f != S.first || g_rows != g_rendered_rows) { S.rows = 0; S.first = (uint8_t)f; S.base = 0; }
+    if (g_rows != g_rendered_rows) {   /* forced to the other height: draw it again next frame */
+      g_rendered = 0;
+      return;
+    }
   }
   if (dscm_strip_stats.pick_first == 0xFF) { S.rows = 0; return; }
   if (rows > 0) {
@@ -542,7 +617,6 @@ static void stop_bar(void) {
   S.woke_armed = 0;
 }
 
-#if RELAXED
 /* RELAXED, at a halt with the bar still armed after a wake let the game
  * run. Returns 1 if the bar stays armed. Checks, in order:
  * - the table has run out: the bar showed whole (handlers ran inside it);
@@ -561,6 +635,8 @@ static int relaxed_halt(uint32_t now) {
   if ((DISPCNT_A ^ S.base) & ~0x30000u) {
     stop_bar();
     S.relax_off = 1;
+    S.relaxed = 0;
+    L.picked = 0;                               /* place it again, strict only */
     S.frame_flags |= 4;
     dscm_strip_stats.game_dispcnt++;
     return 0;
@@ -572,7 +648,6 @@ static int relaxed_halt(uint32_t now) {
   S.woke_armed = 0;
   return 1;
 }
-#endif
 
 /* An absolute line from the VBlank count and VCOUNT. The count is the ARM7's
  * and can lag the ARM9's wake at line 192 by a little: time never runs
@@ -590,20 +665,17 @@ void dscm_strip_arm(uint32_t vblanks) {
   int resume = 0;
   vc = REG_VCOUNT;
   if (S.record || RELAXED) S.h_line = abs_line(vblanks, vc);
-#if RELAXED
-  if (S.armed && !S.relax_off && relaxed_halt(S.h_line)) return;
-#endif
+  if (S.armed && RELAXED && relaxed_halt(S.h_line)) return;
   if (!S.rows || S.armed) return;
   end = S.first + ROWS - 1;
-#if RELAXED
-  /* A game that wakes on nearly every line (many wakes last frame): arm only
-   * just before the bar, so the table writes DISPCNT on the bar's lines and
-   * not from early in the frame: a game write before the bar can't be undone. */
-  if (!S.relax_off && S.wakes_last > 60 && (vc >= 192 || vc + 5 < S.first)) {
+  /* Relaxed, a game that wakes on nearly every line (many wakes last frame):
+   * arm only just before the bar, so the table writes DISPCNT on the bar's
+   * lines and not from early in the frame: a game write before the bar
+   * can't be undone. */
+  if (RELAXED && S.wakes_last > 60 && (vc >= 192 || vc + 5 < S.first)) {
     dscm_strip_stats.late_waits++;
     return;
   }
-#endif
   if (vc >= 192) {
     /* In VBlank (the game finished its frame early and waits for the next):
      * H-Blank DMAs don't run during VBlank, so the table starts at line 0. */
@@ -700,16 +772,14 @@ void dscm_strip_wake(uint32_t vblanks) {
       g_ring[S.head % RING].b = now;
       S.head++;
     }
-#if RELAXED
-    /* The game's handler runs with the bar armed. The checks come at the
-     * next halt; a VBlank always ends it (the table is done by line 191). */
-    if (S.armed && !S.relax_off && vc < 192) {
+    /* Relaxed: the game's handler runs with the bar armed. The checks come
+     * at the next halt; a VBlank always ends it (the table is done by 191). */
+    if (S.armed && RELAXED && vc < 192) {
       S.wake_line = now;
       S.woke_armed = 1;
       dscm_strip_stats.relaxed_wakes++;
       return;
     }
-#endif
   }
   if (!S.armed) return;
   done = !(NDMA_CNT(CH_TABLE) & NDMA_ON);       /* the table ran out: every bar line was shown */
