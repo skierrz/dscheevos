@@ -219,6 +219,15 @@ play (the badges travel in the session file).
 - **Not done:** the 32x32 badge for the full-height bar; the menu page; measuring the download on real DSi Wi-Fi
   (the hardware kit's launcher doesn't have badges).
 
+## Round 6 (2026-10-22, owner): thin bar by default, players choose
+
+`NOTICE_SIZE = thin | big` in `dscheevos.ini` (default thin; `docs/display-settings.md`). The launcher passes it as
+`DSCM_BOOT_BIG_BAR` and makes the badges to match (16x16 thin, 32x32 big, cached separately as `.b16` / `.b32`);
+one module build serves both (the bar height is chosen at start-up; the pixel buffer is sized for the big bar).
+melonDS: Phoenix Wright with no setting: thin bar at line 175, 1231 of 1246 notice frames whole; Kirby gameplay
+with `NOTICE_SIZE = big` (relaxed build): big bar at line 159, 1838 of 1924, 32x32 badges with title and
+description. The big bar's layout: badge, "Achievement unlocked" and points, title, description (cut with "...").
+
 ## Not covered
 
 - Real hardware: bus contention (H5), ARM7 audio under the FIFO (A7), whether the DSi feeds a mid-frame FIFO

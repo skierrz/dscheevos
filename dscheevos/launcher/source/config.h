@@ -12,7 +12,7 @@ typedef struct dsc_settings_t {
   int spectator;        /* SPECTATOR = 1 (ini only): play and show, send nothing */
   int skip_unofficial;  /* SKIP_UNOFFICIAL = 1: ask the server for the promoted achievements only (f=3) */
   int badges;           /* LAB BADGES (default 1): fetch the set's badges for the notice bar */
-  int badge_size;       /* LAB BADGE_SIZE: 16 (the thin bar, default) or 32 (the full-height bar) */
+  int notice_big;       /* LAB NOTICE_SIZE: 0 thin (default), 1 big (32 lines; the badges are 32x32 too) */
   int notice_edge;      /* LAB (strip-lab) NOTICE_EDGE: 0 auto, 1 top, 2 bottom (where on-screen notices go) */
   char username[32];
   char token[64];       /* from the server at login; the password is never stored */

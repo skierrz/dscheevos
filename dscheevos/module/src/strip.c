@@ -59,7 +59,7 @@
 #define CH_TABLE 3
 #define CH_START 1
 #ifndef STRIP_ROWS
-#define STRIP_ROWS 16                 /* the compact layout; 32 = the full one */
+#define STRIP_ROWS 16                 /* the default height: the thin bar (compact layout) */
 #endif
 #ifdef STRIP_LABHW                     /* the lab hardware build: relaxed + the test notice */
 #define STRIP_RELAXED 1
@@ -73,7 +73,9 @@
 #ifndef STRIP_RESUME
 #define STRIP_RESUME 0
 #endif
-#define ROWS STRIP_ROWS
+#define ROWS_MAX 32                   /* the big bar (full layout, 32x32 badges) */
+static int g_rows = STRIP_ROWS;      /* the player's NOTICE_SIZE: 16 thin, 32 big */
+#define ROWS g_rows
 #if defined(STRIP_OBSERVE) || defined(STRIP_RELAXED)
 #define STRIP_RSCORE 1                /* also score positions with the game's IRQ handlers allowed */
 #endif
@@ -89,7 +91,7 @@ extern dscm_notices_t dscm_g_notices;
 extern void dscm_dc_clean(const void* addr, uint32_t len);
 
 static dsd_t g_dsd;
-static uint16_t g_px[(ROWS + MARGIN) * 256] __attribute__((aligned(32)));
+static uint16_t g_px[(ROWS_MAX + MARGIN) * 256] __attribute__((aligned(32)));
 static uint32_t g_dtab[192] __attribute__((aligned(32)));
 static uint32_t g_btab[192] __attribute__((aligned(32)));
 static uint32_t g_fifo_word __attribute__((aligned(32)));
@@ -187,13 +189,13 @@ static const struct dsd_badge16_t* badge16_fn(void* ctx, const dsd_item_t* it) {
   return (const dsd_badge16_t*)badge_slot(it, DSCM_BADGES_SLOT);
 }
 
-/* The full-height bar (STRIP_ROWS 32) draws 32x32 ones. */
+/* The big bar (NOTICE_SIZE = big) draws 32x32 ones. */
 static const struct dsd_badge_t* badge32_fn(void* ctx, const dsd_item_t* it) {
   (void)ctx;
   return (const dsd_badge_t*)badge_slot(it, DSCM_BADGES_SLOT32);
 }
 
-void dscm_strip_init(int hardcore, int edge) {
+void dscm_strip_init(int hardcore, int edge, int rows) {
   dsd_config_t cfg;
   memset(&cfg, 0, sizeof cfg);
   cfg.font = &dsd_font_latin;
@@ -207,6 +209,7 @@ void dscm_strip_init(int hardcore, int edge) {
   memset(&dscm_strip_stats, 0, sizeof dscm_strip_stats);
   S.record = 1;
   g_edge = edge;
+  g_rows = rows == 32 ? 32 : 16;
   g_rendered = 0;
 }
 

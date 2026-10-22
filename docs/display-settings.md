@@ -31,7 +31,8 @@ Status: design only, 2026-10-12. Owner ruling #5: every notice type, LED cue, ba
 | `NOTICE_SCREEN` | `auto` | `auto` / `top` / `bottom`: which screen (`display-library.md` 11.2) |
 | `NOTICE_EDGE` | `auto` | `auto` / `top` / `bottom`: the half of the game's screen the bar may use. The module learns the best spot within it (`docs/strip-lab.md`); auto prefers the bottom. Built on branch `strip-lab` (launcher reads it, passes it in the session flags) |
 | `NOTICE_SIDE` | `left` | `left` / `right`: the layout's side |
-| `NOTICE_SIZE` | `auto` | `auto` / `full` (32 lines) / `compact` (16 lines) |
+| `NOTICE_SIZE` | `thin` | `thin` (16 lines: icon or 16x16 badge, one line of text) / `big` (32 lines: 32x32 badge, title and description). Owner 2026-10-22: thin by default, players choose. Built on branch `strip-lab` (session flag `DSCM_BOOT_BIG_BAR`) |
+| `BADGES` | `1` | Fetch the set's badges before boot for the bar (16x16 or 32x32 to match `NOTICE_SIZE`). Built on `strip-lab` |
 
 ### Before the game
 

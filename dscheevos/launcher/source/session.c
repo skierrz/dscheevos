@@ -416,6 +416,8 @@ int session_write(const dsc_settings_t* settings, const char* rom_path, const ch
     boot.flags |= DSCM_BOOT_UTC_KNOWN;
   if (settings->notice_edge)
     boot.flags |= settings->notice_edge == 1 ? DSCM_BOOT_EDGE_TOP : DSCM_BOOT_EDGE_BOTTOM;
+  if (settings->notice_big)
+    boot.flags |= DSCM_BOOT_BIG_BAR;
   /* Each reply and the CA end in at least one NUL (DSCM_SESSION_PAD): the
    * module uses them in place. */
   for (i = 0; i < DSCM_PRELOAD_COUNT; i++) {

@@ -21,7 +21,8 @@ extern dscm_strip_stats_t dscm_strip_stats;
 #ifndef STRIP_EDGE_DEFAULT
 #define STRIP_EDGE_DEFAULT 0
 #endif
-void dscm_strip_init(int hardcore, int edge);
+/* rows: 16 the thin bar, 32 the big one (the player's NOTICE_SIZE) */
+void dscm_strip_init(int hardcore, int edge, int rows);
 /* The set's 16x16 badges from the session (a copy the strip keeps). */
 struct dscm_badges_t;
 void dscm_strip_set_badges(const struct dscm_badges_t* b);

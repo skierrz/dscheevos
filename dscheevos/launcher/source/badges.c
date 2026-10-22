@@ -7,7 +7,7 @@
  * the module draws them from memory: no SD reads or network during play.
  * Nothing here affects achievements, hardcore or what is sent to the server.
  *
- * Cache: sd:/_nds/dscheevos/badges/<game id>.b16 (16x16) or .b32 (32x32, BADGE_SIZE = 32)
+ * Cache: sd:/_nds/dscheevos/badges/<game id>.b16 (16x16) or .b32 (32x32, NOTICE_SIZE = big)
  *   "DSC6", version 2, slot size, count, then count x { id, badge name[16], slot } */
 #include <nds.h>
 #include <stdio.h>
@@ -132,7 +132,7 @@ void badges_prepare(const dsc_settings_t* settings, uint32_t game_id)
   g_count = 0;
   if (n <= 0 || !settings->badges)
     return;
-  g_slot = settings->badge_size == 32 ? DSCM_BADGES_SLOT32 : DSCM_BADGES_SLOT;
+  g_slot = settings->notice_big ? DSCM_BADGES_SLOT32 : DSCM_BADGES_SLOT;   /* the badge fits the bar */
   g_entries = (entry_t*)calloc((size_t)n, sizeof(entry_t));
   ok = (uint8_t*)calloc((size_t)n, 1);
   if (!g_entries || !ok) {
