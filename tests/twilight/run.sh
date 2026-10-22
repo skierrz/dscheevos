@@ -101,7 +101,7 @@ run() { # run NAME FRAMES
   rm -rf "$d" && mkdir -p "$d" && cp -r "$sd0" "$d/sd"
   cp "$nand" "$d/nand.bin"
   python3 "$repo/tools/mock-ra-server/server.py" --bind 0.0.0.0 --port "$port" --set "$set" --log "$d/events.jsonl" \
-    ${HASH:+--hash "$HASH"} --tls-cert "$work/tls/server.pem" --tls-key "$work/tls/server.key" > "$d/mock.log" 2>&1 &
+    ${HASH:+--hash "$HASH"} --tls-cert "$work/tls/server.pem" --tls-key "$work/tls/server.key" ${MOCK_ARGS:-} > "$d/mock.log" 2>&1 &
   mock=$!
   sleep 1
   # (the runner needs --rom, which also goes in slot 1; neither boot path starts it from there)

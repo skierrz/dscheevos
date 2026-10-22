@@ -28,6 +28,7 @@ import copy
 import gzip
 import argparse
 import json
+import os
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -181,6 +182,8 @@ def main():
                     help="act as for an approved client: no warning achievement, hardcore unlocks count")
     ap.add_argument("--fail-awards", action="store_true",
                     help="answer awardachievement and submitlbentry with HTTP 503 (retryable)")
+    ap.add_argument("--badge-dir", help="serve /Badge/<name>.png from this folder when it has the file "
+                    "(local copies of real badges; made-up ones otherwise)")
     ap.add_argument("--tls-cert", help="serve HTTPS with this certificate (PEM, chain first)")
     ap.add_argument("--tls-key", help="key for --tls-cert")
     args = ap.parse_args()
@@ -214,7 +217,9 @@ def main():
         def do_GET(self):
             path = urlparse(self.path).path
             if path.startswith("/Badge/") and path.endswith(".png"):
-                body = badge_png(path[7:-4])
+                name = path[7:-4]
+                real = os.path.join(args.badge_dir, name + ".png") if args.badge_dir and name.isalnum() else None
+                body = open(real, "rb").read() if real and os.path.exists(real) else badge_png(name)
                 state.log({"event": "badge", "name": path[7:-4]})
                 self.send_response(200)
                 self.send_header("Content-Type", "image/png")
