@@ -41,6 +41,7 @@
 #define REG16(a) (*(volatile uint16_t*)(a))
 #define REG8(a)  (*(volatile uint8_t*)(a))
 #define REG_VCOUNT    REG16(0x04000006)
+#define REG_DISPSTAT  REG16(0x04000004)
 #define DISPCNT_A     REG32(0x04000000)
 #define DISPCNT_MODE  REG8(0x04000002)
 #define MMEM_FIFO     0x04000068u
@@ -173,6 +174,7 @@ static const char* text_fn(void* ctx, const dsd_item_t* it, int which) {
 }
 
 static int g_edge;                    /* 0 auto (ties go to the bottom), 1 top half, 2 bottom half */
+static int g_off;                     /* the player turned the bar off (NOTICES = 0) */
 static const dscm_badges_t* g_badges; /* the set's 16x16 badges, or 0: icons */
 
 void dscm_strip_set_badges(const dscm_badges_t* b) { g_badges = b; }
@@ -254,6 +256,8 @@ void dscm_strip_init(int hardcore, int edge, int rows) {
   memset(&dscm_strip_stats, 0, sizeof dscm_strip_stats);
   S.record = 1;
   g_edge = edge;
+  g_off = rows == 0;
+  if (g_off) S.record = 0;
   g_rows = g_pref_rows = rows == 32 ? 32 : 16;
   g_rendered_rows = 0;
   g_rendered = 0;
@@ -462,6 +466,9 @@ void dscm_strip_frame(uint32_t frame) {
   dsd_caps_t caps = { ROWS, 0 };
   int rows = 0;
 
+  if (g_off)
+    return;
+
   learn();
   S.wakes_last = S.wakes;
   S.wakes = 0;
@@ -599,7 +606,7 @@ void dscm_strip_frame(uint32_t frame) {
   }
 }
 
-int dscm_strip_active(void) { return S.rows != 0 || S.record; }
+int dscm_strip_active(void) { return !g_off && (S.rows != 0 || S.record); }
 
 /* ---- the module's last halt, IRQs masked ---- */
 
@@ -751,6 +758,15 @@ void dscm_strip_arm(uint32_t vblanks) {
     NDMA_CNT(CH_START) = NDMA_ON | NDMA_START(0x07) | NDMA_DFIX;
   }
   NDMA_CNT(CH_TABLE) = NDMA_ON | NDMA_START(0x07) | NDMA_DFIX;
+  /* Armed from line vc: if the line moved on, or its H-Blank had begun before
+   * the channels were on, their first trigger may be missed and the bar would
+   * come one line late. Take it down and arm again at the next chance. */
+  if (vc < 192 && (REG_VCOUNT != vc || (REG_DISPSTAT & 2))) {
+    S.armed = 1;
+    stop_bar();
+    dscm_strip_stats.arm_races++;
+    return;
+  }
   S.armed = 1;
   S.frame_flags |= resume ? 9 : 1;
   if (resume) {

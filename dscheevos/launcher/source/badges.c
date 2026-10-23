@@ -130,7 +130,7 @@ void badges_prepare(const dsc_settings_t* settings, uint32_t game_id)
   g_entries = NULL;
   g_block = NULL;
   g_count = 0;
-  if (n <= 0 || !settings->badges)
+  if (n <= 0 || !settings->badges || !settings->notices)
     return;
   g_slot = settings->notice_big ? DSCM_BADGES_SLOT32 : DSCM_BADGES_SLOT;   /* the badge fits the bar */
   g_entries = (entry_t*)calloc((size_t)n, sizeof(entry_t));

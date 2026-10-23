@@ -14,7 +14,7 @@ enum { ROW_SIZE, ROW_EDGE, ROW_BADGES, ROWS };
 static const char* value(const dsc_settings_t* s, int row)
 {
   switch (row) {
-  case ROW_SIZE: return s->notice_big ? "Big" : "Thin";
+  case ROW_SIZE: return !s->notices ? "Off" : s->notice_big ? "Big" : "Thin";
   case ROW_EDGE: return s->notice_edge == 1 ? "Top" : s->notice_edge == 2 ? "Bottom" : "Auto";
   default: return s->badges ? "On" : "Off";
   }
@@ -31,7 +31,7 @@ static void draw(const dsc_settings_t* s, int at)
   ui_bottom("\n UP/DOWN pick, A/LEFT/RIGHT\n change, START or B: done\n\n");
   switch (at) {
   case ROW_SIZE:
-    ui_bottom(" Thin: one line, small badge.\n Big: title, description and\n a bigger badge.\n\n"
+    ui_bottom(" Thin: one line, small badge.\n Big: title, description and\n a bigger badge. Off: the Wi-Fi\n light and the menu only.\n\n"
               " A game that can't show your\n choice gets the one it can.");
     break;
   case ROW_EDGE:
@@ -62,7 +62,13 @@ int notice_settings_menu(dsc_settings_t* s)
     if (!step)
       continue;
     switch (at) {
-    case ROW_SIZE: s->notice_big = !s->notice_big; break;
+    case ROW_SIZE: {                /* Thin -> Big -> Off -> Thin (LEFT goes back) */
+      int v = !s->notices ? 2 : s->notice_big;
+      v = (v + 3 + step) % 3;
+      s->notices = v != 2;
+      s->notice_big = v == 1;
+      break;
+    }
     case ROW_EDGE: s->notice_edge = (s->notice_edge + 3 + step) % 3; break;
     default: s->badges = !s->badges; break;
     }

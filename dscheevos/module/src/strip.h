@@ -13,6 +13,7 @@ typedef struct dscm_strip_stats_t {
   uint32_t resumes, gap_lines, frames_resumed;
   uint32_t relaxed_wakes, work_under, work_lines, game_dispcnt;
   uint32_t demos, gamedma_ok, late_waits;
+  uint32_t arm_races;                  /* armed too close to the line's H-Blank: taken down, armed again */
   uint32_t mode, forced;               /* the bar in use: bit 0 big, bit 1 relaxed (0xFF none); forced: not the player's size or not strict */
 } dscm_strip_stats_t;
 
@@ -22,7 +23,8 @@ extern dscm_strip_stats_t dscm_strip_stats;
 #ifndef STRIP_EDGE_DEFAULT
 #define STRIP_EDGE_DEFAULT 0
 #endif
-/* rows: 16 the thin bar, 32 the big one (the player's NOTICE_SIZE) */
+/* rows: 16 the thin bar, 32 the big one (the player's NOTICE_SIZE), 0 no bar (NOTICES = 0):
+ * then nothing here runs, not even the learning: the module behaves as one built without it. */
 void dscm_strip_init(int hardcore, int edge, int rows);
 /* The set's 16x16 badges from the session (a copy the strip keeps). */
 struct dscm_badges_t;

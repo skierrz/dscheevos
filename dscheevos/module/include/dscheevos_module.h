@@ -243,6 +243,7 @@ typedef struct dscm_boot_t {
  * comes right before the block. Not in dscm_boot_t, whose size nds-bootstrap checks. */
 #define DSCM_BOOT_BADGES 0x20
 #define DSCM_BOOT_BIG_BAR 0x40          /* LAB: NOTICE_SIZE = big: the 32-line bar (else the thin one) */
+#define DSCM_BOOT_NO_BAR 0x80           /* LAB: NOTICES = 0: no on-screen bar at all (the LED and the menu only) */
 #define DSCM_BADGES_MAGIC 0x36425344u   /* "DSB6": 16x16 slots */
 #define DSCM_BADGES_TRAILER 0x54425344u /* "DSBT" */
 #define DSCM_BADGES_SLOT 160u           /* 128 bytes of 4bpp pixels, then 16 BGR555 colours */

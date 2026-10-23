@@ -54,6 +54,7 @@ static void on_setting(const char* key, const char* value, void* ud)
   else if (!strcmp(key, "HOST")) copy(s->host, sizeof(s->host), value);
   else if (!strcmp(key, "BADGES")) s->badges = atoi(value) != 0;
   else if (!strcmp(key, "NOTICE_SIZE")) s->notice_big = !strcmp(value, "big");
+  else if (!strcmp(key, "NOTICES")) s->notices = atoi(value) != 0;
   else if (!strcmp(key, "NOTICE_EDGE")) s->notice_edge = !strcmp(value, "top") ? 1 : !strcmp(value, "bottom") ? 2 : 0;
 }
 
@@ -64,6 +65,7 @@ void settings_load(dsc_settings_t* s)
   s->hardcore = 1;
   s->live = 1;
   s->badges = 1;
+  s->notices = 1;
   strcpy(s->host, DEFAULT_HOST);
   read_ini(SETTINGS_PATH, on_setting, s);
 }
@@ -85,6 +87,8 @@ int settings_save(const dsc_settings_t* s)
     fprintf(f, "BADGES = 0\n");
   if (s->notice_big)
     fprintf(f, "NOTICE_SIZE = big\n");
+  if (!s->notices)
+    fprintf(f, "NOTICES = 0\n");
   if (s->notice_edge)
     fprintf(f, "NOTICE_EDGE = %s\n", s->notice_edge == 1 ? "top" : "bottom");
   fclose(f);

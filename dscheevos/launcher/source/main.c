@@ -192,7 +192,7 @@ static void settings_menu(void)
               settings.hardcore ? "on (hardcore)" : settings.live ? "on" : "off");
     ui_bottom(" \x1b[32;1mL\x1b[39;0m  Skip unofficial achievements:\n     %s\n", settings.skip_unofficial ? "on" : "off");
     ui_bottom(" \x1b[32;1mY\x1b[39;0m  Log out%s%s\n", settings.username[0] ? " " : "", settings.username);
-    ui_bottom(" \x1b[32;1mSELECT\x1b[39;0m  Notice bar: %s, %s\n", settings.notice_big ? "big" : "thin",
+    ui_bottom(" \x1b[32;1mSELECT\x1b[39;0m  Notice bar: %s, %s\n", !settings.notices ? "off" : settings.notice_big ? "big" : "thin",
               settings.notice_edge == 1 ? "top" : settings.notice_edge == 2 ? "bottom" : "auto");
     ui_bottom("\n \x1b[31;1mB\x1b[39;0m  Done\n");
     do {

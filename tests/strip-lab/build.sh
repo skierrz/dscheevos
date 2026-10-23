@@ -4,6 +4,7 @@
 set -eo pipefail
 DS=$HOME/Developer/DScheevos; W=$(cd "$(dirname "$0")/../.." && pwd); N=$(basename "$W"); G=$DS/dscheevos/.git
 make -C "$W/dscheevos/display" build/font_latin.c >/dev/null
+timeout 60 docker info >/dev/null 2>&1 || { echo "build: Docker isn't running (OrbStack: orb start)" >&2; exit 1; }
 timeout 900 "$DS/bin/build-lock" -l striplab docker run --rm --platform linux/amd64 -v "$W:/ws/$N" -v "$G:/ws/dscheevos/.git" -v "$G:$G" \
   -w "/ws/$N" devkitpro/devkitarm:20241104 make -C dscheevos/module STRIP=1 BUILD=${BUILD:-build-strip} ${MAKEARGS:-} "EXTRA_CFLAGS=${CFLAGS_EXTRA:-}" 2>&1 \
   | grep -E "error:|warning:|^built" || true
